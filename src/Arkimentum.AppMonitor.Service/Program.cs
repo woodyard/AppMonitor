@@ -259,8 +259,11 @@ if (checkUpdateOnly || updateNowOnly)
 
 try
 {
+    // Resolve before RunAsync: the host disposes its service provider when it stops, and resolving afterwards
+    // threw ObjectDisposedException on every service stop ("Service terminated unexpectedly" in the log).
+    var coordinator = host.Services.GetRequiredService<UpdateCoordinator>();
     await host.RunAsync();
-    await host.Services.GetRequiredService<UpdateCoordinator>().DisposeAsync();
+    await coordinator.DisposeAsync();
     return 0;
 }
 catch (Exception ex)

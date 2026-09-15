@@ -273,8 +273,9 @@ Rules encoded in the model (`PendingUpdate`):
 | Past deadline | `Mandatory` and `now >= DeadlineUtc`: deferral is refused and the install is forced. |
 | Blocking processes | The `ProcessNames` of the application that are currently running. For user-context updates only processes in that user's session count. |
 | Forced close | When the deadline has passed and `ForceCloseAtDeadline = 1`, the user is warned and `ForceCloseAtUtc = now + CloseGracePeriodMinutes`. At that moment the tray agent asks the windows to close (`WM_CLOSE`), waits the graceful period, and kills what is left; the service kills any survivor it can see. With `ForceCloseAtDeadline = 0` the update simply waits. |
-| Auto install | `AutoInstall = 1` installs without asking as soon as no blocking process is running - no notification other than the optional "installed" toast. |
-| Dismiss | A non-mandatory update the user dismissed is re-announced after `NotificationIntervalMinutes` (per-app override allowed). |
+| Auto install | `AutoInstall = 1` installs without asking as soon as no blocking process is running - no notification other than the optional "installed" toast (`ShowInstalledNotifications`, off by default). |
+| Notification style | `NotificationMode` (global, per-app override). `Quiet` (default) announces an update once - `PendingUpdate.Announced` records it - and afterwards only notifies about a deadline approaching, applications to close, or a failed install; there is no "installing" toast. `Reminders` is the pre-1.2 behaviour: one reminder per `NotificationIntervalMinutes` for as long as the update is pending. |
+| Dismiss | A non-mandatory update the user dismissed is re-announced after `NotificationIntervalMinutes` in `Reminders` mode; in `Quiet` mode it stays dismissed until a new version appears or a deadline approaches. |
 | Failure | `FailureCount` and `LastError` are kept; the update reappears in the next scan and is retried. |
 
 Pending state is persisted to `state.json` so deferrals, deadlines and deferral counts survive a

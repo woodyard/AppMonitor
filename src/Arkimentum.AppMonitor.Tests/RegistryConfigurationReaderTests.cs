@@ -44,6 +44,8 @@ public sealed class RegistryConfigurationReaderTests : IDisposable
         var s = Reader().Read();
         Assert.Equal(240, s.ScanIntervalMinutes);
         Assert.Equal(240, s.NotificationIntervalMinutes);
+        Assert.Equal(NotificationMode.Quiet, s.NotificationMode);
+        Assert.False(s.ShowInstalledNotifications);
         Assert.True(s.WingetEnabled);
         Assert.Empty(s.Apps);
         Assert.Equal("Default", s.ValueSources["ScanIntervalMinutes"]);
@@ -100,6 +102,22 @@ public sealed class RegistryConfigurationReaderTests : IDisposable
         Assert.Equal(5, b.MaxDeferrals);
         Assert.True(b.Mandatory);
         Assert.Null(b.NotificationIntervalMinutes);
+    }
+
+    [Fact]
+    public void Notification_mode_is_read_globally_and_per_app_and_survives_a_typo()
+    {
+        using (var p = Pref()) { p.SetValue("NotificationMode", "Reminders"); }
+        using (var ka = Pref(@"Apps\a")) { ka.SetValue("WingetId", "Vendor.A"); ka.SetValue("NotificationMode", "quiet"); }
+        using (var kb = Pref(@"Apps\b")) { kb.SetValue("WingetId", "Vendor.B"); }
+        using (var kc = Pref(@"Apps\c")) { kc.SetValue("WingetId", "Vendor.C"); kc.SetValue("NotificationMode", "nonsense"); }
+
+        var s = Reader().Read();
+        Assert.Equal(NotificationMode.Reminders, s.NotificationMode);
+        Assert.Equal(NotificationMode.Quiet, s.Apps.Single(x => x.AppId == "a").NotificationMode);
+        Assert.Null(s.Apps.Single(x => x.AppId == "b").NotificationMode);
+        // An unreadable value falls back to the global mode instead of failing the whole read.
+        Assert.Equal(NotificationMode.Reminders, s.Apps.Single(x => x.AppId == "c").NotificationMode);
     }
 
     [Fact]

@@ -373,6 +373,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 lock (_installsInFlight) { if (_installsInFlight.Contains(u.Key)) continue; }
                 var policy = settings.Apps.FirstOrDefault(a => a.AppId.Equals(u.AppId, StringComparison.OrdinalIgnoreCase));
                 var interval = PolicyEngine.NotificationIntervalFor(u, policy, settings);
+                var mode = PolicyEngine.NotificationModeFor(policy, settings);
 
                 var sessionId = u.Context == InstallContext.User ? SessionFor(u.UserSid) : null;
                 var blocking = ProcessHelper.GetRunning(u.ProcessNames, sessionId);
@@ -385,7 +386,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                     changed = true;
                 }
 
-                var action = PolicyEngine.Decide(u, now, interval, blocking.Count > 0);
+                var action = PolicyEngine.Decide(u, now, interval, blocking.Count > 0, mode);
                 if (action.Kind == PolicyActionKind.None) continue;
                 if (action.Kind is PolicyActionKind.Notify or PolicyActionKind.PromptClose && !TargetsFor(u).Any())
                 {
@@ -411,6 +412,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                         if (settings.NotificationsEnabled && await SendNotificationAsync(u, action.Notification, ct).ConfigureAwait(false))
                         {
                             u.LastNotifiedUtc = now;
+                            // The user now knows about this update; Quiet mode will not raise it again by itself.
+                            u.Announced = true;
                             u.Dismissed = false;
                             changed = true;
                         }
@@ -518,7 +521,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             u = Get(key)!;
             _logger.LogInformation("Installing {App} {From} -> {To} ({Source}, {Context}{User})", u.DisplayName, u.InstalledVersion, u.AvailableVersion, u.Source, u.Context,
                 u.Context == InstallContext.User ? $" for {u.UserSid}" : "");
-            if (settings.NotificationsEnabled)
+            // "Installing" is pure progress chatter: Quiet mode leaves it to the tray window and the icon badge.
+            if (settings.NotificationsEnabled && PolicyEngine.NotificationModeFor(policy, settings) == NotificationMode.Reminders)
                 await SendNotificationAsync(u, NotificationKind.Installing, ct).ConfigureAwait(false);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -812,6 +816,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             {
                 ScanIntervalMinutes = s.ScanIntervalMinutes,
                 NotificationIntervalMinutes = s.NotificationIntervalMinutes,
+                NotificationMode = s.NotificationMode,
                 WingetEnabled = s.WingetEnabled,
                 WebSourcesEnabled = s.WebSourcesEnabled,
                 NotificationsEnabled = s.NotificationsEnabled,

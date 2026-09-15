@@ -127,7 +127,10 @@ Write-Step 'Global settings'
 
 # Scan for updates every 4 hours (5-10080 minutes).
 Set-Value -Path $root -Name 'ScanIntervalMinutes'         -Value 240 -Type DWord
-# Repeat a notification for the same pending update at most every 4 hours (1-10080 minutes).
+# Notification style: Quiet announces an update once and afterwards only interrupts when the user
+# must act (deadline, applications to close, failure). Reminders repeats every interval below.
+Set-Value -Path $root -Name 'NotificationMode'            -Value 'Quiet' -Type String
+# Reminders style only: repeat a notification for the same pending update at most every 4 hours (1-10080).
 Set-Value -Path $root -Name 'NotificationIntervalMinutes' -Value 240 -Type DWord
 # Wait 2 minutes after service start before the first scan, so logon is not slowed down (0-3600 s).
 Set-Value -Path $root -Name 'StartupDelaySeconds'         -Value 120 -Type DWord
@@ -146,9 +149,9 @@ Set-Value -Path $root -Name 'PrerequisiteCheckIntervalHours' -Value 24 -Type DWo
 Set-Value -Path $root -Name 'WingetMinimumVersion'           -Value '1.6.0' -Type String
 # The service starts the tray agent in every interactive session.
 Set-Value -Path $root -Name 'LaunchTrayAgent'             -Value 1   -Type DWord
-# Toast notifications on; also tell the user when an update finished.
+# Toast notifications on; no confirmation toast after a successful install (set to 1 to get one).
 Set-Value -Path $root -Name 'NotificationsEnabled'        -Value 1   -Type DWord
-Set-Value -Path $root -Name 'ShowInstalledNotifications'  -Value 1   -Type DWord
+Set-Value -Path $root -Name 'ShowInstalledNotifications'  -Value 0   -Type DWord
 # Logging: Trace, Debug, Information, Warning or Error.
 Set-Value -Path $root -Name 'LogLevel'                    -Value 'Information' -Type String
 Set-Value -Path $root -Name 'LogRetentionDays'            -Value 30  -Type DWord

@@ -56,17 +56,57 @@ public sealed class StateStore
         var path = PathFor(settings);
         lock (_lock)
         {
+            var json = JsonSerializer.Serialize(state, Json);
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 var tmp = path + ".tmp";
-                File.WriteAllText(tmp, JsonSerializer.Serialize(state, Json));
-                File.Move(tmp, path, overwrite: true);
+                File.WriteAllText(tmp, json);
+                try
+                {
+                    File.Move(tmp, path, overwrite: true);
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+                {
+                    // Replacing the file can be refused while the old one is open elsewhere or carries the read-only
+                    // attribute (seen after a self-update: every save failed with "access denied" although the same
+                    // account had written the file minutes before). Losing deadlines and deferrals is worse than a
+                    // non-atomic write, so fall back to writing in place and say what the file looks like.
+                    Describe(path, ex);
+                    if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
+                        File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
+                    File.WriteAllText(path, json);
+                    try { File.Delete(tmp); } catch { /* best effort */ }
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Could not save state to {Path}", path);
             }
+        }
+    }
+
+    private bool _describedReplaceFailure;
+
+    /// <summary>Logs, once per process, why the atomic replace was refused: attributes, owner and access rules of the file.</summary>
+    private void Describe(string path, Exception ex)
+    {
+        if (_describedReplaceFailure) return;
+        _describedReplaceFailure = true;
+        try
+        {
+            var info = new FileInfo(path);
+            var security = info.GetAccessControl();
+            var owner = security.GetOwner(typeof(System.Security.Principal.NTAccount))?.Value ?? "?";
+            var rules = security.GetAccessRules(true, true, typeof(System.Security.Principal.NTAccount))
+                .Cast<System.Security.AccessControl.FileSystemAccessRule>()
+                .Select(r => $"{r.IdentityReference.Value}:{r.AccessControlType}:{r.FileSystemRights}");
+            _logger.LogWarning(ex, "Replacing {Path} was refused ({Message}); writing it in place instead. Attributes={Attributes}, owner={Owner}, rules=[{Rules}]",
+                path, ex.Message, info.Attributes, owner, string.Join("; ", rules));
+        }
+        catch (Exception inner)
+        {
+            _logger.LogWarning(ex, "Replacing {Path} was refused ({Message}); writing it in place instead (details unavailable: {Inner})", path, ex.Message, inner.Message);
         }
     }
 }

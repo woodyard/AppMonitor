@@ -23,6 +23,16 @@ public sealed class NotificationService : IHostedService
 {
     private const string ToastGroup = "ArkimentumAppMonitor";
 
+    /// <summary>
+    /// A scan that finds several updates sends one <see cref="NotifyMessage"/> per update within a few hundred
+    /// milliseconds. In Quiet mode they are collected for this long and shown as a single summary toast; a lone
+    /// update is still shown as its own toast, just this much later.
+    /// </summary>
+    private static readonly TimeSpan CoalesceWindow = TimeSpan.FromSeconds(2);
+
+    /// <summary>How many application names the summary toast lists before it falls back to "and N more".</summary>
+    private const int SummaryNamesShown = 4;
+
     private readonly ILogger<NotificationService> _log;
     private readonly IpcClientService _ipc;
     private readonly AgentStateStore _store;
@@ -31,6 +41,8 @@ public sealed class NotificationService : IHostedService
     private readonly Dispatcher _dispatcher;
 
     private bool _activationHooked;
+    private DispatcherTimer? _coalesceTimer;
+    private readonly List<NotifyMessage> _pendingAvailable = [];
 
     public NotificationService(
         ILogger<NotificationService> log,
@@ -69,6 +81,12 @@ public sealed class NotificationService : IHostedService
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _ipc.MessageReceived -= OnMessage;
+        _dispatcher.Invoke(() =>
+        {
+            _coalesceTimer?.Stop();
+            _coalesceTimer = null;
+            _pendingAvailable.Clear();
+        });
         if (_activationHooked)
         {
             try { ToastNotificationManagerCompat.OnActivated -= OnToastActivated; } catch { }
@@ -80,7 +98,73 @@ public sealed class NotificationService : IHostedService
 
     private void OnMessage(IpcMessage message)
     {
-        if (message is NotifyMessage notify) Show(notify);
+        if (message is NotifyMessage notify) Receive(notify);
+    }
+
+    /// <summary>
+    /// Entry point for one notification from the service. In Quiet mode "update available" messages are held back for
+    /// <see cref="CoalesceWindow"/> so that a scan which found several updates produces one summary toast instead of a
+    /// burst; everything that needs the user (deadline, close prompt, failure) is shown immediately.
+    /// </summary>
+    public void Receive(NotifyMessage notify)
+    {
+        if (notify.Kind != NotificationKind.UpdateAvailable || _store.Settings.NotificationMode != NotificationMode.Quiet)
+        {
+            Show(notify);
+            return;
+        }
+
+        _pendingAvailable.RemoveAll(m => m.Update?.Key is { } k && k == notify.Update?.Key);
+        _pendingAvailable.Add(notify);
+
+        _coalesceTimer ??= new DispatcherTimer(DispatcherPriority.Normal, _dispatcher) { Interval = CoalesceWindow };
+        _coalesceTimer.Tick -= OnCoalesceElapsed;
+        _coalesceTimer.Tick += OnCoalesceElapsed;
+        // Restart the window so updates still arriving join this batch.
+        _coalesceTimer.Stop();
+        _coalesceTimer.Start();
+    }
+
+    private void OnCoalesceElapsed(object? sender, EventArgs e)
+    {
+        _coalesceTimer?.Stop();
+        var batch = _pendingAvailable.ToList();
+        _pendingAvailable.Clear();
+        if (batch.Count == 0) return;
+        if (batch.Count == 1) { Show(batch[0]); return; }
+        ShowSummary(batch);
+    }
+
+    /// <summary>One toast for a whole batch: the count, the application names and a Details button opening the window.</summary>
+    private void ShowSummary(IReadOnlyList<NotifyMessage> batch)
+    {
+        if (!_store.Settings.NotificationsEnabled)
+        {
+            _log.LogInformation("Suppressed a summary notification for {Count} updates: notifications are disabled", batch.Count);
+            return;
+        }
+
+        var names = batch.Select(m => m.Update?.DisplayName).Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n!).ToList();
+        try
+        {
+            var builder = new ToastContentBuilder()
+                .AddArgument(ToastAction.ArgumentAction, ToastAction.Details);
+            builder.AddText(Strings.ToastSummaryTitle(batch.Count));
+            if (names.Count > 0) builder.AddText(Strings.ToastSummaryBody(names, SummaryNamesShown));
+            builder.AddAttributionText(Strings.ProductName);
+            AddDetails(builder);
+
+            builder.Show(toast =>
+            {
+                toast.Tag = SummaryTag;
+                toast.Group = ToastGroup;
+            });
+            _log.LogInformation("Showed a summary toast for {Count} updates: {Apps}", batch.Count, string.Join(", ", names));
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Failed to show the summary toast for {Count} updates", batch.Count);
+        }
     }
 
     public void Show(NotifyMessage notify)
@@ -183,6 +267,9 @@ public sealed class NotificationService : IHostedService
             .AddArgument(ToastAction.ArgumentAction, ToastAction.Defer)
             .AddArgument(ToastAction.ArgumentMinutes, minutes));
     }
+
+    /// <summary>Tag of the summary toast, so a newer summary replaces the previous one instead of stacking.</summary>
+    private const string SummaryTag = "summary";
 
     /// <summary>A toast tag is limited to 64 characters, so the update key is hashed into one.</summary>
     private static string TagFor(string? key)

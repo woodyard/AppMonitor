@@ -130,14 +130,14 @@ Details, including the scan cycle, the update state machine and the IPC message 
 
 | Behaviour | How it is configured | What the user sees |
 | --- | --- | --- |
-| **Optional update** | `Mandatory = 0` | A notification. The user installs when it suits them, or dismisses it; it comes back after `NotificationIntervalMinutes`. |
+| **Optional update** | `Mandatory = 0` | One notification when the update appears, and the tray icon carries a badge with the number of pending updates until it is installed. |
 | **Mandatory update** | `Mandatory = 1`, `DeadlineHours` | The same notification, but deferrals are limited and the update is enforced at the deadline. |
 | **Deferrals** | `MaxDeferrals`, `DeferralOptions` (e.g. `60,240,1440`) | "Remind me in 1 hour / 4 hours / tomorrow", until the deferrals run out or the deadline passes. |
 | **Deadline** | `DeadlineHours` counted from first detection | After it, deferral is refused and the install proceeds. |
 | **Forced close with grace period** | `ProcessNames`, `ForceCloseAtDeadline = 1`, `CloseGracePeriodMinutes` | A warning naming the applications to close, a countdown, then the windows are asked to close and finally terminated. |
-| **Silent install** | `AutoInstall = 1` | Nothing, unless `ShowInstalledNotifications` is on - then a confirmation afterwards. |
+| **Silent install** | `AutoInstall = 1` | Nothing, unless `ShowInstalledNotifications` is on (off by default) - then a confirmation afterwards. |
 | **System vs user context** | `Context = auto \| system \| user` | Machine-wide updates run as LocalSystem; per-user applications (VS Code User Setup, Slack, ...) are installed by the tray agent inside the user's own session. |
-| **Notification cadence** | `NotificationIntervalMinutes` (global, per-app override) | At most one reminder per update per interval; no toast storms. |
+| **Notification style** | `NotificationMode` = `Quiet` (default) or `Reminders`, `NotificationIntervalMinutes` (both global, per-app override) | `Quiet`: one toast per update - several updates found in one scan are collapsed into a single "3 updates available" toast - and after that only a deadline, a close prompt or a failure interrupts. `Reminders`: a reminder every interval while the update is pending. |
 | **Scan cadence** | `ScanIntervalMinutes`, `StartupDelaySeconds`, `ScanOnStartup` | Nothing - scans are silent. |
 
 Applications are defined either fully in the registry, or by referencing an entry in the shipped
@@ -286,7 +286,9 @@ Get-Content "$env:ProgramData\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.S
 ```
 
 The tray icon appears in the notification area of every interactive session; its menu shows the
-pending updates, the last scan time and the effective settings.
+pending updates, the last scan time and the effective settings. While updates are pending the icon
+carries a small terracotta badge with their number (capped at `99+`), so the quiet notification mode
+does not hide that there is something to do.
 
 ### Troubleshooting: run the service in a console
 

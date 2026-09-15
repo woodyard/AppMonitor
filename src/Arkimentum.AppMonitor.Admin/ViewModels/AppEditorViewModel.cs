@@ -209,6 +209,7 @@ public sealed class AppEditorViewModel : ObservableObject
             "CloseGracePeriodMinutes" => "DefaultCloseGracePeriodMinutes",
             "ForceCloseAtDeadline" => "DefaultForceCloseAtDeadline",
             "NotificationIntervalMinutes" => "NotificationIntervalMinutes",
+            "NotificationMode" => "NotificationMode",
             _ => null,
         };
         if (global is not null) return (_globalValue(global), Strings.InheritedFromGlobal);

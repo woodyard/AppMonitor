@@ -44,6 +44,10 @@ public static class PolicyEngine
     public static TimeSpan NotificationIntervalFor(PendingUpdate update, AppPolicy? policy, AgentSettings settings) =>
         policy?.NotificationIntervalMinutes is > 0 and var m ? TimeSpan.FromMinutes(m) : settings.NotificationInterval;
 
+    /// <summary>The app's own notification mode when it sets one, otherwise the global mode.</summary>
+    public static NotificationMode NotificationModeFor(AppPolicy? policy, AgentSettings settings) =>
+        policy?.NotificationMode ?? settings.NotificationMode;
+
     /// <summary>
     /// Merges scan outcomes into <paramref name="state"/>. <paramref name="checkedKeys"/> is the set of (app, context, user)
     /// combinations that were actually checked this round; tracked updates outside that set are left untouched
@@ -121,6 +125,7 @@ public static class PolicyEngine
                 existing.DeferredUntilUtc = null;
                 existing.ForceCloseAtUtc = null;
                 existing.LastNotifiedUtc = null;
+                existing.Announced = false;
                 existing.Dismissed = false;
                 if (sameTarget) existing.FailureCount++;
             }
@@ -130,6 +135,8 @@ public static class PolicyEngine
             existing.LastSeenUtc = now;
             if (versionChanged)
             {
+                // A newer version is a new thing to tell the user about, even in Quiet mode.
+                existing.Announced = false;
                 // A newer version superseded the one that failed: allow automatic retries again.
                 if (existing.State == UpdateState.Failed) { existing.State = UpdateState.Available; existing.FailureCount = 0; existing.LastError = null; }
             }
@@ -202,8 +209,13 @@ public static class PolicyEngine
         if (p.DeferredUntilUtc is { } d && p.DeadlineUtc is { } dl && d > dl) p.DeferredUntilUtc = dl;
     }
 
-    /// <summary>Decides what to do for one tracked update on this tick.</summary>
-    public static PolicyAction Decide(PendingUpdate u, DateTimeOffset now, TimeSpan notificationInterval, bool blockingProcessesRunning)
+    /// <summary>
+    /// Decides what to do for one tracked update on this tick. <paramref name="mode"/> only changes how often the user is
+    /// interrupted, never whether an update is installed or enforced; it defaults to <see cref="NotificationMode.Reminders"/>
+    /// so that callers which do not care about notification volume keep the original cadence.
+    /// </summary>
+    public static PolicyAction Decide(PendingUpdate u, DateTimeOffset now, TimeSpan notificationInterval, bool blockingProcessesRunning,
+        NotificationMode mode = NotificationMode.Reminders)
     {
         switch (u.State)
         {
@@ -214,12 +226,17 @@ public static class PolicyEngine
                 return new PolicyAction(PolicyActionKind.Install);
         }
 
+        var quiet = mode == NotificationMode.Quiet;
         var notificationDue = u.LastNotifiedUtc is null || now - u.LastNotifiedUtc.Value >= notificationInterval;
 
         // A failed install is not retried automatically until the next scan re-evaluates it (see Merge); the user can
-        // still choose "Install now". Remind about the failure at the notification cadence.
+        // still choose "Install now". Reminders repeat the failure at the notification cadence; Quiet reports each
+        // failure once (MarkFailed clears LastNotifiedUtc, so a new failure is announced again).
         if (u.State == UpdateState.Failed)
-            return notificationDue ? new PolicyAction(PolicyActionKind.Notify, NotificationKind.Failed) : PolicyAction.None;
+        {
+            var failureDue = quiet ? u.LastNotifiedUtc is null : notificationDue;
+            return failureDue ? new PolicyAction(PolicyActionKind.Notify, NotificationKind.Failed) : PolicyAction.None;
+        }
 
         if (u.IsPastDeadline(now))
         {
@@ -236,13 +253,18 @@ public static class PolicyEngine
 
         if ((u.AutoInstall || u.InstallRequested) && !blockingProcessesRunning) return new PolicyAction(PolicyActionKind.Install);
 
-        if (!notificationDue) return PolicyAction.None;
-
+        // Both of these need the user to act, so Quiet mode keeps them at the normal cadence.
         if (blockingProcessesRunning && (u.AutoInstall || u.Mandatory || u.InstallRequested || u.State == UpdateState.WaitingForClose))
-            return new PolicyAction(PolicyActionKind.PromptClose, NotificationKind.CloseApplications);
+            return notificationDue ? new PolicyAction(PolicyActionKind.PromptClose, NotificationKind.CloseApplications) : PolicyAction.None;
 
-        var approaching = u.Mandatory && u.DeadlineUtc is { } dl && dl - now <= DeadlineWarningWindow;
-        return new PolicyAction(PolicyActionKind.Notify, approaching ? NotificationKind.DeadlineApproaching : NotificationKind.UpdateAvailable);
+        if (u.Mandatory && u.DeadlineUtc is { } dl && dl - now <= DeadlineWarningWindow)
+            return notificationDue ? new PolicyAction(PolicyActionKind.Notify, NotificationKind.DeadlineApproaching) : PolicyAction.None;
+
+        // Quiet mode announces an update once. Everything that moved LastNotifiedUtc afterwards (a deferral running out,
+        // a dismissal) must not produce a second toast; only the cases above may interrupt again.
+        if (quiet && u.Announced) return PolicyAction.None;
+
+        return notificationDue ? new PolicyAction(PolicyActionKind.Notify, NotificationKind.UpdateAvailable) : PolicyAction.None;
     }
 
     /// <summary>Applies a user deferral. Returns false (and leaves the update untouched) when the request is not allowed.</summary>

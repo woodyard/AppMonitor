@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Windows.Threading;
 using Arkimentum.AppMonitor.Ipc;
 using Arkimentum.AppMonitor.Models;
 using Microsoft.Extensions.Hosting;
@@ -15,16 +16,26 @@ namespace Arkimentum.AppMonitor.Tray.Services;
 /// </summary>
 public sealed class AgentStateStore : IHostedService
 {
+    /// <summary>
+    /// "Update all" is greyed out until the service confirms the requests. If it never does - a dropped connection, a
+    /// busy service - the button comes back after this long instead of staying dead.
+    /// </summary>
+    private static readonly TimeSpan UpdateAllPendingTimeout = TimeSpan.FromSeconds(30);
+
     private readonly ILogger<AgentStateStore> _log;
     private readonly IpcClientService _ipc;
+    private readonly Dispatcher _dispatcher;
     private readonly Dictionary<string, string> _localStatus = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _updateAllKeys = new(StringComparer.Ordinal);
+    private DispatcherTimer? _updateAllTimeout;
 
     private List<PendingUpdate> _updates = [];
 
-    public AgentStateStore(ILogger<AgentStateStore> log, IpcClientService ipc)
+    public AgentStateStore(ILogger<AgentStateStore> log, IpcClientService ipc, Dispatcher dispatcher)
     {
         _log = log;
         _ipc = ipc;
+        _dispatcher = dispatcher;
     }
 
     /// <summary>Raised on the UI thread whenever anything the UI shows has changed.</summary>
@@ -57,6 +68,57 @@ public sealed class AgentStateStore : IHostedService
         _updates.Where(u => u.State is not (UpdateState.Scheduled or UpdateState.Installing or UpdateState.Installed) &&
                             GetLocalStatus(u.Key) is null)
                 .ToList();
+
+    /// <summary>Updates the service is already working on: queued, waiting for applications to close, or installing.</summary>
+    public IReadOnlyList<PendingUpdate> UpdatesInProgress =>
+        _updates.Where(u => u.State is UpdateState.Scheduled or UpdateState.WaitingForClose or UpdateState.Installing).ToList();
+
+    /// <summary>The update being installed right now (the first by name when several are), or null. Names the progress banner and the tooltip.</summary>
+    public PendingUpdate? CurrentInstall =>
+        _updates.Where(u => u.State == UpdateState.Installing)
+                .OrderBy(u => u.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .FirstOrDefault();
+
+    /// <summary>
+    /// True from the moment the user pressed "Update all" until the service's next state message shows that none of the
+    /// requested updates can be started any more. Without it the button stays live for the whole round trip and invites
+    /// a second press that queues everything twice.
+    /// </summary>
+    public bool UpdateAllPending => _updateAllKeys.Count > 0;
+
+    /// <summary>Remembers what "Update all" just requested so the button can grey out before the service answers.</summary>
+    public void BeginUpdateAll(IEnumerable<string> keys)
+    {
+        _updateAllKeys.Clear();
+        foreach (var key in keys) _updateAllKeys.Add(key);
+        if (_updateAllKeys.Count == 0) return;
+
+        _updateAllTimeout ??= new DispatcherTimer(DispatcherPriority.Normal, _dispatcher) { Interval = UpdateAllPendingTimeout };
+        _updateAllTimeout.Tick -= OnUpdateAllTimeout;
+        _updateAllTimeout.Tick += OnUpdateAllTimeout;
+        _updateAllTimeout.Stop();
+        _updateAllTimeout.Start();
+        Changed?.Invoke();
+    }
+
+    private void OnUpdateAllTimeout(object? sender, EventArgs e)
+    {
+        _updateAllTimeout?.Stop();
+        if (_updateAllKeys.Count == 0) return;
+        _log.LogWarning("Update all: the service did not confirm {Count} request(s) within {Seconds:F0} s; re-enabling the button",
+            _updateAllKeys.Count, UpdateAllPendingTimeout.TotalSeconds);
+        _updateAllKeys.Clear();
+        Changed?.Invoke();
+    }
+
+    /// <summary>Drops the pending flag once none of the requested updates is installable any more.</summary>
+    private void SettleUpdateAll()
+    {
+        if (_updateAllKeys.Count == 0) return;
+        if (InstallableUpdates.Any(u => _updateAllKeys.Contains(u.Key))) return;
+        _updateAllKeys.Clear();
+        _updateAllTimeout?.Stop();
+    }
 
     /// <summary>True when something needs the user now: a mandatory update past its deadline or a forced close pending.</summary>
     public bool NeedsAttention
@@ -108,7 +170,13 @@ public sealed class AgentStateStore : IHostedService
     private void OnConnectionChanged(bool connected)
     {
         IsConnected = connected;
-        if (!connected) ScanInProgress = false;
+        if (!connected)
+        {
+            ScanInProgress = false;
+            // Nothing will confirm the requests now; the button is disabled by IsConnected anyway.
+            _updateAllKeys.Clear();
+            _updateAllTimeout?.Stop();
+        }
         Changed?.Invoke();
     }
 
@@ -137,6 +205,8 @@ public sealed class AgentStateStore : IHostedService
                 .ToList();
             foreach (var key in stale) _localStatus.Remove(key);
         }
+
+        SettleUpdateAll();
 
         _log.LogInformation("State: {Count} update(s), scanInProgress={Scanning}, service={ServiceVersion}",
             _updates.Count, ScanInProgress, ServiceVersion ?? "?");

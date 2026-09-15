@@ -91,14 +91,15 @@ All of these live directly under `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` 
 | Value | Type | Default | Range | Meaning |
 | --- | --- | --- | --- | --- |
 | `ScanIntervalMinutes` | DWORD | 240 | 5-10080 | Minutes between update scans. |
-| `NotificationIntervalMinutes` | DWORD | 240 | 1-10080 | Minutes before the same pending update is announced again. |
+| `NotificationIntervalMinutes` | DWORD | 240 | 1-10080 | Minutes before the same pending update is announced again. Only used when `NotificationMode` is `Reminders`. |
 | `StartupDelaySeconds` | DWORD | 120 | 0-3600 | Delay after service start before the first scan. |
 | `ScanOnStartup` | DWORD | 1 | 0/1 | Scan once when the service starts, in addition to the interval. |
 | `WingetEnabled` | DWORD | 1 | 0/1 | Process applications with `Source=winget`. |
 | `WebSourcesEnabled` | DWORD | 1 | 0/1 | Process applications with `Source=web`. |
 | `LaunchTrayAgent` | DWORD | 1 | 0/1 | Service launches `Arkimentum.AppMonitor.Tray.exe` into interactive sessions. |
 | `NotificationsEnabled` | DWORD | 1 | 0/1 | Tray agent shows toast notifications. |
-| `ShowInstalledNotifications` | DWORD | 1 | 0/1 | Notify the user after a successful install. |
+| `NotificationMode` | SZ | `Quiet` | `Quiet`, `Reminders` | `Quiet` announces an update once and afterwards only interrupts when the user has to act (deadline approaching, applications must be closed, install failed); no "installing" toast. `Reminders` repeats every `NotificationIntervalMinutes`. |
+| `ShowInstalledNotifications` | DWORD | 0 | 0/1 | Notify the user after a successful install. Changed in 1.2: this was on by default up to 1.1.1. |
 | `LogLevel` | SZ | `Information` | `Trace`, `Debug`, `Information`, `Warning`, `Error` | Minimum level written to the log files. |
 | `LogDirectory` | SZ / EXPAND_SZ | `%ProgramData%\Arkimentum\AppMonitor\Logs` | full path | Service log folder. Must be writable by LocalSystem. Does not affect the tray agent. |
 | `LogRetentionDays` | DWORD | 30 | 1-3650 | Log files older than this are deleted. |
@@ -264,6 +265,7 @@ global `Default...` value. The catalog never supplies them.
 | `ForceCloseAtDeadline` | DWORD | `DefaultForceCloseAtDeadline` | 0/1 | Terminate the blocking processes once the deadline has passed and the grace period has elapsed. |
 | `MinimumVersion` | SZ | catalog value | version | Only report an update when the installed version is below this one. |
 | `NotificationIntervalMinutes` | DWORD | *(unset = use the global value)* | minutes | Per-application override of the notification cadence. Not range-clamped. |
+| `NotificationMode` | SZ | *(unset = use the global value)* | `Quiet`, `Reminders` | Per-application override of the notification style. An unreadable value falls back to the global mode. |
 
 ## The flat `AppList` format
 
@@ -349,6 +351,7 @@ $root = 'HKLM:\SOFTWARE\Arkimentum\AppMonitor'
 New-Item -Path $root -Force | Out-Null
 Set-ItemProperty -Path $root -Name ScanIntervalMinutes         -Value 240
 Set-ItemProperty -Path $root -Name NotificationIntervalMinutes -Value 240
+Set-ItemProperty -Path $root -Name NotificationMode            -Value 'Quiet'
 Set-ItemProperty -Path $root -Name LogLevel                    -Value 'Information'
 Set-ItemProperty -Path $root -Name DefaultDeadlineHours        -Value 72
 Set-ItemProperty -Path $root -Name DefaultDeferralOptions      -Value '60,240,1440'

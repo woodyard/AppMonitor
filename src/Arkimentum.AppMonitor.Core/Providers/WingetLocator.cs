@@ -23,9 +23,29 @@ public static partial class WingetLocator
     private const string ExeName = "winget.exe";
 
     private static readonly object Gate = new();
-    private static string? _cachedPath;
-    private static string? _cachedForExplicit;
-    private static bool _resolved;
+
+    // One cache slot per context. A single shared slot let a user-context lookup poison the SYSTEM one: the service
+    // resolved winget for "user" (which walks PATH), cached another user's per-user alias, and every SYSTEM-context
+    // call afterwards tried to run C:\Users\<someone>\AppData\Local\Microsoft\WindowsApps\winget.exe and failed
+    // with error 1920 (seen on a device right after a self-update; PATH there carried that user's WindowsApps folder).
+    private sealed class Slot
+    {
+        public bool Resolved;
+        public string? Path;
+        public string? Explicit;
+    }
+
+    private static readonly Slot UserSlot = new();
+    private static readonly Slot SystemSlot = new();
+
+    /// <summary>True when this process runs as LocalSystem; then every lookup is a SYSTEM lookup, whatever the caller says.</summary>
+    private static readonly bool ProcessIsSystem = DetectSystem();
+
+    private static bool DetectSystem()
+    {
+        try { using var id = System.Security.Principal.WindowsIdentity.GetCurrent(); return id.IsSystem; }
+        catch { return false; }
+    }
 
     [GeneratedRegex(@"^Microsoft\.DesktopAppInstaller_(?<version>[0-9][0-9.]*)_(?<arch>x64|arm64|x86)__" + PackageFamilySuffix + "$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
@@ -36,9 +56,12 @@ public static partial class WingetLocator
     {
         lock (Gate)
         {
-            _cachedPath = null;
-            _cachedForExplicit = null;
-            _resolved = false;
+            foreach (var slot in new[] { UserSlot, SystemSlot })
+            {
+                slot.Path = null;
+                slot.Explicit = null;
+                slot.Resolved = false;
+            }
         }
     }
 
@@ -51,17 +74,34 @@ public static partial class WingetLocator
     /// <param name="explicitPath">Optional configured override; used first when it exists.</param>
     public static string? Find(ILogger logger, bool isSystem, string? explicitPath = null)
     {
+        isSystem |= ProcessIsSystem;
         lock (Gate)
         {
-            if (_resolved && string.Equals(_cachedForExplicit, explicitPath, StringComparison.OrdinalIgnoreCase))
-                return _cachedPath;
+            var slot = isSystem ? SystemSlot : UserSlot;
+            // A cached path is re-checked: the App Installer package folder changes name with every Store update.
+            if (slot.Resolved && string.Equals(slot.Explicit, explicitPath, StringComparison.OrdinalIgnoreCase) &&
+                (slot.Path is null || File.Exists(slot.Path)))
+                return slot.Path;
 
             var path = Locate(logger, isSystem, explicitPath);
-            _cachedPath = path;
-            _cachedForExplicit = explicitPath;
-            _resolved = true;
+            slot.Path = path;
+            slot.Explicit = explicitPath;
+            slot.Resolved = true;
             return path;
         }
+    }
+
+    /// <summary>
+    /// True for a path inside a user profile (C:\Users\...). LocalSystem must never run a per-user App Execution Alias
+    /// found there: it is a reparse point registered for that user only, and starting it from SYSTEM fails with
+    /// ERROR_CANT_ACCESS_FILE (1920). The SYSTEM profile under C:\Windows\System32\config\systemprofile is not affected.
+    /// </summary>
+    internal static bool IsUnderUserProfiles(string path)
+    {
+        var systemDrive = Environment.GetEnvironmentVariable("SystemDrive");
+        if (string.IsNullOrWhiteSpace(systemDrive)) systemDrive = "C:";
+        var usersRoot = Path.Combine(systemDrive + "\\", "Users") + "\\";
+        return path.StartsWith(usersRoot, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? Locate(ILogger logger, bool isSystem, string? explicitPath)
@@ -90,6 +130,7 @@ public static partial class WingetLocator
 
         foreach (var candidate in UserCandidates())
         {
+            if (isSystem && IsUnderUserProfiles(candidate)) continue;
             probed.Add(candidate);
             if (File.Exists(candidate))
             {
@@ -99,6 +140,11 @@ public static partial class WingetLocator
         }
 
         var onPath = FindOnPath(probed);
+        if (onPath is not null && isSystem && IsUnderUserProfiles(onPath))
+        {
+            logger.LogDebug("Ignoring winget on PATH at {Path}: a per-user alias is not usable from SYSTEM.", onPath);
+            onPath = null;
+        }
         if (onPath is not null)
         {
             logger.LogDebug("winget located on PATH: {Path}", onPath);

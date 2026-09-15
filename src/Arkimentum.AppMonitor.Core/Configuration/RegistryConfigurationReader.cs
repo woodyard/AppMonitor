@@ -54,6 +54,7 @@ public sealed class RegistryConfigurationReader
         {
             ScanIntervalMinutes = r.Int("ScanIntervalMinutes", defaults.ScanIntervalMinutes, 5, 10080),
             NotificationIntervalMinutes = r.Int("NotificationIntervalMinutes", defaults.NotificationIntervalMinutes, 1, 10080),
+            NotificationMode = ParseNotificationMode(r.String("NotificationMode", defaults.NotificationMode.ToString()), defaults.NotificationMode),
             StartupDelaySeconds = r.Int("StartupDelaySeconds", defaults.StartupDelaySeconds, 0, 3600),
             ScanOnStartup = r.Bool("ScanOnStartup", defaults.ScanOnStartup),
             WingetEnabled = r.Bool("WingetEnabled", defaults.WingetEnabled),
@@ -265,6 +266,7 @@ public sealed class RegistryConfigurationReader
             ForceCloseAtDeadline = r.Bool("ForceCloseAtDeadline", global.DefaultForceCloseAtDeadline),
             MinimumVersion = r.OptString("MinimumVersion") ?? baseline.MinimumVersion,
             NotificationIntervalMinutes = r.OptInt("NotificationIntervalMinutes"),
+            NotificationMode = r.OptString("NotificationMode") is { } modeText ? ParseNotificationMode(modeText, global.NotificationMode) : null,
         };
 
         if (app.Source == UpdateSource.Winget && string.IsNullOrWhiteSpace(app.WingetId))
@@ -279,6 +281,15 @@ public sealed class RegistryConfigurationReader
         }
         return app;
     }
+
+    /// <summary>Unknown text falls back instead of throwing: a typo in a policy must not take the whole configuration down.</summary>
+    private static NotificationMode ParseNotificationMode(string value, NotificationMode fallback) =>
+        value.Trim().ToLowerInvariant() switch
+        {
+            "quiet" => NotificationMode.Quiet,
+            "reminders" or "reminder" => NotificationMode.Reminders,
+            _ => fallback,
+        };
 
     private static string ExpandPath(string value, string fallback)
     {

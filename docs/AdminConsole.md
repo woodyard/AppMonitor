@@ -71,7 +71,7 @@ groups them:
 | Group | Contains |
 | --- | --- |
 | Scanning | `ScanIntervalMinutes`, `ScanOnStartup`, `StartupDelaySeconds`, `PolicyTickSeconds`, `CheckTimeoutMinutes`, `InstallTimeoutMinutes` |
-| Notifications | `NotificationsEnabled`, `NotificationIntervalMinutes`, `ShowInstalledNotifications`, `LaunchTrayAgent` |
+| Notifications | `NotificationsEnabled`, `NotificationMode`, `NotificationIntervalMinutes`, `ShowInstalledNotifications`, `LaunchTrayAgent` |
 | Default update behaviour | `DefaultMandatory`, `DefaultDeadlineHours`, `DefaultMaxDeferrals`, `DefaultDeferralOptions`, `DefaultAutoInstall`, `DefaultCloseGracePeriodMinutes`, `DefaultForceCloseAtDeadline` |
 | Sources | `WingetEnabled`, `WebSourcesEnabled`, `UseCatalog`, `EnableAllCatalogApps`, `CatalogPath`, `ProxyUrl`, `WingetGlobalArgs`, `WingetIncludeUnknown`, `WingetPath`, and the prerequisite settings `AutoInstallPrerequisites`, `PrerequisiteCheckIntervalHours`, `WingetMinimumVersion` |
 | Logging and storage | `LogLevel`, `LogDirectory`, `LogRetentionDays`, `MaxLogFileSizeMB`, `StateDirectory` |
@@ -95,7 +95,7 @@ Changes apply without a service restart: the service re-reads the registry on ev
   the web-source fields (`VersionUrl`, `VersionRegex`, `DownloadUrl`, `InstallerType`,
   `InstallerArgs`, `Sha256`/`Sha256Url`), the detection fields and the behaviour fields
   (`Mandatory`, `DeadlineHours`, `MaxDeferrals`, `DeferralOptions`, `AutoInstall`, `ProcessNames`,
-  `CloseGracePeriodMinutes`, `ForceCloseAtDeadline`, `NotificationIntervalMinutes`).
+  `CloseGracePeriodMinutes`, `ForceCloseAtDeadline`, `NotificationIntervalMinutes`, `NotificationMode`).
 - **Test detection** - runs the real check for that one application (the winget query or the web
   request plus the version regex) **as the administrator running the console**, and shows what it
   found: installed version, available version, and the error if it failed. It is a check only - it

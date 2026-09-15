@@ -126,6 +126,8 @@ public sealed class SettingsSummary
 {
     public int ScanIntervalMinutes { get; set; }
     public int NotificationIntervalMinutes { get; set; }
+    /// <summary>Optional (added after 1.1.1): lets the tray collapse a burst of "update available" toasts in Quiet mode. An older service omits it and the tray assumes the default.</summary>
+    public NotificationMode NotificationMode { get; set; } = NotificationMode.Quiet;
     public bool WingetEnabled { get; set; }
     public bool WebSourcesEnabled { get; set; }
     public bool NotificationsEnabled { get; set; }

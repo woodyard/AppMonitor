@@ -341,6 +341,125 @@ public class PolicyEngineTests
         Assert.Equal(PolicyActionKind.Notify, PolicyEngine.Decide(u, T0.AddHours(4), Interval, false).Kind);
     }
 
+    // ---------------------------------------------------------------- quiet notifications
+
+    private const NotificationMode Quiet = NotificationMode.Quiet;
+    private const NotificationMode Reminders = NotificationMode.Reminders;
+
+    /// <summary>Stands in for the coordinator, which records that the user was told after the toast was delivered.</summary>
+    private static void MarkNotified(PendingUpdate u, DateTimeOffset at)
+    {
+        u.LastNotifiedUtc = at;
+        u.Announced = true;
+    }
+
+    [Fact]
+    public void Quiet_announces_an_update_once_and_then_stays_silent()
+    {
+        var (_, u) = Detect(Policy(), T0);
+        var first = PolicyEngine.Decide(u, T0, Interval, false, Quiet);
+        Assert.Equal(PolicyActionKind.Notify, first.Kind);
+        Assert.Equal(NotificationKind.UpdateAvailable, first.Notification);
+
+        MarkNotified(u, T0);
+        Assert.Equal(PolicyActionKind.None, PolicyEngine.Decide(u, T0.AddHours(4), Interval, false, Quiet).Kind);
+        Assert.Equal(PolicyActionKind.None, PolicyEngine.Decide(u, T0.AddDays(7), Interval, false, Quiet).Kind);
+    }
+
+    [Fact]
+    public void Reminders_repeats_the_same_update_after_the_interval()
+    {
+        var (_, u) = Detect(Policy(), T0);
+        Assert.Equal(PolicyActionKind.Notify, PolicyEngine.Decide(u, T0, Interval, false, Reminders).Kind);
+        MarkNotified(u, T0);
+        Assert.Equal(PolicyActionKind.None, PolicyEngine.Decide(u, T0.AddHours(1), Interval, false, Reminders).Kind);
+        Assert.Equal(PolicyActionKind.Notify, PolicyEngine.Decide(u, T0.AddHours(4), Interval, false, Reminders).Kind);
+    }
+
+    [Fact]
+    public void Quiet_still_warns_when_the_deadline_approaches()
+    {
+        var (_, u) = Detect(Policy(mandatory: true, deadlineHours: 30), T0);
+        MarkNotified(u, T0);
+        Assert.Equal(PolicyActionKind.None, PolicyEngine.Decide(u, T0.AddHours(1), Interval, false, Quiet).Kind);
+
+        var warning = PolicyEngine.Decide(u, T0.AddHours(7), Interval, false, Quiet);
+        Assert.Equal(PolicyActionKind.Notify, warning.Kind);
+        Assert.Equal(NotificationKind.DeadlineApproaching, warning.Notification);
+    }
+
+    [Fact]
+    public void Quiet_still_prompts_to_close_blocking_applications()
+    {
+        var (_, u) = Detect(Policy(mandatory: true, deadlineHours: 30, processes: "chrome"), T0);
+        MarkNotified(u, T0);
+        var prompt = PolicyEngine.Decide(u, T0.AddHours(7), Interval, blockingProcessesRunning: true, Quiet);
+        Assert.Equal(PolicyActionKind.PromptClose, prompt.Kind);
+        Assert.Equal(NotificationKind.CloseApplications, prompt.Notification);
+    }
+
+    [Fact]
+    public void Quiet_reports_a_failure_once_per_failure()
+    {
+        var (_, u) = Detect(Policy(), T0);
+        MarkNotified(u, T0);
+        PolicyEngine.MarkFailed(u, "boom", T0.AddMinutes(1));
+
+        var reported = PolicyEngine.Decide(u, T0.AddMinutes(2), Interval, false, Quiet);
+        Assert.Equal(PolicyActionKind.Notify, reported.Kind);
+        Assert.Equal(NotificationKind.Failed, reported.Notification);
+
+        u.LastNotifiedUtc = T0.AddMinutes(2);
+        Assert.Equal(PolicyActionKind.None, PolicyEngine.Decide(u, T0.AddHours(8), Interval, false, Quiet).Kind);
+        // Reminders keeps nagging about the same failure.
+        Assert.Equal(PolicyActionKind.Notify, PolicyEngine.Decide(u, T0.AddHours(8), Interval, false, Reminders).Kind);
+    }
+
+    [Fact]
+    public void Quiet_does_not_re_announce_when_a_deferral_expires()
+    {
+        var (_, u) = Detect(Policy(), T0);
+        MarkNotified(u, T0);
+        Assert.True(PolicyEngine.TryDefer(u, 60, T0.AddMinutes(1), out _));
+        Assert.Equal(PolicyActionKind.None, PolicyEngine.Decide(u, T0.AddMinutes(30), Interval, false, Quiet).Kind);
+        Assert.Equal(PolicyActionKind.None, PolicyEngine.Decide(u, T0.AddHours(6), Interval, false, Quiet).Kind);
+    }
+
+    [Fact]
+    public void Quiet_does_not_re_announce_after_a_dismissal()
+    {
+        var (_, u) = Detect(Policy(), T0);
+        MarkNotified(u, T0);
+        PolicyEngine.Dismiss(u, T0.AddMinutes(1));
+        Assert.Equal(PolicyActionKind.None, PolicyEngine.Decide(u, T0.AddHours(6), Interval, false, Quiet).Kind);
+    }
+
+    [Fact]
+    public void Quiet_announces_a_newer_version_again()
+    {
+        var policy = Policy();
+        var (state, u) = Detect(policy, T0);
+        MarkNotified(u, T0);
+
+        var newer = new ScanOutcome(Result(available: "3.0"), policy, InstallContext.System, null);
+        PolicyEngine.Merge(state, [newer], new HashSet<string> { newer.Key }, T0.AddDays(30));
+
+        Assert.False(u.Announced);
+        Assert.Equal(PolicyActionKind.Notify, PolicyEngine.Decide(u, T0.AddDays(30), Interval, false, Quiet).Kind);
+    }
+
+    [Fact]
+    public void NotificationModeFor_prefers_the_application_override()
+    {
+        var settings = new AgentSettings();
+        Assert.Equal(NotificationMode.Quiet, settings.NotificationMode);
+        Assert.Equal(NotificationMode.Quiet, PolicyEngine.NotificationModeFor(null, settings));
+        Assert.Equal(NotificationMode.Quiet, PolicyEngine.NotificationModeFor(Policy(), settings));
+        Assert.Equal(NotificationMode.Reminders, PolicyEngine.NotificationModeFor(Policy() with { NotificationMode = Reminders }, settings));
+        Assert.Equal(NotificationMode.Quiet,
+            PolicyEngine.NotificationModeFor(Policy() with { NotificationMode = Quiet }, settings with { NotificationMode = Reminders }));
+    }
+
     [Fact]
     public void User_context_updates_are_keyed_per_user()
     {

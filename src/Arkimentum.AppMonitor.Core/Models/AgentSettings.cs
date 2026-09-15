@@ -16,8 +16,10 @@ public sealed record AgentSettings
 
     /// <summary>Minutes between update scans.</summary>
     public int ScanIntervalMinutes { get; init; } = 240;
-    /// <summary>Minutes between repeated notifications for the same pending update.</summary>
+    /// <summary>Minutes between repeated notifications for the same pending update (only used in <see cref="Models.NotificationMode.Reminders"/> mode).</summary>
     public int NotificationIntervalMinutes { get; init; } = 240;
+    /// <summary>How insistent notifications are; Quiet announces an update once, Reminders repeats every <see cref="NotificationIntervalMinutes"/>.</summary>
+    public NotificationMode NotificationMode { get; init; } = NotificationMode.Quiet;
     /// <summary>Seconds to wait after service start before the first scan.</summary>
     public int StartupDelaySeconds { get; init; } = 120;
     public bool ScanOnStartup { get; init; } = true;
@@ -26,7 +28,8 @@ public sealed record AgentSettings
     /// <summary>Service launches the tray agent into interactive sessions when it is not running.</summary>
     public bool LaunchTrayAgent { get; init; } = true;
     public bool NotificationsEnabled { get; init; } = true;
-    public bool ShowInstalledNotifications { get; init; } = true;
+    /// <summary>Confirmation toast after a successful install. Off by default: a silent update needs no applause.</summary>
+    public bool ShowInstalledNotifications { get; init; }
     /// <summary>Trace, Debug, Information, Warning, Error.</summary>
     public string LogLevel { get; init; } = "Information";
     public string LogDirectory { get; init; } = DefaultLogDirectory;

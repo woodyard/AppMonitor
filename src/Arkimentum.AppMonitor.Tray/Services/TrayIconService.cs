@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -34,10 +36,17 @@ public sealed class TrayIconService : IHostedService
     private readonly CommandLineOptions _options;
     private readonly Dispatcher _dispatcher;
 
+    /// <summary>Brand terracotta: the badge has to read as "attention" against both light and dark taskbars.</summary>
+    private static readonly Brush BadgeFill = Freeze(new SolidColorBrush(Color.FromRgb(0xc7, 0x62, 0x39)));
+    private static readonly Brush BadgeText = Brushes.White;
+    private static readonly Typeface BadgeTypeface = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+
     private TaskbarIcon? _icon;
     private MenuItem? _checkNowItem;
     private MenuItem? _updateAllItem;
     private IconVariant? _currentVariant;
+    private int _currentBadge = -1;
+    private int _iconSize = 16;
     private ImageSource? _normal;
     private ImageSource? _updates;
     private ImageSource? _attention;
@@ -62,7 +71,8 @@ public sealed class TrayIconService : IHostedService
     {
         _dispatcher.Invoke(Create);
         _store.Changed += Refresh;
-        Refresh();
+        // Refresh renders the badge and touches the icon, both of which belong to the UI thread.
+        _dispatcher.Invoke(Refresh);
         return Task.CompletedTask;
     }
 
@@ -79,7 +89,7 @@ public sealed class TrayIconService : IHostedService
 
     private void Create()
     {
-        var size = TrayIconPixelSize();
+        var size = _iconSize = TrayIconPixelSize();
         _normal = LoadIcon("tray-normal", size);
         _updates = LoadIcon("tray-updates", size);
         _attention = LoadIcon("tray-attention", size);
@@ -118,7 +128,8 @@ public sealed class TrayIconService : IHostedService
         _updateAllItem = new MenuItem
         {
             Header = Strings.UpdateAll,
-            Command = new RelayCommand(UpdateAll, () => _store.IsConnected && _store.InstallableUpdates.Count > 0),
+            Command = new RelayCommand(UpdateAll,
+                () => _store.IsConnected && !_store.UpdateAllPending && _store.InstallableUpdates.Count > 0),
         };
         menu.Items.Add(_updateAllItem);
         menu.Items.Add(new Separator());
@@ -162,23 +173,30 @@ public sealed class TrayIconService : IHostedService
             ? IconVariant.Normal
             : _store.NeedsAttention ? IconVariant.Attention : IconVariant.Updates;
 
-        if (_currentVariant != variant)
+        // The badge is painted onto the icon at runtime, so it is re-rendered only when the number or the variant moves.
+        var badge = variant == IconVariant.Normal ? 0 : count;
+        if (_currentVariant != variant || _currentBadge != badge)
         {
             _currentVariant = variant;
-            _icon.IconSource = variant switch
+            _currentBadge = badge;
+            var baseIcon = variant switch
             {
                 IconVariant.Attention => _attention,
                 IconVariant.Updates => _updates,
                 _ => _normal,
             };
-            _log.LogDebug("Tray icon variant is now {Variant}", variant);
+            _icon.IconSource = badge > 0 && baseIcon is not null ? WithBadge(baseIcon, badge, _iconSize) : baseIcon;
+            _log.LogDebug("Tray icon variant is now {Variant} with badge {Badge}", variant, badge);
         }
 
+        // A running install is the most useful thing the tooltip can say; the counts come back when it is done.
         var tooltip = !_store.IsConnected
             ? Strings.TrayTooltipDisconnected
-            : count == 0
-                ? Strings.TrayTooltipUpToDate
-                : Strings.TrayTooltipUpdates(count);
+            : _store.CurrentInstall is { } installing
+                ? Strings.TrayTooltipInstalling(installing.DisplayName)
+                : count == 0
+                    ? Strings.TrayTooltipUpToDate
+                    : Strings.TrayTooltipUpdates(count);
         if (!string.Equals(_icon.ToolTipText, tooltip, StringComparison.Ordinal)) _icon.ToolTipText = tooltip;
 
         (_checkNowItem?.Command as RelayCommand)?.RaiseCanExecuteChanged();
@@ -194,7 +212,44 @@ public sealed class TrayIconService : IHostedService
         var updates = _store.InstallableUpdates;
         if (updates.Count == 0) return;
         _log.LogInformation("User chose Update all from the tray menu: {Count} update(s)", updates.Count);
-        _ = _ipc.InstallAllAsync(updates.Select(u => u.Key).ToList());
+        var keys = updates.Select(u => u.Key).ToList();
+        _store.BeginUpdateAll(keys);
+        _ = _ipc.InstallAllAsync(keys);
+    }
+
+    /// <summary>
+    /// Draws the number of pending updates onto the icon as a round badge in the lower right corner. The composite is
+    /// rendered at exactly the notification area's pixel size (and at 96 dpi, so one drawing unit is one device pixel)
+    /// to keep the glyph as crisp as the .ico frame it started from.
+    /// </summary>
+    private static ImageSource WithBadge(ImageSource baseIcon, int count, int size)
+    {
+        var text = count > 99 ? "99+" : count.ToString(CultureInfo.InvariantCulture);
+        var diameter = size * 0.62;
+        var centre = new Point(size - diameter / 2.0, size - diameter / 2.0);
+        // Three characters have to fit into the same circle as one, so the type shrinks with the digit count.
+        var emSize = diameter * text.Length switch { 1 => 0.68, 2 => 0.56, _ => 0.42 };
+
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+        {
+            dc.DrawImage(baseIcon, new Rect(0, 0, size, size));
+            // A thin light ring separates the badge from whatever part of the glyph sits underneath it.
+            dc.DrawEllipse(BadgeFill, new Pen(Brushes.White, Math.Max(1.0, size / 16.0)), centre, diameter / 2.0, diameter / 2.0);
+            var label = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, BadgeTypeface, emSize, BadgeText, 1.0);
+            dc.DrawText(label, new Point(centre.X - label.Width / 2.0, centre.Y - label.Height / 2.0));
+        }
+
+        var bitmap = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(visual);
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    private static Brush Freeze(Brush brush)
+    {
+        brush.Freeze();
+        return brush;
     }
 
     /// <summary>Picks the frame of the .ico that matches the notification area at the current system DPI.</summary>

@@ -41,6 +41,12 @@ public sealed class PendingUpdate
     public int FailureCount { get; set; }
     /// <summary>Set when the user chose "Dismiss" on a non-mandatory update; re-notified after the interval.</summary>
     public bool Dismissed { get; set; }
+    /// <summary>
+    /// Set once the user has been told this update exists. In <see cref="NotificationMode.Quiet"/> that toast is shown
+    /// only once per update, so this flag - not <see cref="LastNotifiedUtc"/>, which deferrals and prompts also move -
+    /// decides whether the availability toast may be shown again. Reset when a new version supersedes this one.
+    /// </summary>
+    public bool Announced { get; set; }
     /// <summary>Set when the user asked to install; keeps the intent alive while blocking apps are being closed.</summary>
     public bool InstallRequested { get; set; }
 

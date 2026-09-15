@@ -32,6 +32,9 @@ public static class Strings
             ? ProductName + " — 1 update available"
             : $"{ProductName} — {count} updates available";
 
+    /// <summary>Tooltip while an install is running, so the user sees progress without opening the window.</summary>
+    public static string TrayTooltipInstalling(string app) => $"{ProductName} — installing {app}…";
+
     // ---------------------------------------------------------------- main window
     public const string MainWindowTitle = ProductName;
     public const string MainHeaderSubtitle = "Keeps your applications up to date";
@@ -40,6 +43,21 @@ public static class Strings
     /// <summary>"Update all (3)" - the count is the number of updates the button will queue.</summary>
     public static string UpdateAllCount(int count) => count > 0 ? $"{UpdateAll} ({count})" : UpdateAll;
     public const string Checking = "Checking…";
+
+    // ---- progress banner: shown while the service works through queued updates
+    /// <summary>Headline while one update installs, e.g. "Installing 7-Zip…".</summary>
+    public static string ProgressInstalling(string app) => $"Installing {app}…";
+    /// <summary>Headline while updates are queued but none has started yet.</summary>
+    public const string ProgressPreparing = "Preparing updates…";
+    /// <summary>Headline while the user still has to close an application before the install can start.</summary>
+    public const string ProgressWaitingForClose = "Waiting for applications to close…";
+
+    /// <summary>
+    /// The tail of the progress line, e.g. "(1 of 6 done, 4 queued)". Only added when the round holds more than one
+    /// update; a single install needs no scoreboard.
+    /// </summary>
+    public static string ProgressCounts(int done, int total, int queued) =>
+        queued > 0 ? $"({done} of {total} done, {queued} queued)" : $"({done} of {total} done)";
     public const string StatusDisconnected = "Service not connected";
     public const string DisconnectedBanner = "Waiting for the Arkimentum AppMonitor service…";
     public const string DisconnectedBannerDetail =
@@ -133,6 +151,17 @@ public static class Strings
     public const string ToastButtonCloseAndUpdate = "Close apps and update";
 
     public static string ToastButtonDefer(string duration) => $"Defer {duration}";
+
+    /// <summary>Title of the toast that stands in for several "update available" toasts from the same scan.</summary>
+    public static string ToastSummaryTitle(int count) => $"{count} updates available";
+
+    /// <summary>Body of the summary toast: the application names, with an overflow tail when there are many.</summary>
+    public static string ToastSummaryBody(IReadOnlyList<string> names, int shown)
+    {
+        var listed = string.Join(", ", names.Take(shown));
+        var rest = names.Count - shown;
+        return rest > 0 ? $"{listed} and {rest} more are ready to install." : $"{listed} are ready to install.";
+    }
 
     // ---------------------------------------------------------------- user-context execution
     public const string UserInstallPreparing = "Preparing…";

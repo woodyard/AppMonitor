@@ -50,7 +50,7 @@ If you disable or do not configure this setting, the local value is used, otherw
 Registry value: ScanIntervalMinutes (REG_DWORD).</string>
 
       <string id="NotificationInterval">Notification interval</string>
-      <string id="NotificationInterval_Help">Sets how often the user is reminded about the same pending update.
+      <string id="NotificationInterval_Help">Sets how often the user is reminded about the same pending update. It only has an effect when the notification style is Reminders; in the default Quiet style an update is announced once.
 
 If you enable this setting, a reminder for an update the user has already seen (or dismissed) is shown at most every N minutes (1 to 10080).
 
@@ -59,6 +59,23 @@ If you disable or do not configure this setting, the local value is used, otherw
 Individual applications can override this with their own NotificationIntervalMinutes value.
 
 Registry value: NotificationIntervalMinutes (REG_DWORD).</string>
+
+      <string id="NotificationMode">Notification style</string>
+      <string id="NotificationMode_Help">Controls how often the user is interrupted about a pending update.
+
+If you enable this setting, choose one of:
+
+Quiet (the default) - an update is announced once, and several updates found in the same scan are announced together as a single "N updates available" notification. After that the agent stays silent about it: no repeat reminders, no "installing" notification. It still notifies when a mandatory update's deadline is approaching, when applications have to be closed, and when an install failed. The tray icon carries a badge with the number of pending updates the whole time.
+
+Reminders - the behaviour of earlier versions: a reminder for every pending update every Notification interval minutes, plus an "installing" notification.
+
+If you disable or do not configure this setting, the local value is used, otherwise Quiet.
+
+Individual applications can override this with their own NotificationMode value.
+
+Registry value: NotificationMode (REG_SZ, Quiet or Reminders).</string>
+      <string id="NotificationMode_Quiet">Quiet - announce once (default)</string>
+      <string id="NotificationMode_Reminders">Reminders - repeat every notification interval</string>
 
       <string id="StartupDelay">Startup delay</string>
       <string id="StartupDelay_Help">Sets how long the service waits after it starts before it runs the first update scan. A delay keeps the agent out of the way during logon and boot.
@@ -205,11 +222,11 @@ Registry value: NotificationsEnabled (REG_DWORD, 1 or 0).</string>
       <string id="ShowInstalledNotifications">Show installed notifications</string>
       <string id="ShowInstalledNotifications_Help">Controls whether a notification is shown after an update has been installed successfully.
 
-If you enable this setting, the user is told when an application was updated (the default).
+If you enable this setting, the user is told when an application was updated.
 
-If you disable this setting, only failures and pending updates are announced.
+If you disable this setting, only failures and pending updates are announced (the default).
 
-If you do not configure this setting, the local value is used, otherwise the notification is shown.
+If you do not configure this setting, the local value is used, otherwise the notification is not shown. Versions up to 1.1.1 showed it by default.
 
 Registry value: ShowInstalledNotifications (REG_DWORD, 1 or 0).</string>
 
@@ -504,6 +521,10 @@ Registry value: AgentTargetVersion (REG_SZ).</string>
 
       <presentation id="NotificationInterval">
         <decimalTextBox refId="NotificationIntervalMinutes" defaultValue="240" spinStep="30">Notification interval (minutes):</decimalTextBox>
+      </presentation>
+
+      <presentation id="NotificationMode">
+        <dropdownList refId="NotificationMode" noSort="true" defaultItem="0">Notification style:</dropdownList>
       </presentation>
 
       <presentation id="StartupDelay">

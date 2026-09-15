@@ -1,4 +1,5 @@
 using Arkimentum.AppMonitor.Ipc;
+using Arkimentum.AppMonitor.Models;
 using Xunit;
 
 namespace Arkimentum.AppMonitor.Tests;
@@ -40,5 +41,18 @@ public class IpcStateMessageTests
         Assert.False(back.Settings.CloudConfigured);
         Assert.False(back.Settings.CloudEnrolled);
         Assert.Null(back.Settings.OrganizationName);
+        // No NotificationMode either: the tray falls back to the product default instead of the noisy mode.
+        Assert.Equal(NotificationMode.Quiet, back.Settings.NotificationMode);
+    }
+
+    [Fact]
+    public void State_message_round_trips_the_notification_mode()
+    {
+        var message = new StateMessage { Settings = new SettingsSummary { NotificationMode = NotificationMode.Reminders } };
+
+        var line = IpcJson.Serialize(message);
+        var back = Assert.IsType<StateMessage>(IpcJson.Deserialize(line));
+
+        Assert.Equal(NotificationMode.Reminders, back.Settings.NotificationMode);
     }
 }

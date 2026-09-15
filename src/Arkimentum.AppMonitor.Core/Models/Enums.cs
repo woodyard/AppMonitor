@@ -43,6 +43,19 @@ public enum UpdateState
     Failed = 6,
 }
 
+/// <summary>
+/// How insistent the agent is about a pending update. The default is <see cref="Quiet"/>: users found one toast per
+/// update per notification interval intrusive, so an update is announced once and only things that actually need the
+/// user (deadline, close prompt, failure) are allowed to interrupt again.
+/// </summary>
+public enum NotificationMode
+{
+    /// <summary>Announce an update once, then stay silent unless the user has to act.</summary>
+    Quiet = 0,
+    /// <summary>Repeat the reminder for a pending update every notification interval.</summary>
+    Reminders = 1,
+}
+
 public enum NotificationKind
 {
     UpdateAvailable = 0,

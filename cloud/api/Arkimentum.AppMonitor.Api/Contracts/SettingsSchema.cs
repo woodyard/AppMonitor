@@ -51,6 +51,7 @@ public static class SettingsSchema
     public static readonly IReadOnlyList<string> SourceChoices = ["winget", "web"];
     public static readonly IReadOnlyList<string> ContextChoices = ["auto", "system", "user"];
     public static readonly IReadOnlyList<string> InstallerTypeChoices = ["exe", "msi", "msix"];
+    public static readonly IReadOnlyList<string> NotificationModeChoices = ["Quiet", "Reminders"];
 
     public static readonly IReadOnlyList<SettingDefinition> Global =
     [
@@ -63,7 +64,8 @@ public static class SettingsSchema
 
         new("NotificationsEnabled", SettingKind.Bool, CategoryNotifications, "Show notifications", "Show toast notifications to users about available updates.", true),
         new("NotificationIntervalMinutes", SettingKind.Int, CategoryNotifications, "Notification interval (minutes)", "Minimum time between repeated notifications for the same pending update.", 240, 1, 10080),
-        new("ShowInstalledNotifications", SettingKind.Bool, CategoryNotifications, "Notify when an update was installed", "Show a confirmation toast after a successful install.", true),
+        new("NotificationMode", SettingKind.Choice, CategoryNotifications, "Notification style", "Quiet announces an update once and then only interrupts when the user must act (deadline, close applications, failure). Reminders repeats every notification interval.", "Quiet", Choices: NotificationModeChoices),
+        new("ShowInstalledNotifications", SettingKind.Bool, CategoryNotifications, "Notify when an update was installed", "Show a confirmation toast after a successful install.", false),
         new("LaunchTrayAgent", SettingKind.Bool, CategoryNotifications, "Start the tray agent automatically", "The service starts the tray agent in every interactive session where it is not running.", true),
 
         new("DefaultMandatory", SettingKind.Bool, CategoryBehaviour, "Mandatory by default", "Treat updates as mandatory unless an application says otherwise.", false),
@@ -143,6 +145,7 @@ public static class SettingsSchema
         new("CloseGracePeriodMinutes", SettingKind.Int, AppCategoryBehaviour, "Grace period before forced close (minutes)", "", Min: 0, Max: 1440),
         new("ForceCloseAtDeadline", SettingKind.Bool, AppCategoryBehaviour, "Force-close at the deadline", ""),
         new("NotificationIntervalMinutes", SettingKind.Int, AppCategoryBehaviour, "Notification interval (minutes)", "Overrides the global interval for this app.", Min: 1, Max: 10080, Advanced: true),
+        new("NotificationMode", SettingKind.Choice, AppCategoryBehaviour, "Notification style", "Overrides the global notification style for this app.", Choices: NotificationModeChoices, Advanced: true),
     ];
 
     public static SettingDefinition? FindGlobal(string name) => Global.FirstOrDefault(d => d.Name.Equals(name, StringComparison.OrdinalIgnoreCase));

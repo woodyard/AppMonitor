@@ -34,7 +34,8 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         _windows = windows;
 
         _checkNowCommand = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.ScanInProgress);
-        _updateAllCommand = new RelayCommand(UpdateAll, () => _store.IsConnected && _store.InstallableUpdates.Count > 0);
+        _updateAllCommand = new RelayCommand(UpdateAll,
+            () => _store.IsConnected && !_store.UpdateAllPending && _store.InstallableUpdates.Count > 0);
         OpenLogFolderCommand = new RelayCommand(() => _windows.OpenLogFolder());
         AboutCommand = new RelayCommand(() => _windows.ShowAbout());
 
@@ -89,6 +90,49 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
             if (_store.NextScanUtc is { } next) parts.Add(Strings.NextCheck(TimeFormat.Absolute(next)));
             return string.Join(Strings.StatusSeparator, parts);
         }
+    }
+
+    // ---------------------------------------------------------------- progress banner
+
+    /// <summary>Keys that took part in the current round of installs; the round ends when nothing is in progress.</summary>
+    private readonly HashSet<string> _roundKeys = new(StringComparer.Ordinal);
+
+    /// <summary>True while the service is queueing, waiting for a close or installing something.</summary>
+    public bool ShowProgressBanner { get; private set; }
+
+    /// <summary>One line such as "Installing 7-Zip… (1 of 6 done, 4 queued)".</summary>
+    public string ProgressText { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Recomputes the progress line. "Done" counts the updates of this round the service no longer reports (an
+    /// installed update disappears from the state message), so the scoreboard works for one install and for a batch.
+    /// </summary>
+    private void RefreshProgress()
+    {
+        var inProgress = _store.UpdatesInProgress;
+        if (inProgress.Count == 0)
+        {
+            _roundKeys.Clear();
+            ShowProgressBanner = false;
+            ProgressText = string.Empty;
+            return;
+        }
+
+        foreach (var u in inProgress) _roundKeys.Add(u.Key);
+
+        var installing = _store.CurrentInstall;
+        var head = installing is not null
+            ? Strings.ProgressInstalling(installing.DisplayName)
+            : inProgress.Any(u => u.State == UpdateState.WaitingForClose)
+                ? Strings.ProgressWaitingForClose
+                : Strings.ProgressPreparing;
+
+        var total = _roundKeys.Count;
+        var done = _roundKeys.Count(k => _store.Find(k) is null);
+        var queued = inProgress.Count(u => u.State != UpdateState.Installing);
+
+        ShowProgressBanner = true;
+        ProgressText = total > 1 ? $"{head} {Strings.ProgressCounts(done, total, queued)}" : head;
     }
 
     public bool ShowEmptyState => Updates.Count == 0;
@@ -179,8 +223,8 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
 
     /// <summary>
     /// "Update all": one install request per installable update, the same as pressing Install now on each card.
-    /// The service queues them and runs the installs one after another; cards move to "scheduled" as the requests
-    /// land, so the button disappears by itself.
+    /// The service queues them and runs the installs one after another; the button greys out at once (the store
+    /// remembers the requested keys) instead of staying live until the state message with "scheduled" comes back.
     /// </summary>
     private void UpdateAll()
     {
@@ -188,7 +232,9 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         if (updates.Count == 0) return;
         _log.LogInformation("User chose Update all: {Count} update(s): {Apps}", updates.Count,
             string.Join(", ", updates.Select(u => u.DisplayName)));
-        _ = _ipc.InstallAllAsync(updates.Select(u => u.Key).ToList());
+        var keys = updates.Select(u => u.Key).ToList();
+        _store.BeginUpdateAll(keys);
+        _ = _ipc.InstallAllAsync(keys);
     }
 
     /// <summary>Rebuilds the card list in place: cards are matched by <see cref="PendingUpdate.Key"/> so the UI stays stable.</summary>
@@ -216,10 +262,12 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
 
         for (var index = Updates.Count - 1; index >= incoming.Count; index--) Updates.RemoveAt(index);
 
+        RefreshProgress();
+
         _checkNowCommand.RaiseCanExecuteChanged();
         _updateAllCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(
-            nameof(ShowUpdateAll), nameof(UpdateAllText),
+            nameof(ShowUpdateAll), nameof(UpdateAllText), nameof(ShowProgressBanner), nameof(ProgressText),
             nameof(IsConnected), nameof(ShowDisconnectedBanner), nameof(IsScanning), nameof(StatusLine),
             nameof(ShowEmptyState), nameof(EmptySubtitle), nameof(ScanIntervalText), nameof(NotificationIntervalText),
             nameof(MonitoredAppsText), nameof(SourcesText), nameof(NotificationsText), nameof(LogDirectory),

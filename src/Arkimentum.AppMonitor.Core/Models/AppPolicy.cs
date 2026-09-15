@@ -65,6 +65,8 @@ public sealed record AppPolicy
     public string? MinimumVersion { get; init; }
     /// <summary>Override of the global notification interval for this app (minutes). null = global.</summary>
     public int? NotificationIntervalMinutes { get; init; }
+    /// <summary>Override of the global notification mode for this app. null = global.</summary>
+    public NotificationMode? NotificationMode { get; init; }
 
     public bool IsWeb => Source == UpdateSource.Web;
     public bool IsWinget => Source == UpdateSource.Winget;

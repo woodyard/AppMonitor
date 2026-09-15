@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Arkimentum.AppMonitor.Cloud;
+using Arkimentum.AppMonitor.Ipc;
 using Arkimentum.AppMonitor.Models;
 using Arkimentum.AppMonitor.Versioning;
 using Microsoft.Extensions.Logging;
@@ -65,12 +66,29 @@ public sealed class AgentUpdaterOptions
 }
 
 /// <summary>
+/// The slice of the self-updater the <see cref="UpdateCoordinator"/> needs when a client (tray or admin console) asks
+/// the agent to update itself. <see cref="AgentUpdater"/> implements it and takes the coordinator in its constructor,
+/// so it is handed to the coordinator afterwards instead of being injected into it.
+/// </summary>
+public interface IAgentSelfUpdate
+{
+    /// <summary>What the last check or update concluded.</summary>
+    AgentUpdateStatus Status { get; }
+
+    /// <summary>Reads the feed and decides, without downloading anything.</summary>
+    Task<AgentUpdateOutcome> CheckAsync(string reason, string? targetVersionOverride, CancellationToken ct);
+
+    /// <summary>Checks and, when a newer release applies, downloads it, verifies it and starts its installer.</summary>
+    Task<AgentUpdateOutcome> UpdateAsync(string reason, string? targetVersionOverride, CancellationToken ct);
+}
+
+/// <summary>
 /// Keeps the agent itself up to date: resolves a <see cref="ReleaseManifest"/> from the configured feed (or the cloud
 /// API's mirror), decides whether it applies to this device, downloads and verifies the release zip and hands over to
 /// the release's own <c>Install-ArkimentumAppMonitor.ps1</c>, which stops this service, replaces the files and starts it
 /// again. See docs/SelfUpdate.md.
 /// </summary>
-public sealed class AgentUpdater
+public sealed class AgentUpdater : IAgentSelfUpdate
 {
     private const string MarkerFileName = "update-pending.json";
     private const string UpdatesFolderName = "AgentUpdates";
@@ -90,6 +108,13 @@ public sealed class AgentUpdater
     private readonly AgentUpdaterOptions _options;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    // Last-outcome memory, so a client (tray, admin console) can be told what the updater knows without running a
+    // check of its own. Only ever read and written under _statusLock; nothing in the update mechanics depends on it.
+    private readonly object _statusLock = new();
+    private AgentUpdateOutcome? _lastOutcome;
+    private DateTimeOffset? _lastCheckUtc;
+    private bool _inProgress;
+
     public AgentUpdater(ILogger<AgentUpdater> logger, ILoggerFactory loggerFactory, SettingsProvider settings,
         UpdateCoordinator coordinator, AgentUpdaterOptions options)
     {
@@ -108,6 +133,45 @@ public sealed class AgentUpdater
 
     public string UpdatesRoot => Path.Combine(_options.StateDirectory, UpdatesFolderName);
     public string MarkerPath => Path.Combine(_options.StateDirectory, MarkerFileName);
+
+    /// <summary>
+    /// What the last check or update concluded, for the state snapshot the service sends to tray agents and to the
+    /// admin console. Before the first check this is just the running version and whether updates are allowed.
+    /// </summary>
+    public AgentUpdateStatus Status
+    {
+        get
+        {
+            lock (_statusLock)
+            {
+                return new AgentUpdateStatus
+                {
+                    RunningVersion = CurrentVersion,
+                    LatestVersion = _lastOutcome?.Manifest?.Version,
+                    UpdateAvailable = _lastOutcome?.UpdateAvailable == true,
+                    InProgress = _inProgress,
+                    LastCheckUtc = _lastCheckUtc,
+                    // Only the outcomes that mean "the check could not conclude" become an error the user sees; being
+                    // pinned, on another channel or simply up to date is not an error.
+                    LastError = _lastOutcome?.Action is AgentUpdateAction.Failed or AgentUpdateAction.NoManifest or AgentUpdateAction.Disabled
+                        ? _lastOutcome.Reason
+                        : null,
+                    Enabled = _settings.Current.AgentAutoUpdate,
+                };
+            }
+        }
+    }
+
+    /// <summary>Records the outcome of a check or update so <see cref="Status"/> can report it, and passes it through.</summary>
+    private AgentUpdateOutcome Remember(AgentUpdateOutcome outcome)
+    {
+        lock (_statusLock)
+        {
+            _lastOutcome = outcome;
+            _lastCheckUtc = DateTimeOffset.UtcNow;
+        }
+        return outcome;
+    }
 
     // =================================================================================================================
     // Decision
@@ -168,7 +232,10 @@ public sealed class AgentUpdater
     }
 
     /// <summary>Resolves and decides, without downloading anything (<c>--check-update</c>).</summary>
-    public async Task<AgentUpdateOutcome> CheckAsync(string reason, string? targetVersionOverride, CancellationToken ct)
+    public async Task<AgentUpdateOutcome> CheckAsync(string reason, string? targetVersionOverride, CancellationToken ct) =>
+        Remember(await CheckCoreAsync(reason, targetVersionOverride, ct).ConfigureAwait(false));
+
+    private async Task<AgentUpdateOutcome> CheckCoreAsync(string reason, string? targetVersionOverride, CancellationToken ct)
     {
         var settings = _settings.Current;
         if (string.IsNullOrWhiteSpace(settings.AgentUpdateFeedUrl) && !(settings.CloudConfigured && CloudManifestResolver is not null))
@@ -200,9 +267,25 @@ public sealed class AgentUpdater
     {
         if (!await _gate.WaitAsync(0, ct).ConfigureAwait(false))
             return new AgentUpdateOutcome(AgentUpdateAction.Blocked, "An agent update is already running");
+        lock (_statusLock) _inProgress = true;
         try
         {
-            var outcome = await CheckAsync(reason, targetVersionOverride, ct).ConfigureAwait(false);
+            return Remember(await UpdateCoreAsync(reason, targetVersionOverride, ct).ConfigureAwait(false));
+        }
+        finally
+        {
+            // Launched means the installer is running and this service is about to be replaced: the update is still
+            // in progress as far as any client is concerned, so the flag stays up until the agent restarts.
+            lock (_statusLock) _inProgress = _lastOutcome?.Action == AgentUpdateAction.Launched;
+            _gate.Release();
+        }
+    }
+
+    private async Task<AgentUpdateOutcome> UpdateCoreAsync(string reason, string? targetVersionOverride, CancellationToken ct)
+    {
+        try
+        {
+            var outcome = await CheckCoreAsync(reason, targetVersionOverride, ct).ConfigureAwait(false);
             if (outcome.Action != AgentUpdateAction.UpdateAvailable) return outcome;
             var manifest = outcome.Manifest!;
 
@@ -279,7 +362,6 @@ public sealed class AgentUpdater
             _logger.LogError(ex, "Agent update failed");
             return new AgentUpdateOutcome(AgentUpdateAction.Failed, ex.Message);
         }
-        finally { _gate.Release(); }
     }
 
     private async Task<string> DownloadAsync(ReleaseManifest manifest, string zipPath, CancellationToken ct)

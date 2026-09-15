@@ -11,11 +11,15 @@ public sealed class AboutViewModel : ObservableObject
 {
     private readonly AgentStateStore _store;
 
-    public AboutViewModel(AgentStateStore store, IWindowService windows)
+    public AboutViewModel(AgentStateStore store, IWindowService windows, AgentUpdateViewModel agentUpdate)
     {
         _store = store;
+        AgentUpdate = agentUpdate;
         OpenLogFolderCommand = new RelayCommand(() => windows.OpenFolder(LogDirectory));
     }
+
+    /// <summary>The agent's own update state and actions - the same instance the main window's footer shows.</summary>
+    public AgentUpdateViewModel AgentUpdate { get; }
 
     public string Title => Strings.AboutTitle;
 

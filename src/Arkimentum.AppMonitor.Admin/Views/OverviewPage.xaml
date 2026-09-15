@@ -200,6 +200,17 @@
                                 Content="{x:Static res:Strings.ButtonRepairPrerequisites}"
                                 ToolTip="{x:Static res:Strings.TipRepairPrerequisites}"
                                 Command="{Binding RepairPrerequisitesCommand}" />
+                        <!-- The agent's own update, driven by the same pipe: the service does the work as SYSTEM. -->
+                        <Button Padding="14,7" Margin="0,8,8,0" FontSize="13"
+                                Content="{x:Static res:Strings.ButtonUpdateThisAgent}"
+                                ToolTip="{x:Static res:Strings.TipUpdateThisAgent}"
+                                Command="{Binding UpdateAgentCommand}" />
+                        <TextBlock Style="{StaticResource CaptionText}"
+                                   Margin="4,12,0,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource BrandGoldTextBrush}"
+                                   Text="{x:Static res:Strings.AgentUpdateRunning}"
+                                   Visibility="{Binding AgentUpdateInProgress, Converter={StaticResource BoolToVisibility}}" />
                         <TextBlock Style="{StaticResource CaptionText}"
                                    Margin="12,12,0,0"
                                    VerticalAlignment="Center"

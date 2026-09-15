@@ -85,6 +85,9 @@ public sealed class CloudSyncService : BackgroundService
         _status = _statusFile.Load() ?? new CloudStatus();
         _updater.CloudManifestResolver = GetCloudReleaseAsync;
         _coordinator.CloudStatusSource = () => _status;
+        // The updater depends on the coordinator, so the coordinator gets it from here - the one place that holds
+        // both - and only then can a tray agent or the admin console ask the agent to update itself.
+        _coordinator.SelfUpdater = _updater;
     }
 
     public string StatusFilePath => _statusFile.FilePath;

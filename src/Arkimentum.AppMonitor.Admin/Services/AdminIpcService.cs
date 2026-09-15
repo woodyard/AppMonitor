@@ -83,6 +83,18 @@ public sealed class AdminIpcService : IHostedService
         return sent;
     }
 
+    /// <summary>
+    /// Asks the service to update the agent itself: it checks the release feed and, when a newer release applies,
+    /// downloads, verifies and installs it as SYSTEM. False when the pipe is not available.
+    /// </summary>
+    public async Task<bool> RequestAgentUpdateAsync()
+    {
+        var sent = await _client.SendAsync(new UpdateAgentMessage { CheckOnly = false }, _cts.Token).ConfigureAwait(false);
+        if (sent) _log.LogInformation("Requested an agent update from the service.");
+        else _log.LogWarning("Could not request an agent update: the service pipe is not connected.");
+        return sent;
+    }
+
     private void OnMessage(IpcMessage message)
     {
         switch (message)

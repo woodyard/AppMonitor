@@ -99,6 +99,32 @@ what would have been executed.
 An administrator can also queue the `UpdateAgent` command for a device in the cloud console; its optional argument is
 a target version, applied like `AgentTargetVersion` for that one run.
 
+## From the client
+
+The user does not have to wait for the 12-hour check. The tray agent's details footer and its About dialog show the
+agent version with what the last check concluded ("1.1.3 · up to date (checked 16:22)") and offer **Check for
+updates**; when a newer release is known they also offer **Update now**, and the tray's context menu turns into
+*Update AppMonitor to 1.1.4*. The admin console's Overview page has an **Update agent** button next to *Install or
+repair prerequisites*.
+
+All of them send one `updateAgent` IPC message (`CheckOnly` = true for a check) to the service, which does exactly
+what the scheduled check does - as SYSTEM, without a UAC prompt, ending in the shipped installer that stops the
+service, replaces the binaries and starts it again. Clients never touch a file.
+
+The service refuses the request, with the reason in its acknowledgement, when:
+
+| Refused because | The client is told |
+| --- | --- |
+| `AgentAutoUpdate` is `0` | *Agent updates are disabled by policy* - Intune, an RMM or a GPO owns the binaries, and a user must not overrule that. |
+| An application update is installing | *An application is being updated; try the agent update again when it has finished.* |
+| An agent update is already running | *An agent update is already running.* |
+| The process has no self-updater (the CLI entry points) | *Agent updates are not available in this mode.* |
+
+Otherwise the answer is the outcome of the check: *Up to date: 1.1.3*, *Update 1.1.4 available*, *Updating to 1.1.4 -
+the agent will restart*, or *Check failed: …*. The result is broadcast to every tray agent, so a check started in one
+session updates the version row in all of them, and `StateMessage.AgentUpdate` keeps `InProgress` up while the agent
+replaces itself.
+
 ## Publishing a release
 
 `.github/workflows/release.yml` runs on a `v*` tag (or `workflow_dispatch` with a version):

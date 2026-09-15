@@ -167,6 +167,49 @@ public sealed class CloudConnectViewModel : ObservableObject
     /// <summary>Only global administrators may create an organization, so the button only appears for them.</summary>
     public ICommand CreateOrganizationCommand => _createCommand;
 
+    // ---------------------------------------------------------------- startup
+
+    /// <summary>
+    /// Runs once when the console opens: connects to the remembered (or machine-configured) server and signs in
+    /// silently from the MSAL token cache, so an administrator who signed in before lands in organization mode
+    /// without touching the Sign in button. Never opens a browser: when the cache has nothing usable the page simply
+    /// waits for Sign in, exactly as before. Returns true when a session was restored.
+    /// </summary>
+    public async Task<bool> RestoreAsync()
+    {
+        if (_serverUrl.Trim().Length == 0 || _session.IsSignedIn || IsBusy) return false;
+
+        IsBusy = true;
+        Error = null;
+        SetStatus(Strings.ConnectRestoring);
+        try
+        {
+            await _session.ConnectAsync(ServerUrl, CancellationToken.None).ConfigureAwait(true);
+            await _session.SignInAsync(allowInteractive: false, CancellationToken.None).ConfigureAwait(true);
+            SetStatus(Strings.ConnectedTo(_session.ServerUrl ?? string.Empty));
+            _log.LogInformation("Restored the previous sign-in silently as {Account}.", _session.SignedInAccount);
+            return true;
+        }
+        catch (AuthenticationRequiredException)
+        {
+            _log.LogInformation("No usable cached sign-in for {Url}; waiting for the administrator to sign in.", _session.ServerUrl);
+            SetStatus(Strings.CloudSignInRequired);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            // Offline, a wrong URL, the server down: say so and leave the page fully usable.
+            _log.LogWarning(ex, "Restoring the previous sign-in failed.");
+            Fail(ex, "Restoring the previous sign-in failed.");
+            return false;
+        }
+        finally
+        {
+            IsBusy = false;
+            RefreshAll();
+        }
+    }
+
     // ---------------------------------------------------------------- commands
 
     private async void Connect()
@@ -268,10 +311,19 @@ public sealed class CloudConnectViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Raised when the administrator presses "Manage this organization", after the session has the organization.
+    /// The main window answers by opening the organization's pages: with a single organization the session already
+    /// had it selected at sign-in, so without this the button appeared to do nothing.
+    /// </summary>
+    public event Action? OrganizationChosen;
+
     private void UseSelected()
     {
         if (_selected is null) return;
         _session.SelectOrganization(_selected.Summary);
+        _log.LogInformation("Managing organization {Name} ({Id}).", _selected.Summary.Name, _selected.Summary.OrganizationId);
+        OrganizationChosen?.Invoke();
     }
 
     /// <summary>

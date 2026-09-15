@@ -70,13 +70,19 @@ public sealed class StateStore
                 {
                     // Replacing the file can be refused while the old one is open elsewhere or carries the read-only
                     // attribute (seen after a self-update: every save failed with "access denied" although the same
-                    // account had written the file minutes before). Losing deadlines and deferrals is worse than a
-                    // non-atomic write, so fall back to writing in place and say what the file looks like.
-                    Describe(path, ex);
+                    // account had written the file minutes before, and the ACL was correct). Losing deadlines and
+                    // deferrals is worse than a non-atomic write, so fall back to writing in place - after making sure
+                    // this thread really is the service account and saying what the file looks like.
+                    var wasImpersonating = Arkimentum.AppMonitor.Native.ImpersonationGuard.RevertIfImpersonating(_logger, "state save");
+                    Describe(path, ex, wasImpersonating);
                     if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
                         File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
-                    File.WriteAllText(path, json);
-                    try { File.Delete(tmp); } catch { /* best effort */ }
+                    if (wasImpersonating) File.Move(tmp, path, overwrite: true);
+                    else
+                    {
+                        File.WriteAllText(path, json);
+                        try { File.Delete(tmp); } catch { /* best effort */ }
+                    }
                 }
             }
             catch (Exception ex)
@@ -89,7 +95,7 @@ public sealed class StateStore
     private bool _describedReplaceFailure;
 
     /// <summary>Logs, once per process, why the atomic replace was refused: attributes, owner and access rules of the file.</summary>
-    private void Describe(string path, Exception ex)
+    private void Describe(string path, Exception ex, bool wasImpersonating)
     {
         if (_describedReplaceFailure) return;
         _describedReplaceFailure = true;
@@ -101,8 +107,9 @@ public sealed class StateStore
             var rules = security.GetAccessRules(true, true, typeof(System.Security.Principal.NTAccount))
                 .Cast<System.Security.AccessControl.FileSystemAccessRule>()
                 .Select(r => $"{r.IdentityReference.Value}:{r.AccessControlType}:{r.FileSystemRights}");
-            _logger.LogWarning(ex, "Replacing {Path} was refused ({Message}); writing it in place instead. Attributes={Attributes}, owner={Owner}, rules=[{Rules}]",
-                path, ex.Message, info.Attributes, owner, string.Join("; ", rules));
+            _logger.LogWarning(ex, "Replacing {Path} was refused ({Message}); {Action}. Thread identity now: {Identity}; was impersonating: {Impersonating}. Attributes={Attributes}, owner={Owner}, rules=[{Rules}]",
+                path, ex.Message, wasImpersonating ? "retrying as the service account" : "writing it in place instead",
+                Arkimentum.AppMonitor.Native.ImpersonationGuard.DescribeCurrentIdentity(), wasImpersonating, info.Attributes, owner, string.Join("; ", rules));
         }
         catch (Exception inner)
         {

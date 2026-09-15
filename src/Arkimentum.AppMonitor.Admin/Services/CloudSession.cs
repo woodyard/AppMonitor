@@ -31,6 +31,7 @@ public sealed class CloudSession : IDisposable
 
     private CloudClient? _client;
     private string? _clientUrl;
+    private readonly List<CloudClient> _retired = [];
     private AuthToken? _token;
 
     public CloudSession(ILogger<CloudSession> log, ICloudClientFactory clients, IAuthenticator authenticator, AdminPreferences preferences, Dispatcher dispatcher)
@@ -264,7 +265,9 @@ public sealed class CloudSession : IDisposable
         var url = ServerUrl ?? throw new InvalidOperationException("No cloud server URL has been set.");
         if (_client is not null && string.Equals(_clientUrl, url, StringComparison.OrdinalIgnoreCase)) return _client;
 
-        _client?.Dispose();
+        // The previous client may still have a request in flight (the log showed "The CancellationTokenSource has
+        // been disposed" from exactly that): retire it and dispose it with the session instead of right now.
+        if (_client is not null) _retired.Add(_client);
         var proxy = _preferences.EffectiveSettings.ProxyUrl;
         _client = _clients.Create(url, string.IsNullOrWhiteSpace(proxy) ? null : proxy);
         _clientUrl = url;
@@ -287,6 +290,8 @@ public sealed class CloudSession : IDisposable
 
     public void Dispose()
     {
+        foreach (var retired in _retired) retired.Dispose();
+        _retired.Clear();
         _client?.Dispose();
         _client = null;
     }

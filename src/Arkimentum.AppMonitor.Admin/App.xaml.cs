@@ -77,11 +77,15 @@ public partial class App : Application
 
         _host.Start();
 
-        var window = new MainWindow { DataContext = _host.Services.GetRequiredService<MainViewModel>() };
+        var viewModel = _host.Services.GetRequiredService<MainViewModel>();
+        var window = new MainWindow { DataContext = viewModel };
         _host.Services.GetRequiredService<IDialogService>().Owner = window;
         MainWindow = window;
         ShutdownMode = ShutdownMode.OnMainWindowClose;
         window.Show();
+
+        // With the window on screen, pick up the previous cloud sign-in from the token cache (silently; never a browser).
+        _ = viewModel.RestoreSessionAsync();
     }
 
     protected override void OnExit(ExitEventArgs e)

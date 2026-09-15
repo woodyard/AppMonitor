@@ -284,8 +284,29 @@
                 <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsServiceVersion}" />
                 <TextBlock Grid.Row="7" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ServiceVersion}" />
 
+                <!-- The agent's own update: the version, what the last check concluded, and the two actions. -->
                 <TextBlock Grid.Row="8" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsAgentVersion}" />
-                <TextBlock Grid.Row="8" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding AgentVersion}" />
+                <StackPanel Grid.Row="8" Grid.Column="1" Margin="0,8,0,0">
+                    <TextBlock Style="{StaticResource DetailValue}" TextWrapping="Wrap" Text="{Binding AgentUpdate.VersionText}" />
+                    <StackPanel Orientation="Horizontal"
+                                Margin="0,4,0,0"
+                                Visibility="{Binding AgentUpdate.ShowActions, Converter={StaticResource BoolToVisibility}}">
+                        <Button Style="{StaticResource LinkButton}"
+                                Content="{x:Static res:Strings.AgentCheckForUpdates}"
+                                Command="{Binding AgentUpdate.CheckCommand}" />
+                        <Button Margin="12,0,0,0"
+                                Padding="12,4"
+                                Style="{DynamicResource AccentButtonStyle}"
+                                Content="{x:Static res:Strings.AgentUpdateNow}"
+                                Command="{Binding AgentUpdate.UpdateNowCommand}"
+                                Visibility="{Binding AgentUpdate.ShowUpdateNow, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource CaptionText}"
+                               Margin="0,4,0,0"
+                               TextWrapping="Wrap"
+                               Text="{Binding AgentUpdate.Notice}"
+                               Visibility="{Binding AgentUpdate.HasNotice, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
             </Grid>
         </Expander>
     </Grid>

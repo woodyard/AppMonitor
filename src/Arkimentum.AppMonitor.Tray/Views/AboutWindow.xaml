@@ -49,13 +49,38 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.DetailsServiceVersion}" />
                 <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding ServiceVersion}" />
 
-                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsLogFolder}" />
+                <!-- The agent's own update, exactly as the main window's details footer shows it. -->
+                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsAgentVersion}" />
                 <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,8,0,0">
+                    <TextBlock Style="{StaticResource DetailValue}" TextWrapping="Wrap" Text="{Binding AgentUpdate.VersionText}" />
+                    <StackPanel Orientation="Horizontal"
+                                Margin="0,4,0,0"
+                                Visibility="{Binding AgentUpdate.ShowActions, Converter={StaticResource BoolToVisibility}}">
+                        <Button Style="{StaticResource LinkButton}"
+                                Content="{x:Static res:Strings.AgentCheckForUpdates}"
+                                Command="{Binding AgentUpdate.CheckCommand}" />
+                        <Button Margin="12,0,0,0"
+                                Padding="12,4"
+                                Style="{DynamicResource AccentButtonStyle}"
+                                Content="{x:Static res:Strings.AgentUpdateNow}"
+                                Command="{Binding AgentUpdate.UpdateNowCommand}"
+                                Visibility="{Binding AgentUpdate.ShowUpdateNow, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource CaptionText}"
+                               Margin="0,4,0,0"
+                               TextWrapping="Wrap"
+                               Text="{Binding AgentUpdate.Notice}"
+                               Visibility="{Binding AgentUpdate.HasNotice, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsLogFolder}" />
+                <StackPanel Grid.Row="2" Grid.Column="1" Margin="0,8,0,0">
                     <TextBlock Style="{StaticResource DetailValue}" Text="{Binding LogDirectory}" TextWrapping="Wrap" />
                     <Button Style="{StaticResource LinkButton}"
                             Margin="0,4,0,0"

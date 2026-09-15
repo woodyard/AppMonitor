@@ -21,6 +21,7 @@ namespace Arkimentum.AppMonitor.Ipc;
 [JsonDerivedType(typeof(UserScanResultMessage), "userScanResult")]
 [JsonDerivedType(typeof(ProcessesClosedMessage), "processesClosed")]
 [JsonDerivedType(typeof(RepairPrerequisitesMessage), "repairPrerequisites")]
+[JsonDerivedType(typeof(UpdateAgentMessage), "updateAgent")]
 // server -> client
 [JsonDerivedType(typeof(StateMessage), "state")]
 [JsonDerivedType(typeof(NotifyMessage), "notify")]
@@ -62,6 +63,13 @@ public sealed class RequestScanMessage : IpcMessage { }
 public sealed class InstallNowMessage : IpcMessage
 {
     public required string UpdateKey { get; set; }
+
+    /// <summary>
+    /// Optional (added after 1.1.1): the user pressed "Close apps and update", so the service may terminate the
+    /// blocking processes the tray agent could not reach - elevated ones, and ones in other sessions. An older
+    /// tray never sets it, so an older tray against a newer service keeps the pre-1.2 prompt-and-wait behaviour.
+    /// </summary>
+    public bool CloseBlockingProcesses { get; set; }
 }
 
 public sealed class DeferMessage : IpcMessage
@@ -109,6 +117,17 @@ public sealed class ProcessesClosedMessage : IpcMessage
 /// <summary>Admin console asks the service to check and repair prerequisites (winget) now. Ignored from tray clients.</summary>
 public sealed class RepairPrerequisitesMessage : IpcMessage { }
 
+/// <summary>
+/// A user asked the agent to update itself now instead of waiting for the scheduled check (added after 1.1.1).
+/// Tray and admin clients may both send it; the service still owns the update itself (it downloads, verifies and
+/// starts the installer as SYSTEM). An older service does not know the type and simply logs it as ignored.
+/// </summary>
+public sealed class UpdateAgentMessage : IpcMessage
+{
+    /// <summary>True: only read the feed and report what it says. False: install the release when it is newer.</summary>
+    public bool CheckOnly { get; set; }
+}
+
 // ------------------------------------------------------------------ server -> client
 
 /// <summary>Full snapshot of updates relevant to the receiving session (system updates + that user's updates).</summary>
@@ -120,6 +139,38 @@ public sealed class StateMessage : IpcMessage
     public bool ScanInProgress { get; set; }
     public string? ServiceVersion { get; set; }
     public SettingsSummary Settings { get; set; } = new();
+
+    /// <summary>
+    /// Optional (added after 1.1.1): what the agent's self-updater last concluded, so the tray and the console can
+    /// show the agent's own update state and offer to update now. Null from an older service - the client then
+    /// shows the plain version without the status line or the buttons.
+    /// </summary>
+    public AgentUpdateStatus? AgentUpdate { get; set; }
+}
+
+/// <summary>The self-updater's last outcome, as the service reports it to its clients.</summary>
+public sealed class AgentUpdateStatus
+{
+    /// <summary>The version of the service that is running right now.</summary>
+    public string RunningVersion { get; set; } = string.Empty;
+
+    /// <summary>The version the feed offers, when a check has resolved a manifest; null when no check has succeeded.</summary>
+    public string? LatestVersion { get; set; }
+
+    /// <summary>True when <see cref="LatestVersion"/> is newer than <see cref="RunningVersion"/>.</summary>
+    public bool UpdateAvailable { get; set; }
+
+    /// <summary>True while a check or an install of the agent itself is running (the agent restarts by itself).</summary>
+    public bool InProgress { get; set; }
+
+    /// <summary>When the last check ran; null until one has.</summary>
+    public DateTimeOffset? LastCheckUtc { get; set; }
+
+    /// <summary>Why the last check or update failed, when it did.</summary>
+    public string? LastError { get; set; }
+
+    /// <summary>The effective <c>AgentAutoUpdate</c>: false means the administrator owns the binaries and requests are refused.</summary>
+    public bool Enabled { get; set; }
 }
 
 public sealed class SettingsSummary

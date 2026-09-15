@@ -264,6 +264,42 @@ Internet Options proxy.
   by hand, silently, as SYSTEM.
 - The install times out: raise `InstallTimeoutMinutes` for slow installers.
 
+## The close-apps dialog keeps coming back
+
+"Close apps and update" closes what the **tray agent** can reach, and that is only windowed processes
+in the user's own session at the user's own integrity level. Three kinds of process are out of its
+reach:
+
+- **Console processes** - `pwsh` in Windows Terminal, `node`, `python`. They have no main window, so
+  `WM_CLOSE` does nothing at all.
+- **Elevated processes** - an administrative PowerShell. A medium-integrity agent may not touch them.
+- **Processes in another session** - another signed-in user, a scheduled task, or anything in session 0.
+
+Before 1.2 the service re-checked the blocking processes just before installing, found one of those,
+and prompted again - so pressing the button simply brought the dialog straight back, forever.
+
+Now the tray kills what it can in its own session and then hands the rest to the service, which runs
+as LocalSystem and can end any of them. In the service log this looks like:
+
+```text
+PowerShell 7: closing pwsh (pid 4242, session 3, H-SURFACELAP5\bob) before the install (the user chose Close apps and update)
+Terminated pwsh (pid 4242, session 3, H-SURFACELAP5\bob) to install PowerShell 7
+```
+
+The dialog itself now marks those processes - "pwsh — elevated", "pwsh — another session
+(H-SURFACELAP5\bob)" - and says that the service closes them.
+
+If the dialog still reappears:
+
+- Check the **tray version**: an agent older than 1.2 does not send `CloseBlockingProcesses`, so the
+  service keeps the old prompt-and-wait behaviour. Update the agent on that device.
+- If the install fails instead with `Could not close pwsh (pid …, session …, …)`, the process
+  resisted termination even as SYSTEM (a protected process, or one stuck in a kernel wait). End it by
+  hand or reboot; the update is retried after the next scan.
+- The service only closes processes for a user request that is less than an hour old, or when
+  `ForceCloseAtDeadline = 1` and the grace period has run out. Anything else keeps asking the user,
+  by design.
+
 ## Configuration changes have no effect
 
 Ask the agent what it actually sees first - it prints every value with the layer it came from:

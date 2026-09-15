@@ -44,6 +44,7 @@ public sealed class TrayIconService : IHostedService
     private TaskbarIcon? _icon;
     private MenuItem? _checkNowItem;
     private MenuItem? _updateAllItem;
+    private MenuItem? _agentUpdateItem;
     private IconVariant? _currentVariant;
     private int _currentBadge = -1;
     private int _iconSize = 16;
@@ -132,6 +133,14 @@ public sealed class TrayIconService : IHostedService
                 () => _store.IsConnected && !_store.UpdateAllPending && _store.InstallableUpdates.Count > 0),
         };
         menu.Items.Add(_updateAllItem);
+
+        // The agent's own update: a check, or - once the service knows a newer release - the update itself.
+        _agentUpdateItem = new MenuItem
+        {
+            Header = Strings.TrayMenuCheckAgentUpdate,
+            Command = new RelayCommand(RequestAgentUpdate, CanRequestAgentUpdate),
+        };
+        menu.Items.Add(_agentUpdateItem);
         menu.Items.Add(new Separator());
         menu.Items.Add(new MenuItem
         {
@@ -163,6 +172,26 @@ public sealed class TrayIconService : IHostedService
         _log.LogInformation("User requested a scan from the tray menu");
         _ = _ipc.RequestScanAsync();
     }
+
+    /// <summary>
+    /// Asks the service to check for a newer agent - and to install it when the state already says one is available,
+    /// which is what the item's wording then promises. The service refuses when policy or an install says no.
+    /// </summary>
+    private async void RequestAgentUpdate()
+    {
+        var install = _store.AgentUpdate is { UpdateAvailable: true };
+        _log.LogInformation("User chose the agent {Kind} from the tray menu", install ? "update" : "update check");
+        var messageId = await _ipc.RequestAgentUpdateAsync(checkOnly: !install).ConfigureAwait(true);
+        if (messageId is null)
+        {
+            _log.LogWarning("The agent update request was not sent: the service pipe is not connected");
+            return;
+        }
+        _store.TrackAgentUpdateRequest(messageId);
+    }
+
+    private bool CanRequestAgentUpdate() =>
+        _store.IsConnected && _store.AgentUpdate is { Enabled: true, InProgress: false } && !_store.AgentUpdateRequested;
 
     private void Refresh()
     {
@@ -204,6 +233,14 @@ public sealed class TrayIconService : IHostedService
         {
             _updateAllItem.Header = Strings.UpdateAllCount(_store.IsConnected ? _store.InstallableUpdates.Count : 0);
             (_updateAllItem.Command as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+        if (_agentUpdateItem is not null)
+        {
+            // Offer the update itself as soon as the service knows of one, so the item says what pressing it does.
+            _agentUpdateItem.Header = _store.AgentUpdate is { UpdateAvailable: true, LatestVersion: { } version }
+                ? Strings.TrayMenuUpdateAgent(version)
+                : Strings.TrayMenuCheckAgentUpdate;
+            (_agentUpdateItem.Command as RelayCommand)?.RaiseCanExecuteChanged();
         }
     }
 

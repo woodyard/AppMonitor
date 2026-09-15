@@ -52,11 +52,21 @@
                                        Margin="0,1,8,0"
                                        Foreground="{DynamicResource BrandPrimaryTextBrush}"
                                        Text="&#xE7C4;" />
-                            <TextBlock Grid.Column="1"
-                                       Style="{StaticResource BodyText}"
-                                       TextWrapping="NoWrap"
-                                       TextTrimming="CharacterEllipsis"
-                                       Text="{Binding FriendlyName}" />
+                            <!-- The qualifier goes on its own line so a long window title cannot squeeze it out. -->
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Style="{StaticResource BodyText}"
+                                           TextWrapping="NoWrap"
+                                           TextTrimming="CharacterEllipsis"
+                                           Text="{Binding FriendlyName}" />
+                                <!-- elevated / another session: this agent cannot close those, the service will -->
+                                <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                           Margin="0,2,0,0"
+                                           TextWrapping="NoWrap"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{DynamicResource BrandTerracottaTextBrush}"
+                                           Text="{Binding Qualifier}"
+                                           Visibility="{Binding HasQualifier, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
                             <TextBlock Grid.Column="2"
                                        Style="{StaticResource TertiaryCaptionText}"
                                        Margin="8,2,0,0"
@@ -68,6 +78,12 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
         </Border>
+
+        <TextBlock Style="{StaticResource CaptionText}"
+                   Margin="0,12,0,0"
+                   TextWrapping="Wrap"
+                   Text="{Binding ServiceCloseHint}"
+                   Visibility="{Binding ShowServiceCloseHint, Converter={StaticResource BoolToVisibility}}" />
 
         <TextBlock Style="{StaticResource CaptionText}"
                    Margin="0,12,0,0"

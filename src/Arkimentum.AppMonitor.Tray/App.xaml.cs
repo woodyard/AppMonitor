@@ -118,6 +118,7 @@ public partial class App : Application
         services.AddSingleton<NotificationService>();
         services.AddSingleton<UserContextExecutor>();
         services.AddSingleton<TrayIconService>();
+        services.AddSingleton<AgentUpdateViewModel>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton<AboutViewModel>();
 

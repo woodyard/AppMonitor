@@ -21,6 +21,9 @@ public static class Strings
     // ---------------------------------------------------------------- tray
     public const string TrayMenuOpen = "Open Arkimentum AppMonitor";
     public const string TrayMenuCheckNow = "Check for updates now";
+    public const string TrayMenuCheckAgentUpdate = "Check for agent update";
+    /// <summary>Replaces <see cref="TrayMenuCheckAgentUpdate"/> once the service knows a newer agent release exists.</summary>
+    public static string TrayMenuUpdateAgent(string version) => $"Update AppMonitor to {version}";
     public const string TrayMenuOpenLogFolder = "Open log folder";
     public const string TrayMenuAbout = "About Arkimentum AppMonitor";
     public const string TrayMenuExit = "Exit (debug)";
@@ -121,6 +124,27 @@ public static class Strings
     public static string EveryDuration(string duration) => $"Every {duration}";
     public static string AndMore(int count) => $"and {count} more";
 
+    // ---------------------------------------------------------------- the agent's own update
+    /// <summary>The two buttons next to the agent version, in the details footer and in the About dialog.</summary>
+    public const string AgentCheckForUpdates = "Check for updates";
+    public const string AgentUpdateNow = "Update now";
+
+    /// <summary>Joins the version and its status: "1.1.3 · up to date (checked 16:22)".</summary>
+    public static string AgentVersionWithStatus(string version, string status) => $"{version}{StatusSeparator}{status}";
+
+    public static string AgentUpToDate(string when) => $"up to date (checked {when})";
+    public const string AgentNotCheckedYet = "not checked yet";
+    public static string AgentUpdateAvailable(string version) => $"update {version} available";
+    public const string AgentUpdateDisabled = "updates disabled by policy";
+    public const string AgentUpdateChecking = "checking…";
+    public const string AgentUpdateCheckFailed = "the last check failed";
+
+    /// <summary>Progress banner while the service replaces the agent; it stops and starts the tray itself.</summary>
+    public static string AgentUpdateProgress(string version) =>
+        $"Updating {ProductName} to {version}… the agent restarts by itself";
+    /// <summary>The same banner before a version is known (the check is still running).</summary>
+    public const string AgentUpdateProgressUnknown = "Updating " + ProductName + "… the agent restarts by itself";
+
     // ---------------------------------------------------------------- close-apps dialog
     public const string CloseAppsIntro = "These applications must be closed before the update can be installed:";
     public const string CloseAppsIntroSingle = "This application must be closed before the update can be installed:";
@@ -128,12 +152,27 @@ public static class Strings
     public const string CloseAppsAndUpdate = "Close apps and update";
     public const string CloseAppsNotNow = "Not now";
     public const string CloseAppsClosing = "Closing applications…";
+    public const string CloseAppsForcing = "Closing what did not respond…";
     public const string CloseAppsCountdownElapsed = "Your apps are being closed now.";
     public const string CloseAppsAllClosed = "All applications closed. Starting the update…";
+    /// <summary>Shown when something is left that only the service can end; the dialog then closes instead of re-asking.</summary>
+    public const string CloseAppsHandedToService = "The update service is closing the rest and then installs the update…";
+    /// <summary>Explains the "elevated" / "another session" markers below the list of blocking applications.</summary>
+    public const string CloseAppsServiceCloses =
+        "Some of these run as an administrator or in another user's session, so this app cannot close them — " +
+        "the update service closes those for you when you choose \"Close apps and update\".";
+    /// <summary>Marker after a process that runs elevated: this agent cannot touch it.</summary>
+    public const string CloseAppsElevated = "elevated";
+    /// <summary>Marker for a process in a session other than the one this agent runs in, when the user is not readable.</summary>
+    public const string CloseAppsOtherSession = "another session";
 
     public static string CloseAppsTitle(string displayName) => $"Close apps to update {displayName}";
     public static string CloseAppsCountdown(string remaining) => $"Your apps will be closed automatically in {remaining}";
     public static string CloseAppsStillRunning(string processes) => $"Still running: {processes}. Close them and try again.";
+    /// <summary>"another session (H-SURFACELAP5\bob)" — who else has the application open.</summary>
+    public static string CloseAppsOtherSessionAs(string userName) => $"{CloseAppsOtherSession} ({userName})";
+    /// <summary>Wraps the markers so they read as an aside: "pwsh — elevated, another session (CONTOSO\bob)".</summary>
+    public static string CloseAppsQualifier(string markers) => $"— {markers}";
 
     // ---------------------------------------------------------------- about dialog
     public const string AboutTitle = "About " + ProductName;

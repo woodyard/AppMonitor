@@ -191,9 +191,22 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions
         IReadOnlyList<string> stillRunning;
         try
         {
+            // Ask nicely first: a window that has unsaved work gets its chance to say so.
             stillRunning = await Task.Run(
                 () => ProcessHelper.CloseAsync(names, AppInfo.SessionId, GracefulWait, force: false, _cts.Token),
                 _cts.Token).ConfigureAwait(true);
+
+            if (stillRunning.Count > 0)
+            {
+                // Then mean what the button says. A console process (pwsh in Windows Terminal, for instance) has no
+                // main window to close, so WM_CLOSE alone never ends it and the dialog used to come straight back.
+                _log.LogInformation("{Count} application(s) ignored the close request for {Key}; terminating them: {StillRunning}",
+                    stillRunning.Count, update.Key, string.Join(", ", stillRunning));
+                dialog.StatusMessage = Strings.CloseAppsForcing;
+                stillRunning = await Task.Run(
+                    () => ProcessHelper.CloseAsync(stillRunning, AppInfo.SessionId, TimeSpan.Zero, force: true, _cts.Token),
+                    _cts.Token).ConfigureAwait(true);
+            }
         }
         catch (OperationCanceledException) { return; }
         catch (Exception ex)
@@ -202,18 +215,14 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions
             stillRunning = ProcessHelper.GetRunning(names, AppInfo.SessionId);
         }
 
+        // Anything left runs elevated or in another user's session: this agent has no rights over either, so it hands
+        // the job to the service, which runs as LocalSystem. Never leave the dialog up waiting for the impossible.
         if (stillRunning.Count > 0)
-        {
-            _log.LogInformation("{Count} application(s) did not close for {Key}: {StillRunning}",
+            _log.LogWarning("{Count} application(s) are out of this agent's reach for {Key}; asking the service to close them: {StillRunning}",
                 stillRunning.Count, update.Key, string.Join(", ", stillRunning));
-            dialog.SetProcesses(stillRunning.ToList());
-            dialog.StatusMessage = Strings.CloseAppsStillRunning(Friendly(stillRunning));
-            dialog.IsBusy = false;
-            return;
-        }
 
-        dialog.StatusMessage = Strings.CloseAppsAllClosed;
-        await _ipc.InstallNowAsync(update.Key).ConfigureAwait(true);
+        dialog.StatusMessage = stillRunning.Count == 0 ? Strings.CloseAppsAllClosed : Strings.CloseAppsHandedToService;
+        await _ipc.InstallNowAsync(update.Key, closeBlockingProcesses: true).ConfigureAwait(true);
         dialog.RequestClose();
     }
 

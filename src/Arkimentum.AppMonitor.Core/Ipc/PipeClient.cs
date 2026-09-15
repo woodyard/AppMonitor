@@ -115,10 +115,15 @@ public sealed class PipeClient : IAsyncDisposable
 
     private static string Truncate(string s) => s.Length > 200 ? s[..200] + "…" : s;
 
+    private bool _disposed;
+
     public async ValueTask DisposeAsync()
     {
-        if (_cts is null) return;
-        _cts.Cancel();
+        // The host disposes hosted services and then the container disposes this again; the second call must be a no-op
+        // (the admin console logged "The CancellationTokenSource has been disposed" from here on every exit).
+        if (_cts is null || _disposed) return;
+        _disposed = true;
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
         _pipe?.Dispose();
         if (_loop is not null) { try { await _loop.ConfigureAwait(false); } catch { } }
         _cts.Dispose();

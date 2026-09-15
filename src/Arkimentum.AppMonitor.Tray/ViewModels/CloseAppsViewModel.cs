@@ -4,6 +4,7 @@ using System.Linq;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Arkimentum.AppMonitor.Models;
+using Arkimentum.AppMonitor.Native;
 using Arkimentum.AppMonitor.Tray.Infrastructure;
 using Arkimentum.AppMonitor.Tray.Resources;
 using Arkimentum.AppMonitor.UI;
@@ -13,11 +14,31 @@ namespace Arkimentum.AppMonitor.Tray.ViewModels;
 /// <summary>One blocking application, named the way the user knows it.</summary>
 public sealed class BlockingProcessViewModel
 {
-    public BlockingProcessViewModel(string processName)
+    /// <param name="processName">The bare process name, as the service reports it.</param>
+    /// <param name="details">
+    /// What the service (running as LocalSystem) could read about the running instances of this process; empty when
+    /// the service is older than 1.2 or could not read anything. Instances that run elevated or in another session
+    /// are the ones this agent cannot close itself, and the dialog has to say so or the user retries forever.
+    /// </param>
+    public BlockingProcessViewModel(string processName, IEnumerable<BlockingProcessInfo>? details = null)
     {
         ProcessName = processName;
         FriendlyName = ProcessDisplay.Friendly(processName);
         ShowProcessName = !string.Equals(FriendlyName, processName, StringComparison.OrdinalIgnoreCase);
+
+        var mine = (details ?? [])
+            .Where(d => string.Equals(ProcessHelper.Normalize(d.ProcessName), ProcessHelper.Normalize(processName), StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        IsElevated = mine.Any(d => d.Elevated == true);
+        var otherSession = mine.Where(d => d.SessionId >= 0 && d.SessionId != AppInfo.SessionId).ToList();
+        IsInAnotherSession = otherSession.Count > 0;
+        OtherSessionUser = otherSession.Select(d => d.UserName).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
+
+        var markers = new List<string>();
+        if (IsElevated) markers.Add(Strings.CloseAppsElevated);
+        if (IsInAnotherSession)
+            markers.Add(OtherSessionUser is null ? Strings.CloseAppsOtherSession : Strings.CloseAppsOtherSessionAs(OtherSessionUser));
+        Qualifier = markers.Count == 0 ? string.Empty : Strings.CloseAppsQualifier(string.Join(", ", markers));
     }
 
     public string ProcessName { get; }
@@ -26,6 +47,23 @@ public sealed class BlockingProcessViewModel
 
     /// <summary>False when the friendly name is just the process name, so it is not printed twice.</summary>
     public bool ShowProcessName { get; }
+
+    /// <summary>At least one instance runs elevated; only the service can end it.</summary>
+    public bool IsElevated { get; }
+
+    /// <summary>At least one instance runs in a session this agent does not own.</summary>
+    public bool IsInAnotherSession { get; }
+
+    /// <summary>Who owns the instance in the other session, when the service could read it.</summary>
+    public string? OtherSessionUser { get; }
+
+    /// <summary>"— elevated, another session (CONTOSO\bob)", or empty when this agent can close it itself.</summary>
+    public string Qualifier { get; }
+
+    public bool HasQualifier => Qualifier.Length > 0;
+
+    /// <summary>True when only the service can close this one.</summary>
+    public bool NeedsService => IsElevated || IsInAnotherSession;
 }
 
 /// <summary>What the close-apps dialog's buttons do. Implemented by <see cref="Services.CloseAppsCoordinator"/>.</summary>
@@ -49,6 +87,7 @@ public sealed class CloseAppsViewModel : ObservableObject, IDisposable
     private PendingUpdate _update;
     private string? _statusMessage;
     private bool _isBusy;
+    private string? _detailsSignature;
 
     public CloseAppsViewModel(PendingUpdate update, ICloseAppsActions actions)
     {
@@ -87,6 +126,14 @@ public sealed class CloseAppsViewModel : ObservableObject, IDisposable
     public string IntroText => Processes.Count == 1 ? Strings.CloseAppsIntroSingle : Strings.CloseAppsIntro;
 
     public string SaveHint => Strings.CloseAppsSaveHint;
+
+    /// <summary>
+    /// True when at least one blocking process runs elevated or in another session. The dialog then explains that this
+    /// agent cannot close those and that the service will: without it the user only sees an app that refuses to close.
+    /// </summary>
+    public bool ShowServiceCloseHint => Processes.Any(p => p.NeedsService);
+
+    public string ServiceCloseHint => Strings.CloseAppsServiceCloses;
 
     /// <summary>True while a forced close is scheduled: the dialog stays on top and counts down.</summary>
     public bool ForceClosePending => _update.ForceCloseAtUtc is not null;
@@ -143,7 +190,7 @@ public sealed class CloseAppsViewModel : ObservableObject, IDisposable
         _update = update;
 
         var names = update.BlockingProcesses.Count > 0 ? update.BlockingProcesses : update.ProcessNames;
-        SetProcesses(names);
+        SetProcesses(names, update.BlockingDetails);
 
         var wanted = update.CanDefer(DateTimeOffset.UtcNow)
             ? update.DeferralOptionsMinutes.Where(m => m > 0).Distinct().ToList()
@@ -163,13 +210,21 @@ public sealed class CloseAppsViewModel : ObservableObject, IDisposable
             nameof(CountdownText), nameof(ShowDefer), nameof(ShowNotNow));
     }
 
-    /// <summary>Narrows the list to the processes that are still running after a close attempt.</summary>
-    public void SetProcesses(IReadOnlyList<string> names)
+    /// <summary>
+    /// Narrows the list to the processes that are still running after a close attempt. <paramref name="details"/> is
+    /// what the service could read about them; pass it whenever it is at hand so the markers stay accurate.
+    /// </summary>
+    public void SetProcesses(IReadOnlyList<string> names, IReadOnlyList<BlockingProcessInfo>? details = null)
     {
-        if (Processes.Select(p => p.ProcessName).SequenceEqual(names, StringComparer.OrdinalIgnoreCase)) return;
+        details ??= _update.BlockingDetails;
+        // Rebuilding is not free (the friendly name walks the process list), so skip it while nothing moved - the
+        // signature covers the markers too, or an instance appearing in another session would go unnoticed.
+        var signature = string.Join("|", details.Select(d => $"{d.ProcessName}:{d.ProcessId}:{d.SessionId}:{d.Elevated}"));
+        if (signature == _detailsSignature && Processes.Select(p => p.ProcessName).SequenceEqual(names, StringComparer.OrdinalIgnoreCase)) return;
+        _detailsSignature = signature;
         Processes.Clear();
-        foreach (var name in names) Processes.Add(new BlockingProcessViewModel(name));
-        OnPropertyChanged(nameof(IntroText));
+        foreach (var name in names) Processes.Add(new BlockingProcessViewModel(name, details));
+        OnPropertyChanged(nameof(IntroText), nameof(ShowServiceCloseHint));
     }
 
     public void Dispose() => _countdown.Stop();

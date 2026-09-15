@@ -95,6 +95,8 @@ public sealed class MainViewModel : ObservableObject
     private readonly RelayCommand _signOutCommand;
 
     private NavigationItemViewModel _selectedItem;
+    private readonly CloudConnectViewModel _connect;
+    private readonly NavigationItemViewModel _devicesItem;
     private string? _savedNotice;
     private bool _reverting;
 
@@ -152,6 +154,10 @@ public sealed class MainViewModel : ObservableObject
 
         _applyCommand = new RelayCommand(Apply, () => Editor.CanApply);
         _discardCommand = new RelayCommand(Discard, () => Editor.IsDirty);
+        _connect = connect;
+        _devicesItem = NavigationItems.First(i => ReferenceEquals(i.Page, devices));
+        _connect.OrganizationChosen += () => SelectedItem = _devicesItem;
+
         _scanCommand = new RelayCommand(RequestScan, () => _ipc.IsConnected);
         _signOutCommand = new RelayCommand(SignOut, () => _session.IsSignedIn);
         AboutCommand = new RelayCommand(ShowAbout);
@@ -344,6 +350,18 @@ public sealed class MainViewModel : ObservableObject
         _applyCommand.RaiseCanExecuteChanged();
         _discardCommand.RaiseCanExecuteChanged();
         if (Editor.IsDirty) SavedNotice = null;
+    }
+
+    /// <summary>
+    /// Called once the window is on screen: restores the previous cloud sign-in from the token cache and, when that
+    /// leaves an organization selected and the administrator has not navigated anywhere yet, opens its Devices page.
+    /// An administrator who signed in yesterday should not have to press Sign in again today.
+    /// </summary>
+    public async Task RestoreSessionAsync()
+    {
+        var restored = await _connect.RestoreAsync().ConfigureAwait(true);
+        if (!restored || _session.Organization is null) return;
+        if (ReferenceEquals(_selectedItem, NavigationItems.First(i => !i.IsHeader))) SelectedItem = _devicesItem;
     }
 
     private void OnSessionChanged()

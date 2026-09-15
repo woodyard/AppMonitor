@@ -24,6 +24,13 @@ public sealed class PendingUpdate
     public DateTimeOffset? LastNotifiedUtc { get; set; }
     /// <summary>When set, blocking processes will be terminated at this time.</summary>
     public DateTimeOffset? ForceCloseAtUtc { get; set; }
+    /// <summary>
+    /// Set when a user pressed "Close apps and update" (added after 1.1.1; older state files simply lack it).
+    /// The tray closes and then kills what it can reach in its own session; whatever still blocks is elevated or
+    /// in another session, so the service - running as LocalSystem - terminates it instead of prompting again,
+    /// which is what used to make the dialog reappear forever. Cleared when the install finishes or fails.
+    /// </summary>
+    public DateTimeOffset? ForceCloseRequestedUtc { get; set; }
     public DateTimeOffset? InstalledAtUtc { get; set; }
 
     public bool Mandatory { get; set; }
@@ -37,6 +44,12 @@ public sealed class PendingUpdate
     public List<string> ProcessNames { get; set; } = [];
     /// <summary>Process names currently detected running (subset of <see cref="ProcessNames"/>).</summary>
     public List<string> BlockingProcesses { get; set; } = [];
+    /// <summary>
+    /// Per-instance detail for <see cref="BlockingProcesses"/> as the service (SYSTEM) sees them, so the tray can
+    /// tell the user which of them it cannot close itself. Optional (added after 1.1.1): an older service leaves
+    /// it empty and the dialog falls back to the bare names.
+    /// </summary>
+    public List<BlockingProcessInfo> BlockingDetails { get; set; } = [];
     public string? LastError { get; set; }
     public int FailureCount { get; set; }
     /// <summary>Set when the user chose "Dismiss" on a non-mandatory update; re-notified after the interval.</summary>
@@ -86,6 +99,7 @@ public sealed class PendingUpdate
         c.DeferralOptionsMinutes = [.. DeferralOptionsMinutes];
         c.ProcessNames = [.. ProcessNames];
         c.BlockingProcesses = [.. BlockingProcesses];
+        c.BlockingDetails = [.. BlockingDetails.Select(d => d.Clone())];
         return c;
     }
 }

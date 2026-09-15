@@ -124,6 +124,7 @@ public static class PolicyEngine
                 existing.DeferralCount = 0;
                 existing.DeferredUntilUtc = null;
                 existing.ForceCloseAtUtc = null;
+                existing.ForceCloseRequestedUtc = null;
                 existing.LastNotifiedUtc = null;
                 existing.Announced = false;
                 existing.Dismissed = false;
@@ -267,6 +268,35 @@ public static class PolicyEngine
         return notificationDue ? new PolicyAction(PolicyActionKind.Notify, NotificationKind.UpdateAvailable) : PolicyAction.None;
     }
 
+    /// <summary>
+    /// How long a user's "Close apps and update" stays a licence for the service to kill. The install normally starts
+    /// within seconds; the window only guards against a request that was persisted and then sat around (no tray agent
+    /// for a user-context install, a service restart), after which the user is asked again rather than surprised.
+    /// </summary>
+    public static readonly TimeSpan ForceCloseRequestWindow = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Decides whether the service may terminate the processes that block an update itself instead of prompting the
+    /// user again. Two things earn that, and nothing else: the user pressed "Close apps and update" recently - the
+    /// dialog warns that unsaved work may be lost, and the tray has already closed everything it could reach in its
+    /// own session - or deadline enforcement is on and its grace period has run out. Without this the service keeps
+    /// re-prompting for processes no tray agent can ever close (elevated, or in another session) and the dialog
+    /// reappears forever.
+    /// </summary>
+    public static bool MayServiceForceClose(PendingUpdate u, DateTimeOffset now)
+    {
+        if (u.State is UpdateState.Installing or UpdateState.Installed) return false;
+        if (u.ForceCloseRequestedUtc is { } requested && now - requested <= ForceCloseRequestWindow) return true;
+        return u.ForceCloseAtDeadline && u.IsPastDeadline(now) && u.ForceCloseAtUtc is { } at && now >= at;
+    }
+
+    /// <summary>Records that a user pressed "Close apps and update" for this update.</summary>
+    public static void RequestForcedClose(PendingUpdate u, DateTimeOffset now)
+    {
+        if (u.State is UpdateState.Installed) return;
+        u.ForceCloseRequestedUtc = now;
+    }
+
     /// <summary>Applies a user deferral. Returns false (and leaves the update untouched) when the request is not allowed.</summary>
     public static bool TryDefer(PendingUpdate u, int minutes, DateTimeOffset now, out string? reason)
     {
@@ -281,6 +311,7 @@ public static class PolicyEngine
         u.DeferralCount++;
         u.State = UpdateState.Deferred;
         u.ForceCloseAtUtc = null;
+        u.ForceCloseRequestedUtc = null; // the user changed their mind; withdraw the licence to kill
         u.LastNotifiedUtc = now;
         u.Dismissed = false;
         u.InstallRequested = false;
@@ -292,6 +323,7 @@ public static class PolicyEngine
         if (u.State is UpdateState.Installing or UpdateState.Installed or UpdateState.Scheduled) return;
         u.Dismissed = true;
         u.InstallRequested = false;
+        u.ForceCloseRequestedUtc = null; // the user changed their mind; withdraw the licence to kill
         u.LastNotifiedUtc = now;
         if (u.State is UpdateState.WaitingForClose or UpdateState.Deferred) u.State = UpdateState.Available;
         if (!u.IsPastDeadline(now)) u.ForceCloseAtUtc = null;
@@ -318,8 +350,10 @@ public static class PolicyEngine
         u.InstalledAtUtc = now;
         u.LastError = null;
         u.ForceCloseAtUtc = null;
+        u.ForceCloseRequestedUtc = null;
         u.InstallRequested = false;
         u.BlockingProcesses = [];
+        u.BlockingDetails = [];
         if (!string.IsNullOrWhiteSpace(result.InstalledVersion)) u.InstalledVersion = result.InstalledVersion;
         else if (u.AvailableVersion is not null) u.InstalledVersion = u.AvailableVersion;
     }
@@ -331,13 +365,20 @@ public static class PolicyEngine
         u.LastError = error;
         u.LastNotifiedUtc = null; // notify about the failure promptly
         u.ForceCloseAtUtc = null;
+        u.ForceCloseRequestedUtc = null; // a new attempt must be asked for again
         u.InstallRequested = false;
     }
 
-    public static void MarkWaitingForClose(PendingUpdate u, IReadOnlyList<string> blocking, DateTimeOffset now, bool scheduleForcedClose)
+    /// <summary>
+    /// Parks the update until the blocking processes are gone. <paramref name="details"/> is what the service (SYSTEM)
+    /// could read about each instance, so the tray dialog can say which of them it is not able to close itself.
+    /// </summary>
+    public static void MarkWaitingForClose(PendingUpdate u, IReadOnlyList<string> blocking, DateTimeOffset now, bool scheduleForcedClose,
+        IReadOnlyList<BlockingProcessInfo>? details = null)
     {
         u.State = UpdateState.WaitingForClose;
         u.BlockingProcesses = [.. blocking];
+        if (details is not null) u.BlockingDetails = [.. details];
         if (scheduleForcedClose && u.ForceCloseAtDeadline && u.IsPastDeadline(now) && u.ForceCloseAtUtc is null)
             u.ForceCloseAtUtc = now.AddMinutes(Math.Max(0, u.CloseGracePeriodMinutes));
     }

@@ -112,6 +112,9 @@ public sealed class PipeServer : IAsyncDisposable
                     // Establish who is on the other end from the OS, not from the message payload. Impersonating a
                     // named-pipe client is only possible once data has been read from it, hence after the first line.
                     ResolveIdentity(pipe, conn);
+                    // RunAsClient reverts the impersonation itself; this is the safety net for the day it does not,
+                    // because the thread carries on to run handlers, saves and installs for the SYSTEM service.
+                    Native.ImpersonationGuard.RevertIfImpersonating(_logger, "pipe client identification");
                     registered = true;
                     _clients[conn.ConnectionId] = conn;
                     _logger.LogInformation("Tray agent connected: {Client}", conn);
@@ -129,6 +132,7 @@ public sealed class PipeServer : IAsyncDisposable
                 }
                 if (MessageReceived is { } handler)
                 {
+                    Native.ImpersonationGuard.RevertIfImpersonating(_logger, $"before handling {msg.GetType().Name} from {conn}");
                     try { await handler(conn, msg).ConfigureAwait(false); }
                     catch (Exception ex) { _logger.LogError(ex, "Handler failed for {Type} from {Client}", msg.GetType().Name, conn); }
                 }

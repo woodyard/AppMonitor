@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using Arkimentum.AppMonitor.Cloud;
+using Arkimentum.AppMonitor.Service;
 using Arkimentum.AppMonitor.Service.Update;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -203,6 +204,76 @@ public class AgentUpdaterTests
             Assert.Equal(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant(), hash);
         }
         finally { File.Delete(path); }
+    }
+
+    // ------------------------------------------------------------------ client-initiated update (UpdateAgentMessage)
+
+    [Fact]
+    public void A_client_may_ask_for_an_update_when_nothing_stands_in_the_way() =>
+        Assert.Null(UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, applicationInstallRunning: false, agentUpdateRunning: false));
+
+    [Fact]
+    public void A_client_request_is_refused_when_the_administrator_turned_agent_updates_off() =>
+        Assert.Equal("Agent updates are disabled by policy",
+            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: false, applicationInstallRunning: false, agentUpdateRunning: false));
+
+    [Fact]
+    public void A_client_request_is_refused_while_an_application_is_being_installed() =>
+        Assert.Equal("An application is being updated; try the agent update again when it has finished",
+            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, applicationInstallRunning: true, agentUpdateRunning: false));
+
+    [Fact]
+    public void A_client_request_is_refused_while_an_agent_update_is_already_running() =>
+        Assert.Equal("An agent update is already running",
+            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, applicationInstallRunning: false, agentUpdateRunning: true));
+
+    [Fact]
+    public void A_client_request_is_refused_when_this_process_has_no_self_updater() =>
+        Assert.Equal("Agent updates are not available in this mode",
+            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: false, autoUpdateEnabled: true, applicationInstallRunning: false, agentUpdateRunning: false));
+
+    [Fact]
+    public void A_check_reports_an_available_update_without_promising_an_install()
+    {
+        var outcome = AgentUpdater.Decide(Manifest("1.1.4"), "1.1.3", null, "stable");
+
+        var (ok, message) = UpdateCoordinator.DescribeAgentUpdate(outcome, checkOnly: true);
+
+        Assert.True(ok);
+        Assert.Equal("Update 1.1.4 available", message);
+    }
+
+    [Fact]
+    public void An_install_request_answers_that_the_agent_is_about_to_restart()
+    {
+        var outcome = AgentUpdater.Decide(Manifest("1.1.4"), "1.1.3", null, "stable");
+
+        var (ok, message) = UpdateCoordinator.DescribeAgentUpdate(outcome, checkOnly: false);
+
+        Assert.True(ok);
+        Assert.Equal("Updating to 1.1.4 - the agent will restart", message);
+    }
+
+    [Fact]
+    public void An_unreadable_feed_is_answered_as_a_failed_check()
+    {
+        var outcome = new AgentUpdateOutcome(AgentUpdateAction.NoManifest, "The release feed could not be read: no such host");
+
+        var (ok, message) = UpdateCoordinator.DescribeAgentUpdate(outcome, checkOnly: true);
+
+        Assert.False(ok);
+        Assert.StartsWith("Check failed: ", message);
+    }
+
+    [Fact]
+    public void A_pinned_device_is_told_why_it_stays_where_it_is()
+    {
+        var outcome = AgentUpdater.Decide(Manifest("1.1.4"), "1.1.3", "1.1.3", "stable");
+
+        var (ok, message) = UpdateCoordinator.DescribeAgentUpdate(outcome, checkOnly: true);
+
+        Assert.True(ok);
+        Assert.Contains("AgentTargetVersion", message);
     }
 
     /// <summary>HttpMessageHandler stub; disposal is a no-op so one handler can serve several clients.</summary>

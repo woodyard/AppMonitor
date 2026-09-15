@@ -55,6 +55,12 @@ without a UAC prompt at all.
   own (`AutoInstallPrerequisites`, `PrerequisiteCheckIntervalHours`, `WingetMinimumVersion` - see
   [`Registry.md`](Registry.md#prerequisites)); it needs outbound HTTPS to github.com, aka.ms,
   nuget.org and the PowerShell Gallery.
+- **Update agent** - next to it: asks the service (over the same pipe, `updateAgent`) to check the
+  release feed and install a newer AppMonitor release on this device now, instead of waiting for the
+  scheduled check. The service does the work as SYSTEM and answers in the notice line - *Up to date:
+  1.1.3*, *Updating to 1.1.4 - the agent will restart*, or why it refused: `AgentAutoUpdate` is `0`,
+  an application update is installing, or an agent update is already running. See
+  [`SelfUpdate.md`](SelfUpdate.md#from-the-client).
 - **Pending updates** - what the last scan found: application, installed and available version, state
   (available, deferred, scheduled, waiting for close, installing, failed), deadline and deferral count.
 - **Configuration summary** - the effective values with the layer each came from (Policy, Preference,
@@ -124,6 +130,12 @@ Switch with **Organization** in the console's header. Local mode stays exactly a
 not interfere, and the console remains usable on a machine that has no cloud at all.
 
 ### Signing in
+
+Once you have signed in on a machine, the console restores that sign-in by itself the next time it
+opens: it connects to the remembered server, takes the token from the MSAL cache
+(`%LOCALAPPDATA%\Arkimentum\AppMonitor\msal.cache`, protected with DPAPI) and opens the organization's
+Devices page. No browser is opened for that; only when the cache holds nothing usable does the console
+wait for the Sign in button. Sign out clears the cache.
 
 Organization mode signs in with **Entra ID**, not with local administrative rights:
 

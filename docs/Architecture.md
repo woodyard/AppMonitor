@@ -182,7 +182,8 @@ Data flows in full, the security model, and the exact fields that leave the devi
 ## Self-update
 
 Runs on `AgentUpdateCheckIntervalHours` (default 12) when `AgentAutoUpdate` is on, and on demand
-(`--update-now`, or the *Update agent* command).
+(`--update-now`, the *Update agent* command, or a `updateAgent` message from the tray agent or the
+admin console).
 
 1. Read the manifest from `AgentUpdateFeedUrl` - a GitHub releases API URL (`.../releases/latest` or
    `.../releases/tags/v1.2.0`, public repositories only) or a direct `manifest.json` - or from the cloud
@@ -272,7 +273,8 @@ Rules encoded in the model (`PendingUpdate`):
 | Deadline | Only mandatory updates have one: `DeadlineUtc = FirstDetectedUtc + DeadlineHours`. `DeadlineHours = 0` means no deadline, so a mandatory update waits for the user but can no longer be deferred once deferrals run out. |
 | Past deadline | `Mandatory` and `now >= DeadlineUtc`: deferral is refused and the install is forced. |
 | Blocking processes | The `ProcessNames` of the application that are currently running. For user-context updates only processes in that user's session count. |
-| Forced close | When the deadline has passed and `ForceCloseAtDeadline = 1`, the user is warned and `ForceCloseAtUtc = now + CloseGracePeriodMinutes`. At that moment the tray agent asks the windows to close (`WM_CLOSE`), waits the graceful period, and kills what is left; the service kills any survivor it can see. With `ForceCloseAtDeadline = 0` the update simply waits. |
+| Forced close | When the deadline has passed and `ForceCloseAtDeadline = 1`, the user is warned and `ForceCloseAtUtc = now + CloseGracePeriodMinutes`. At that moment the tray agent asks the windows to close (`WM_CLOSE`), waits the graceful period, and kills what is left; the service then terminates every survivor in every session. With `ForceCloseAtDeadline = 0` the update simply waits. |
+| Close apps and update | The user pressing the button in the close-apps dialog sets `ForceCloseRequestedUtc`, which lets the service terminate blocking processes for the next hour - see "Closing blocking applications" below. |
 | Auto install | `AutoInstall = 1` installs without asking as soon as no blocking process is running - no notification other than the optional "installed" toast (`ShowInstalledNotifications`, off by default). |
 | Notification style | `NotificationMode` (global, per-app override). `Quiet` (default) announces an update once - `PendingUpdate.Announced` records it - and afterwards only notifies about a deadline approaching, applications to close, or a failed install; there is no "installing" toast. `Reminders` is the pre-1.2 behaviour: one reminder per `NotificationIntervalMinutes` for as long as the update is pending. |
 | Dismiss | A non-mandatory update the user dismissed is re-announced after `NotificationIntervalMinutes` in `Reminders` mode; in `Quiet` mode it stays dismissed until a new version appears or a deadline approaches. |
@@ -280,6 +282,45 @@ Rules encoded in the model (`PendingUpdate`):
 
 Pending state is persisted to `state.json` so deferrals, deadlines and deferral counts survive a
 service restart or reboot.
+
+### Closing blocking applications
+
+Window handles are session-bound and a medium-integrity process cannot touch an elevated one, so the
+two halves of the agent can close different things:
+
+| Who | Can close |
+| --- | --- |
+| Tray agent (per user, medium integrity) | Windowed processes of that user, in that user's own session: `WM_CLOSE` first, then `Process.Kill` |
+| Service (LocalSystem) | Everything: console processes with no window, elevated processes, scheduled tasks, other users' sessions, session 0 |
+
+The flow when the user presses **Close apps and update**:
+
+1. The tray sends `WM_CLOSE` to every blocking process in its own session and waits 30 seconds, so an
+   application with unsaved work still gets its say.
+2. Whatever ignored that is killed - the button says what it does, and the dialog warns beforehand
+   that unsaved changes may be lost. A console process such as `pwsh` in Windows Terminal has no main
+   window at all, so this is the only step that ever ends it.
+3. The tray sends `installNow` with `CloseBlockingProcesses = true` and **closes the dialog**. It does
+   not stay open waiting for something it can never close.
+4. The service records `PendingUpdate.ForceCloseRequestedUtc`. On its blocking re-check just before the
+   install (`UpdateCoordinator.InstallAsync`), `PolicyEngine.MayServiceForceClose` is now true, so it
+   terminates the remaining processes with their process trees - in every session for a machine-wide
+   update - logs each one as `Terminated pwsh (pid 4242, session 3, H-SURFACELAP5\bob, elevated)`,
+   records a `ForcedClose` event for the cloud report, and installs.
+5. If something cannot be terminated at all, the install **fails** with a message naming the process,
+   its session and its owner. It never prompts again for the same thing: that is what used to make the
+   dialog reappear forever for an elevated or cross-session `pwsh`.
+
+`MayServiceForceClose` is the single decision point and only two things satisfy it: a user request
+that is less than `PolicyEngine.ForceCloseRequestWindow` (one hour) old, or deadline enforcement with
+`ForceCloseAtDeadline = 1` whose grace period has expired. Deferring or dismissing withdraws the
+request, and it is cleared when the install finishes or fails.
+
+`PendingUpdate.BlockingDetails` carries what the service could read about each running instance - pid,
+session, owner, elevation - so the tray dialog can mark the ones it cannot close itself
+("pwsh — elevated", "pwsh — another session (H-SURFACELAP5\bob)") and explain that the service will
+close those. Both fields are optional and additive: an older tray or an older service simply does not
+see them.
 
 ## IPC
 
@@ -299,21 +340,23 @@ session id from the pipe handle, so one user cannot act on another user's update
 | `hello` | `HelloMessage` | `SessionId`, `UserSid`, `UserName`, `AgentVersion`, `ClientKind` | Sent on every (re)connect. The server uses its own impersonated values for identity. |
 | `getState` | `GetStateMessage` | - | Ask for a fresh snapshot. |
 | `requestScan` | `RequestScanMessage` | - | User pressed "Check for updates". |
-| `installNow` | `InstallNowMessage` | `UpdateKey` | Install this update now. |
+| `installNow` | `InstallNowMessage` | `UpdateKey`, `CloseBlockingProcesses` (optional) | Install this update now. `CloseBlockingProcesses` is set by the close-apps dialog: the tray has already closed and killed what it could reach in its own session, so the service may terminate the rest (elevated processes, other sessions). An older tray omits it and the service keeps prompting. |
 | `defer` | `DeferMessage` | `UpdateKey`, `Minutes` | Postpone by the chosen number of minutes. |
 | `dismiss` | `DismissMessage` | `UpdateKey` | Hide a non-mandatory update until the next notification interval. |
 | `userInstallProgress` | `UserInstallProgressMessage` | `UpdateKey`, `Status` | Progress text from a user-context install. |
 | `userInstallResult` | `UserInstallResultMessage` | `UpdateKey`, `Result` (`InstallResult`) | Outcome of a user-context install. |
 | `userScanResult` | `UserScanResultMessage` | `ScanId`, `Results` (`UpdateCheckResult[]`) | Outcome of a user-context scan. |
 | `processesClosed` | `ProcessesClosedMessage` | `UpdateKey`, `StillRunning`, `Declined` | Result of a close request. |
+| `repairPrerequisites` | `RepairPrerequisitesMessage` | - | Admin console only: check and repair winget now. |
+| `updateAgent` | `UpdateAgentMessage` | `CheckOnly` | Check the release feed for a newer agent and, unless `CheckOnly`, install it. Tray and admin console. Refused when `AgentAutoUpdate` is off, while an application install runs, or while another agent update runs; the answer is the `ack` text. |
 
 ### Server → client
 
 | `$type` | Class | Payload | Meaning |
 | --- | --- | --- | --- |
-| `state` | `StateMessage` | `Updates`, `LastScanUtc`, `NextScanUtc`, `ScanInProgress`, `ServiceVersion`, `Settings` (`SettingsSummary`, including `CloudConfigured`, `CloudEnrolled` and `OrganizationName` so the tray can show which organization manages the device) | Snapshot of the updates relevant to that session: machine-wide updates plus that user's own. |
+| `state` | `StateMessage` | `Updates`, `LastScanUtc`, `NextScanUtc`, `ScanInProgress`, `ServiceVersion`, `Settings` (`SettingsSummary`, including `CloudConfigured`, `CloudEnrolled` and `OrganizationName` so the tray can show which organization manages the device), `AgentUpdate` (optional `AgentUpdateStatus`: `RunningVersion`, `LatestVersion`, `UpdateAvailable`, `InProgress`, `LastCheckUtc`, `LastError`, `Enabled`; null from a service that predates client-initiated self-update) | Snapshot of the updates relevant to that session: machine-wide updates plus that user's own. |
 | `notify` | `NotifyMessage` | `Kind` (`NotificationKind`), `Title`, `Body`, `Update` | Show a toast. |
-| `promptClose` | `PromptCloseMessage` | `Update` | Blocking processes are running; ask the user to close them (with the forced-close countdown when one applies). |
+| `promptClose` | `PromptCloseMessage` | `Update` (including the optional `BlockingDetails`: pid, session, owner and elevation per running instance) | Blocking processes are running; ask the user to close them (with the forced-close countdown when one applies). |
 | `runUserInstall` | `RunUserInstallMessage` | `Update`, `TimeoutMinutes` | Install this update in the user's session. |
 | `runUserScan` | `RunUserScanMessage` | `ScanId`, `Apps`, `WingetEnabled`, `WebSourcesEnabled`, `ProxyUrl`, `WingetGlobalArgs`, `WingetIncludeUnknown` | Check these applications in user context. |
 | `closeProcesses` | `CloseProcessesMessage` | `UpdateKey`, `ProcessNames`, `Force`, `GracefulWaitSeconds` | Close (or with `Force`, kill) those processes in the user's session. |

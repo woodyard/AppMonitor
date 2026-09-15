@@ -9,6 +9,7 @@ using Arkimentum.AppMonitor.Native;
 using Arkimentum.AppMonitor.Providers;
 using Arkimentum.AppMonitor.Service.Policy;
 using Arkimentum.AppMonitor.Service.State;
+using Arkimentum.AppMonitor.Service.Update;
 using Microsoft.Extensions.Logging;
 
 namespace Arkimentum.AppMonitor.Service;
@@ -376,8 +377,12 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 var mode = PolicyEngine.NotificationModeFor(policy, settings);
 
                 var sessionId = u.Context == InstallContext.User ? SessionFor(u.UserSid) : null;
-                var blocking = ProcessHelper.GetRunning(u.ProcessNames, sessionId);
+                // Detailed, because only the service (SYSTEM) can read the session and the elevation of a process the
+                // tray agent cannot even open; the tray needs both to explain the list in the close-apps dialog.
+                var details = ProcessHelper.GetRunningDetails(u.ProcessNames, sessionId);
+                var blocking = details.Select(d => d.ProcessName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 if (!blocking.SequenceEqual(u.BlockingProcesses, StringComparer.OrdinalIgnoreCase)) { u.BlockingProcesses = [.. blocking]; changed = true; }
+                if (!SameDetails(u.BlockingDetails, details)) { u.BlockingDetails = [.. details]; changed = true; }
                 if (blocking.Count == 0 && u.State == UpdateState.WaitingForClose)
                 {
                     // user closed the apps: proceed when the install was requested or is enforced, otherwise go back to Available
@@ -404,7 +409,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                         toForceClose.Add(u);
                         break;
                     case PolicyActionKind.PromptClose:
-                        PolicyEngine.MarkWaitingForClose(u, blocking, now, scheduleForcedClose: true);
+                        PolicyEngine.MarkWaitingForClose(u, blocking, now, scheduleForcedClose: true, details);
                         if (await SendPromptCloseAsync(u, ct).ConfigureAwait(false)) { u.LastNotifiedUtc = now; }
                         changed = true;
                         break;
@@ -472,17 +477,49 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             });
             await Task.WhenAll(closeTasks).ConfigureAwait(false);
 
-            var survivors = await ProcessHelper.CloseAsync(u.ProcessNames, sessionId, TimeSpan.FromSeconds(5), force: true, ct).ConfigureAwait(false);
-            if (survivors.Count > 0)
-            {
-                _logger.LogError("Could not terminate {Processes} for {App}; install postponed", string.Join(", ", survivors), u.DisplayName);
-                await MutateAsync(u.Key, x => { x.ForceCloseAtUtc = DateTimeOffset.UtcNow.AddMinutes(Math.Max(5, x.CloseGracePeriodMinutes)); }, ct).ConfigureAwait(false);
-                return;
-            }
+            // Whatever the agents reported back, anything still alive is out of their reach (elevated, or in a session
+            // they do not own). The service runs as SYSTEM, so it can end it - and must, or we prompt again forever.
+            if (!await TerminateBlockingAsync(u, sessionId, ct).ConfigureAwait(false)) return;
         }
-        await MutateAsync(u.Key, x => { x.State = UpdateState.Scheduled; x.ForceCloseAtUtc = null; x.BlockingProcesses = []; }, ct).ConfigureAwait(false);
+        await MutateAsync(u.Key, x => { x.State = UpdateState.Scheduled; x.ForceCloseAtUtc = null; x.BlockingProcesses = []; x.BlockingDetails = []; }, ct).ConfigureAwait(false);
         await InstallAsync(u, ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Terminates every remaining blocking process of <paramref name="u"/> (in <paramref name="sessionId"/>, or in
+    /// every session when that is null), logging each one with pid, session and owner. Returns false - having already
+    /// failed the update with a message naming what survived - when something could not be ended, because prompting
+    /// the user again for a process no one in their session can close is the loop this exists to break.
+    /// </summary>
+    private async Task<bool> TerminateBlockingAsync(PendingUpdate u, int? sessionId, CancellationToken ct)
+    {
+        var outcome = await ProcessHelper.KillAsync(u.ProcessNames, sessionId, TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+        if (outcome.Killed.Count == 0 && outcome.Survivors.Count == 0) return true;
+
+        foreach (var p in outcome.Killed)
+            _logger.LogWarning("Terminated {Process} to install {App}", p.Describe(), u.DisplayName);
+        if (outcome.Killed.Count > 0)
+            RecordEvent(ReportedEventKind.ForcedClose, u.AppId,
+                $"Terminated {BlockingProcessInfo.Describe(outcome.Killed)} to install {u.DisplayName} {u.AvailableVersion}");
+
+        if (outcome.Survivors.Count == 0) return true;
+
+        var message = $"Could not close {BlockingProcessInfo.Describe(outcome.Survivors)}; {u.DisplayName} was not updated.";
+        _logger.LogError("{App}: {Message}", u.DisplayName, message);
+        var at = DateTimeOffset.UtcNow;
+        await MutateAsync(u.Key, x => PolicyEngine.MarkFailed(x, message, at), ct).ConfigureAwait(false);
+        RecordEvent(ReportedEventKind.InstallFailed, u.AppId, message, u.InstalledVersion, u.AvailableVersion);
+        if (_settings.Current.NotificationsEnabled && Get(u.Key) is { } failed)
+            await SendNotificationAsync(failed, NotificationKind.Failed, ct).ConfigureAwait(false);
+        RaiseInstallCompleted(Get(u.Key) ?? u, false);
+        return false;
+    }
+
+    /// <summary>True when the two detail lists describe the same running instances, so state is not saved for nothing.</summary>
+    private static bool SameDetails(IReadOnlyList<BlockingProcessInfo> a, IReadOnlyList<BlockingProcessInfo> b) =>
+        a.Count == b.Count && a.Zip(b).All(pair => pair.First.ProcessId == pair.Second.ProcessId
+            && string.Equals(pair.First.ProcessName, pair.Second.ProcessName, StringComparison.OrdinalIgnoreCase)
+            && pair.First.SessionId == pair.Second.SessionId);
 
     /// <summary>Installs one update (system context in-process, user context through the tray agent).</summary>
     private async Task InstallAsync(PendingUpdate snapshot, CancellationToken ct)
@@ -491,21 +528,35 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         var key = snapshot.PendingKey();
         var now = DateTimeOffset.UtcNow;
 
-        // Re-check blocking processes right before we start.
+        // Re-check blocking processes right before we start. For a machine-wide update this looks across every session
+        // (sessionId is null), which is why a pwsh running elevated, as a scheduled task or under another user used to
+        // land here again and again: no tray agent can close any of those, so the prompt came straight back.
         var sessionId = snapshot.Context == InstallContext.User ? SessionFor(snapshot.UserSid) : null;
-        var blocking = ProcessHelper.GetRunning(snapshot.ProcessNames, sessionId);
+        var details = ProcessHelper.GetRunningDetails(snapshot.ProcessNames, sessionId);
+        var blocking = details.Select(d => d.ProcessName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (blocking.Count > 0)
         {
             var current = Get(key);
             if (current is null) return;
-            var enforce = current.IsPastDeadline(now) && current.ForceCloseAtDeadline;
-            _logger.LogInformation("{App}: waiting for the user to close {Processes}{Enforce}", current.DisplayName, string.Join(", ", blocking),
-                enforce ? $" (forced close in {current.CloseGracePeriodMinutes} min)" : "");
-            await MutateAsync(key, x => PolicyEngine.MarkWaitingForClose(x, blocking, now, scheduleForcedClose: true), ct).ConfigureAwait(false);
-            var latest = Get(key);
-            if (latest is not null && await SendPromptCloseAsync(latest, ct).ConfigureAwait(false))
-                await MutateAsync(key, x => x.LastNotifiedUtc = now, ct).ConfigureAwait(false);
-            return;
+
+            if (PolicyEngine.MayServiceForceClose(current, now))
+            {
+                _logger.LogWarning("{App}: closing {Processes} before the install ({Reason})", current.DisplayName,
+                    BlockingProcessInfo.Describe(details),
+                    current.ForceCloseRequestedUtc is not null ? "the user chose Close apps and update" : "deadline enforcement");
+                if (!await TerminateBlockingAsync(current, sessionId, ct).ConfigureAwait(false)) return;
+            }
+            else
+            {
+                var enforce = current.IsPastDeadline(now) && current.ForceCloseAtDeadline;
+                _logger.LogInformation("{App}: waiting for the user to close {Processes}{Enforce}", current.DisplayName, BlockingProcessInfo.Describe(details),
+                    enforce ? $" (forced close in {current.CloseGracePeriodMinutes} min)" : "");
+                await MutateAsync(key, x => PolicyEngine.MarkWaitingForClose(x, blocking, now, scheduleForcedClose: true, details), ct).ConfigureAwait(false);
+                var latest = Get(key);
+                if (latest is not null && await SendPromptCloseAsync(latest, ct).ConfigureAwait(false))
+                    await MutateAsync(key, x => x.LastNotifiedUtc = now, ct).ConfigureAwait(false);
+                return;
+            }
         }
 
         await _installLock.WaitAsync(ct).ConfigureAwait(false);
@@ -716,6 +767,10 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 await _pipe.SendAsync(conn, new AckMessage { InReplyTo = message.MessageId, Ok = true, Message = "Repair started" }, ct).ConfigureAwait(false);
                 break;
 
+            case UpdateAgentMessage m:
+                await HandleAgentUpdateRequestAsync(conn, m, ct).ConfigureAwait(false);
+                break;
+
             case RequestScanMessage:
                 _logger.LogInformation("{Client} requested a scan", conn);
                 RequestScan();
@@ -723,7 +778,14 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 break;
 
             case InstallNowMessage m:
-                await HandleUserActionAsync(conn, "install now", m.UpdateKey, m.MessageId, u => { PolicyEngine.RequestInstall(u); return null; }, ct).ConfigureAwait(false);
+                // CloseBlockingProcesses means the user pressed "Close apps and update": the tray has already closed
+                // and killed everything in its own session, so what is left needs SYSTEM rights and is ours to end.
+                await HandleUserActionAsync(conn, m.CloseBlockingProcesses ? "close apps and update" : "install now", m.UpdateKey, m.MessageId, u =>
+                {
+                    PolicyEngine.RequestInstall(u);
+                    if (m.CloseBlockingProcesses) PolicyEngine.RequestForcedClose(u, DateTimeOffset.UtcNow);
+                    return null;
+                }, ct).ConfigureAwait(false);
                 await EvaluatePoliciesAsync(ct).ConfigureAwait(false);
                 break;
 
@@ -830,7 +892,20 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 CloudEnrolled = cloud?.DeviceId is not null,
                 OrganizationName = string.IsNullOrWhiteSpace(cloud?.OrganizationName) ? null : cloud!.OrganizationName,
             },
+            AgentUpdate = AgentUpdateState(),
         };
+    }
+
+    /// <summary>
+    /// The self-updater's last outcome for the state snapshot, or null when this process has no updater (the CLI
+    /// entry points). An install this coordinator has accepted but not started yet counts as "in progress", so the
+    /// tray's banner does not blink between the request and the download. A check does not: nothing is replaced.
+    /// </summary>
+    private AgentUpdateStatus? AgentUpdateState()
+    {
+        var status = SelfUpdater?.Status;
+        if (status is not null && _agentUpdateInstallRunning == 1) status.InProgress = true;
+        return status;
     }
 
     public Task BroadcastStateAsync(CancellationToken ct) => _pipe.BroadcastAsync(BuildState, ct);
@@ -880,6 +955,115 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// running with cloud support, e.g. in the CLI modes.
     /// </summary>
     public Func<Arkimentum.AppMonitor.Cloud.CloudStatus?>? CloudStatusSource { get; set; }
+
+    // =====================================================================================================================
+    // Agent self-update on request (tray "Check for updates"/"Update now", admin console "Update agent")
+    // =====================================================================================================================
+
+    /// <summary>
+    /// The self-updater, handed over by the cloud sync service for the same reason as <see cref="CloudStatusSource"/>:
+    /// the updater takes this coordinator in its constructor, so it cannot be injected here. Null in the CLI entry
+    /// points, where a client-initiated update is refused.
+    /// </summary>
+    public IAgentSelfUpdate? SelfUpdater { get; set; }
+
+    /// <summary>1 while a client-initiated check or update is running; a second request is refused rather than queued.</summary>
+    private int _agentUpdateRequestRunning;
+
+    /// <summary>1 from the moment a client-initiated install is accepted until it has finished (or failed).</summary>
+    private int _agentUpdateInstallRunning;
+
+    /// <summary>
+    /// Why a client-initiated agent update is refused, or null when it may run. Pure, so the rules are testable and
+    /// the tray and the admin console get exactly the same answer. The agent replaces its own binaries as SYSTEM, so
+    /// an administrator who turned <c>AgentAutoUpdate</c> off (Intune or an RMM owns the binaries) must not be
+    /// overruled from a client, and nothing may run while an application install or another agent update is going on.
+    /// </summary>
+    public static string? RefuseAgentUpdate(bool updaterAvailable, bool autoUpdateEnabled, bool applicationInstallRunning, bool agentUpdateRunning) =>
+        !updaterAvailable ? "Agent updates are not available in this mode"
+        : !autoUpdateEnabled ? "Agent updates are disabled by policy"
+        : applicationInstallRunning ? "An application is being updated; try the agent update again when it has finished"
+        : agentUpdateRunning ? "An agent update is already running"
+        : null;
+
+    /// <summary>The acknowledgement a client gets for an outcome: what happened, in one line the UI can show as it is.</summary>
+    public static (bool Ok, string Message) DescribeAgentUpdate(AgentUpdateOutcome outcome, bool checkOnly)
+    {
+        var offered = outcome.Manifest?.Version ?? "?";
+        return outcome.Action switch
+        {
+            AgentUpdateAction.UpToDate => (true, $"Up to date: {ServiceVersion}"),
+            AgentUpdateAction.UpdateAvailable => checkOnly
+                ? (true, $"Update {offered} available")
+                : (true, $"Updating to {offered} - the agent will restart"),
+            AgentUpdateAction.Launched => (true, $"Updating to {offered} - the agent will restart"),
+            AgentUpdateAction.WouldLaunch => (true, $"Verified {offered}; the installer is not started in testing mode"),
+            // Pinned or on another channel is a deliberate configuration, not a failure: say so without an error.
+            AgentUpdateAction.PinnedByTargetVersion or AgentUpdateAction.ChannelMismatch => (true, outcome.Reason),
+            AgentUpdateAction.NoManifest => (false, "Check failed: " + outcome.Reason),
+            AgentUpdateAction.Failed => (false, "Update failed: " + outcome.Reason),
+            _ => (false, outcome.Reason),
+        };
+    }
+
+    /// <summary>
+    /// Handles <see cref="UpdateAgentMessage"/>: refuses it outright, or runs the check (and the update) on a
+    /// background task so the pipe's read loop stays free while the feed is read and the package downloaded.
+    /// </summary>
+    private async Task HandleAgentUpdateRequestAsync(PipeClientConnection conn, UpdateAgentMessage message, CancellationToken ct)
+    {
+        var updater = SelfUpdater;
+        var refusal = RefuseAgentUpdate(updater is not null, _settings.Current.AgentAutoUpdate, InstallInProgress,
+            _agentUpdateRequestRunning == 1 || updater?.Status.InProgress == true);
+        _logger.LogInformation("{Client} asked the agent to {Kind}{Refusal}", conn,
+            message.CheckOnly ? "check for a newer release" : "update itself",
+            refusal is null ? "" : $"; refused: {refusal}");
+        if (refusal is not null || updater is null)
+        {
+            await _pipe.SendAsync(conn, new AckMessage { InReplyTo = message.MessageId, Ok = false, Message = refusal }, ct).ConfigureAwait(false);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _agentUpdateRequestRunning, 1) == 1)
+        {
+            await _pipe.SendAsync(conn, new AckMessage { InReplyTo = message.MessageId, Ok = false, Message = "An agent update is already running" }, ct).ConfigureAwait(false);
+            return;
+        }
+        _ = Task.Run(() => RunAgentUpdateRequestAsync(conn, message, updater, conn.ToString()), CancellationToken.None);
+    }
+
+    private async Task RunAgentUpdateRequestAsync(PipeClientConnection conn, UpdateAgentMessage message, IAgentSelfUpdate updater, string requestedBy)
+    {
+        var reason = $"requested by {requestedBy}";
+        try
+        {
+            var outcome = await updater.CheckAsync(reason, null, CancellationToken.None).ConfigureAwait(false);
+            var installing = !message.CheckOnly && outcome.Action == AgentUpdateAction.UpdateAvailable;
+            if (installing) Interlocked.Exchange(ref _agentUpdateInstallRunning, 1);
+
+            var (ok, text) = DescribeAgentUpdate(outcome, message.CheckOnly);
+            await _pipe.SendAsync(conn, new AckMessage { InReplyTo = message.MessageId, Ok = ok, Message = text }, CancellationToken.None).ConfigureAwait(false);
+            // Every tray should see the result of the check, not just the one that asked for it.
+            await BroadcastStateAsync(CancellationToken.None).ConfigureAwait(false);
+
+            if (!installing) return;
+            var applied = await updater.UpdateAsync(reason, null, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogInformation("Agent update {Reason}: {Outcome}", reason, applied);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "The agent update {Reason} failed", reason);
+            await _pipe.SendAsync(conn, new AckMessage { InReplyTo = message.MessageId, Ok = false, Message = "Check failed: " + ex.Message }, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _agentUpdateRequestRunning, 0);
+            Interlocked.Exchange(ref _agentUpdateInstallRunning, 0);
+            // A launched update leaves InProgress up (the updater keeps it up until the service restarts); a failed
+            // one clears it here.
+            await BroadcastStateAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>LastAction values <see cref="Prerequisites.PrerequisiteManager.EnsureAsync"/> sets when it did NOT repair anything.</summary>
     private static readonly HashSet<string> SkippedRepairActions = new(StringComparer.Ordinal)

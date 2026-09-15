@@ -125,7 +125,13 @@ public sealed class IpcClientService : IHostedService
 
     public Task<bool> RequestScanAsync() => SendAsync(new RequestScanMessage());
 
-    public Task<bool> InstallNowAsync(string updateKey) => SendAsync(new InstallNowMessage { UpdateKey = updateKey });
+    /// <summary>
+    /// Asks the service to install one update now. <paramref name="closeBlockingProcesses"/> is only set from the
+    /// close-apps dialog: it tells the service it may end the processes this agent could not reach itself (elevated,
+    /// or in another user's session), which it can because it runs as LocalSystem.
+    /// </summary>
+    public Task<bool> InstallNowAsync(string updateKey, bool closeBlockingProcesses = false) =>
+        SendAsync(new InstallNowMessage { UpdateKey = updateKey, CloseBlockingProcesses = closeBlockingProcesses });
 
     /// <summary>
     /// Queues several updates at once ("Update all"): one install request per key, in order. The service marks each
@@ -147,15 +153,27 @@ public sealed class IpcClientService : IHostedService
 
     public Task<bool> DismissAsync(string updateKey) => SendAsync(new DismissMessage { UpdateKey = updateKey });
 
+    /// <summary>
+    /// Asks the service to check the release feed for a newer agent, and - unless <paramref name="checkOnly"/> - to
+    /// install it. The service does the work as SYSTEM and answers with an <see cref="AckMessage"/>; the returned
+    /// message id is what matches that answer to this request (null when the pipe is not connected).
+    /// </summary>
+    public async Task<string?> RequestAgentUpdateAsync(bool checkOnly)
+    {
+        var message = new UpdateAgentMessage { CheckOnly = checkOnly };
+        return await SendAsync(message).ConfigureAwait(false) ? message.MessageId : null;
+    }
+
     private static string Describe(IpcMessage message) => message switch
     {
-        InstallNowMessage m => m.UpdateKey,
+        InstallNowMessage m => m.CloseBlockingProcesses ? $"{m.UpdateKey} (close blocking apps)" : m.UpdateKey,
         DeferMessage m => $"{m.UpdateKey} +{m.Minutes}min",
         DismissMessage m => m.UpdateKey,
         UserInstallProgressMessage m => $"{m.UpdateKey}: {m.Status}",
         UserInstallResultMessage m => $"{m.UpdateKey}: success={m.Result.Success}",
         UserScanResultMessage m => $"scan {m.ScanId}: {m.Results.Count} result(s)",
         ProcessesClosedMessage m => $"{m.UpdateKey}: stillRunning={m.StillRunning.Count} declined={m.Declined}",
+        UpdateAgentMessage m => m.CheckOnly ? "check only" : "check and install",
         _ => string.Empty,
     };
 }

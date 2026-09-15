@@ -26,12 +26,14 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     private readonly RelayCommand _updateAllCommand;
     private readonly DispatcherTimer _clock;
 
-    public MainViewModel(ILogger<MainViewModel> log, AgentStateStore store, IpcClientService ipc, IWindowService windows)
+    public MainViewModel(ILogger<MainViewModel> log, AgentStateStore store, IpcClientService ipc, IWindowService windows,
+        AgentUpdateViewModel agentUpdate)
     {
         _log = log;
         _store = store;
         _ipc = ipc;
         _windows = windows;
+        AgentUpdate = agentUpdate;
 
         _checkNowCommand = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.ScanInProgress);
         _updateAllCommand = new RelayCommand(UpdateAll,
@@ -50,6 +52,9 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     }
 
     public ObservableCollection<UpdateViewModel> Updates { get; } = [];
+
+    /// <summary>The agent's own update state and the two actions in the details footer; shared with the About dialog.</summary>
+    public AgentUpdateViewModel AgentUpdate { get; }
 
     public ICommand CheckNowCommand => _checkNowCommand;
 
@@ -109,6 +114,18 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     /// </summary>
     private void RefreshProgress()
     {
+        // The agent replacing itself owns the banner: the service stops and starts this tray, so nothing else can
+        // be running at the same time (a request is refused while an application install is in flight).
+        if (AgentUpdate.InProgress && AgentUpdate.IsEnabled)
+        {
+            _roundKeys.Clear();
+            ShowProgressBanner = true;
+            ProgressText = AgentUpdate.LatestVersion is { } version
+                ? Strings.AgentUpdateProgress(version)
+                : Strings.AgentUpdateProgressUnknown;
+            return;
+        }
+
         var inProgress = _store.UpdatesInProgress;
         if (inProgress.Count == 0)
         {
@@ -203,8 +220,6 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
             return Strings.OrganizationStandalone;
         }
     }
-
-    public string AgentVersion => AppInfo.Version;
 
     // ---------------------------------------------------------------- lifetime
 

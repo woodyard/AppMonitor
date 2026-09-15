@@ -1,10 +1,17 @@
 using System.Diagnostics;
+using System.Security.Principal;
+using Arkimentum.AppMonitor.Models;
 
 namespace Arkimentum.AppMonitor.Native;
 
 /// <summary>Process discovery and graceful/forced termination, optionally scoped to one Terminal Services session.</summary>
 public static class ProcessHelper
 {
+    /// <summary>What a <see cref="KillAsync"/> pass actually achieved.</summary>
+    /// <param name="Killed">Processes that are gone because we terminated them.</param>
+    /// <param name="Survivors">Processes that are still running; the caller must not pretend the install can proceed.</param>
+    public sealed record KillOutcome(IReadOnlyList<BlockingProcessInfo> Killed, IReadOnlyList<BlockingProcessInfo> Survivors);
+
     /// <summary>Returns the configured process names that are currently running (optionally only in <paramref name="sessionId"/>).</summary>
     public static IReadOnlyList<string> GetRunning(IEnumerable<string> processNames, int? sessionId = null)
     {
@@ -26,22 +33,37 @@ public static class ProcessHelper
     }
 
     /// <summary>
+    /// Like <see cref="GetRunning"/>, but one entry per running instance with pid, session, owner and elevation.
+    /// The owner and the elevation flag are only readable when the caller may open the process token - SYSTEM can
+    /// read every process, a medium-integrity tray agent cannot read an elevated one - so both are optional.
+    /// </summary>
+    public static IReadOnlyList<BlockingProcessInfo> GetRunningDetails(IEnumerable<string> processNames, int? sessionId = null)
+    {
+        var wanted = new HashSet<string>(processNames.Select(Normalize), StringComparer.OrdinalIgnoreCase);
+        if (wanted.Count == 0) return [];
+        var result = new List<BlockingProcessInfo>();
+        foreach (var p in Process.GetProcesses())
+        {
+            try
+            {
+                if (!wanted.Contains(p.ProcessName)) continue;
+                if (sessionId is { } s && p.SessionId != s) continue;
+                result.Add(Inspect(p));
+            }
+            catch { }
+            finally { p.Dispose(); }
+        }
+        return result.OrderBy(p => p.ProcessName, StringComparer.OrdinalIgnoreCase).ThenBy(p => p.ProcessId).ToList();
+    }
+
+    /// <summary>
     /// Asks the processes to close (WM_CLOSE to the main window), waits, then kills what is left when <paramref name="force"/>.
     /// Returns the names that are still running afterwards.
     /// </summary>
     public static async Task<IReadOnlyList<string>> CloseAsync(IEnumerable<string> processNames, int? sessionId, TimeSpan gracefulWait, bool force, CancellationToken ct)
     {
         var wanted = new HashSet<string>(processNames.Select(Normalize), StringComparer.OrdinalIgnoreCase);
-        var targets = new List<Process>();
-        foreach (var p in Process.GetProcesses())
-        {
-            try
-            {
-                if (wanted.Contains(p.ProcessName) && (sessionId is null || p.SessionId == sessionId)) targets.Add(p);
-                else p.Dispose();
-            }
-            catch { p.Dispose(); }
-        }
+        var targets = Collect(wanted, sessionId);
 
         try
         {
@@ -70,6 +92,91 @@ public static class ProcessHelper
         {
             foreach (var p in targets) p.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Terminates the matching processes outright (no WM_CLOSE: console processes and processes in other sessions
+    /// have no window to close), waits <paramref name="settleWait"/> for the kernel to catch up, then reports what
+    /// died and what survived. Only ever called from the service, which runs as SYSTEM and can therefore reach
+    /// elevated processes and other users' sessions.
+    /// </summary>
+    public static async Task<KillOutcome> KillAsync(IEnumerable<string> processNames, int? sessionId, TimeSpan settleWait, CancellationToken ct)
+    {
+        var wanted = new HashSet<string>(processNames.Select(Normalize), StringComparer.OrdinalIgnoreCase);
+        var killed = new List<BlockingProcessInfo>();
+        var survivors = new List<BlockingProcessInfo>();
+        if (wanted.Count == 0) return new KillOutcome(killed, survivors);
+
+        var targets = Collect(wanted, sessionId);
+        try
+        {
+            var attempted = new List<(Process Process, BlockingProcessInfo Info)>();
+            foreach (var p in targets)
+            {
+                var info = Inspect(p);
+                try
+                {
+                    p.Kill(entireProcessTree: true);
+                    attempted.Add((p, info));
+                }
+                catch (InvalidOperationException) { killed.Add(info); } // exited between enumeration and the kill
+                catch { survivors.Add(info); }
+            }
+
+            if (attempted.Count > 0 && settleWait > TimeSpan.Zero)
+                await Task.Delay(settleWait, ct).ConfigureAwait(false);
+
+            foreach (var (process, info) in attempted)
+            {
+                if (IsRunning(process)) survivors.Add(info);
+                else killed.Add(info);
+            }
+            return new KillOutcome(killed, survivors);
+        }
+        finally
+        {
+            foreach (var p in targets) p.Dispose();
+        }
+    }
+
+    /// <summary>Opens every live process whose name matches, optionally narrowed to one session. The caller disposes them.</summary>
+    private static List<Process> Collect(HashSet<string> wanted, int? sessionId)
+    {
+        var targets = new List<Process>();
+        if (wanted.Count == 0) return targets;
+        foreach (var p in Process.GetProcesses())
+        {
+            try
+            {
+                if (wanted.Contains(p.ProcessName) && (sessionId is null || p.SessionId == sessionId)) targets.Add(p);
+                else p.Dispose();
+            }
+            catch { p.Dispose(); }
+        }
+        return targets;
+    }
+
+    /// <summary>Reads what we are allowed to read about a process; anything the token refuses stays null.</summary>
+    private static BlockingProcessInfo Inspect(Process p)
+    {
+        var info = new BlockingProcessInfo { ProcessName = p.ProcessName, ProcessId = p.Id, SessionId = -1 };
+        try { info.SessionId = p.SessionId; } catch { }
+        try
+        {
+            if (NativeMethods.OpenProcessToken(p.Handle, NativeMethods.TOKEN_QUERY, out var token))
+            {
+                using (token)
+                using (var identity = new WindowsIdentity(token.DangerousGetHandle()))
+                {
+                    info.UserName = identity.Name;
+                    // A filtered (non-elevated) administrator token carries the Administrators group as deny-only,
+                    // so this is elevation rather than plain group membership.
+                    info.Elevated = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+                }
+            }
+        }
+        catch { /* not readable from this context - leave UserName/Elevated unset */ }
+        return info;
     }
 
     private static bool IsRunning(Process p)

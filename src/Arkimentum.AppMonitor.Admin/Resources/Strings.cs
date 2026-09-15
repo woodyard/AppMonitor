@@ -121,6 +121,11 @@ public static class Strings
         "Ask the service to install or repair the Windows Package Manager as SYSTEM.";
     public const string RepairRunning = "A repair is running…";
     public const string RepairRequestFailed = "The service did not accept the repair request.";
+    public const string ButtonUpdateThisAgent = "Update agent";
+    public const string TipUpdateThisAgent =
+        "Ask the service to check the release feed and install a newer AppMonitor release as SYSTEM. Refused when AgentAutoUpdate is off.";
+    public const string AgentUpdateRunning = "An agent update is running…";
+    public const string AgentUpdateRequestFailed = "The service did not accept the agent update request.";
     public const string Unknown = "Unknown";
     public const string Enabled = "Enabled";
     public const string Disabled = "Disabled";
@@ -430,6 +435,7 @@ public static class Strings
     public const string TipSignIn = "Sign in with Entra ID in your default browser";
     public const string TipSignOut = "Forget the cached token for this machine's user";
     public const string ConnectWorking = "Working…";
+    public const string ConnectRestoring = "Restoring your previous sign-in…";
     public const string ConnectNotConnected = "Not connected.";
     public const string CloudSignInRequired = "Sign in to continue.";
     public const string CloudCancelled = "The operation was cancelled.";

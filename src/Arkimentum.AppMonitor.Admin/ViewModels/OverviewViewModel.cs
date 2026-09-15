@@ -63,6 +63,7 @@ public sealed class OverviewViewModel : ObservableObject
     private readonly RelayCommand _restartCommand;
     private readonly RelayCommand _scanCommand;
     private readonly RelayCommand _repairCommand;
+    private readonly RelayCommand _updateAgentCommand;
 
     private ServiceSnapshot _snapshot = new();
     private AgentSettings _effective = new();
@@ -70,6 +71,7 @@ public sealed class OverviewViewModel : ObservableObject
     private string? _notice;
     private bool _noticeIsError;
     private bool _repairRequested;
+    private bool _agentUpdateRequested;
 
     public OverviewViewModel(
         ILogger<OverviewViewModel> log,
@@ -97,6 +99,7 @@ public sealed class OverviewViewModel : ObservableObject
         _restartCommand = new RelayCommand(() => Control(_service.Restart), () => _service.IsAvailable && _snapshot.IsInstalled);
         _scanCommand = new RelayCommand(RequestScan, () => _ipc.IsConnected);
         _repairCommand = new RelayCommand(RequestRepair, () => _ipc.IsConnected && !RepairInProgress);
+        _updateAgentCommand = new RelayCommand(RequestAgentUpdate, () => _ipc.IsConnected && !AgentUpdateInProgress);
         OpenLogFolderCommand = new RelayCommand(() => _dialogs.OpenFolder(_effective.LogDirectory));
         OpenStateFolderCommand = new RelayCommand(() => _dialogs.OpenFolder(_effective.StateDirectory));
         RefreshCommand = new RelayCommand(Refresh);
@@ -227,6 +230,16 @@ public sealed class OverviewViewModel : ObservableObject
 
     public ICommand RepairPrerequisitesCommand => _repairCommand;
 
+    /// <summary>
+    /// Asks the service to replace the agent with a newer release now. The service owns the update (it runs as
+    /// SYSTEM) and refuses when <c>AgentAutoUpdate</c> is off or an application install is running; its answer
+    /// lands in the notice line.
+    /// </summary>
+    public ICommand UpdateAgentCommand => _updateAgentCommand;
+
+    /// <summary>True from the moment the request is sent until the service answers it.</summary>
+    public bool AgentUpdateInProgress => _agentUpdateRequested || _ipc.LastState?.AgentUpdate?.InProgress == true;
+
     // ---------------------------------------------------------------- configuration card
 
     public string ConfiguredAppsText { get; private set; } = "0";
@@ -318,12 +331,19 @@ public sealed class OverviewViewModel : ObservableObject
             nameof(WingetVersionText), nameof(WingetPathText), nameof(MinimumVersionText), nameof(AppInstallerText),
             nameof(AutoInstallText), nameof(PrerequisiteCheckedText), nameof(PrerequisiteLastAction),
             nameof(HasPrerequisiteLastAction), nameof(PrerequisiteLastError), nameof(HasPrerequisiteLastError),
-            nameof(RepairInProgress));
+            nameof(RepairInProgress), nameof(AgentUpdateInProgress));
         RaiseCanExecuteChanged();
     }
 
     private void OnAck(AckMessage ack)
     {
+        // The agent update is answered when the check is done, which also ends the "requested" state.
+        if (_agentUpdateRequested)
+        {
+            _agentUpdateRequested = false;
+            OnPropertyChanged(nameof(AgentUpdateInProgress));
+            RaiseCanExecuteChanged();
+        }
         if (string.IsNullOrWhiteSpace(ack.Message)) return;
         Notice = ack.Message;
         NoticeIsError = !ack.Ok;
@@ -337,6 +357,20 @@ public sealed class OverviewViewModel : ObservableObject
         _restartCommand.RaiseCanExecuteChanged();
         _scanCommand.RaiseCanExecuteChanged();
         _repairCommand.RaiseCanExecuteChanged();
+        _updateAgentCommand.RaiseCanExecuteChanged();
+    }
+
+    private async void RequestAgentUpdate()
+    {
+        var sent = await _ipc.RequestAgentUpdateAsync().ConfigureAwait(true);
+        _agentUpdateRequested = sent;
+        if (!sent)
+        {
+            Notice = Strings.AgentUpdateRequestFailed;
+            NoticeIsError = true;
+        }
+        OnPropertyChanged(nameof(AgentUpdateInProgress));
+        RaiseCanExecuteChanged();
     }
 
     private async void RequestRepair()

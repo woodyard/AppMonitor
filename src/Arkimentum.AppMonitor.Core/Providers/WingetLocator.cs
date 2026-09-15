@@ -208,6 +208,20 @@ public static partial class WingetLocator
         }
         catch (UnauthorizedAccessException ex)
         {
+            if (ProcessIsSystem)
+            {
+                // SYSTEM can always list this folder. Being refused here means the thread is not running as SYSTEM
+                // right now (an impersonation that was never reverted); say so, put the thread right and try again.
+                logger.LogWarning("Cannot enumerate {Root} although this process runs as SYSTEM ({Message}). Thread identity: {Identity}",
+                    root, ex.Message, Native.ImpersonationGuard.DescribeCurrentIdentity());
+                if (Native.ImpersonationGuard.RevertIfImpersonating(logger, "App Installer package lookup"))
+                {
+                    try { dirs = Directory.GetDirectories(root, "Microsoft.DesktopAppInstaller_*__" + PackageFamilySuffix); }
+                    catch (Exception retry) { logger.LogWarning(retry, "Enumerating {Root} still fails after reverting the impersonation.", root); return null; }
+                    return PickPackage(logger, root, dirs);
+                }
+                return null;
+            }
             logger.LogDebug("Cannot enumerate {Root} ({Message}); this is expected outside LocalSystem.", root, ex.Message);
             return null;
         }
@@ -217,6 +231,12 @@ public static partial class WingetLocator
             return null;
         }
 
+        return PickPackage(logger, root, dirs);
+    }
+
+    /// <summary>The winget.exe of the highest-versioned App Installer package folder, preferring the native architecture.</summary>
+    private static string? PickPackage(ILogger logger, string root, string[] dirs)
+    {
         var preferredArch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture switch
         {
             System.Runtime.InteropServices.Architecture.Arm64 => "arm64",

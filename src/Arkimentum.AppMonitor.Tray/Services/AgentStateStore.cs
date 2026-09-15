@@ -57,6 +57,47 @@ public sealed class AgentStateStore : IHostedService
 
     public SettingsSummary Settings { get; private set; } = new();
 
+    /// <summary>
+    /// What the service's self-updater last concluded, or null when the service is older than this agent and does not
+    /// report it. Null means the UI shows the agent version without a status line or update buttons.
+    /// </summary>
+    public AgentUpdateStatus? AgentUpdate { get; private set; }
+
+    /// <summary>The service's answer to the last "check for updates"/"update now" request, shown under the version row.</summary>
+    public string? AgentUpdateNotice { get; private set; }
+
+    /// <summary>True from the moment the user asked until the service answers, so both buttons grey out at once.</summary>
+    public bool AgentUpdateRequested => _agentUpdateRequests.Count > 0;
+
+    private readonly HashSet<string> _agentUpdateRequests = new(StringComparer.Ordinal);
+    private DispatcherTimer? _agentUpdateTimeout;
+
+    /// <summary>
+    /// Remembers an agent-update request by message id so its acknowledgement can be shown under the version row.
+    /// The service answers only when the check (and for an install, the hand-over) is done, which can take a while,
+    /// so an unanswered request is dropped after <see cref="UpdateAllPendingTimeout"/> instead of staying pending.
+    /// </summary>
+    public void TrackAgentUpdateRequest(string messageId)
+    {
+        _agentUpdateRequests.Add(messageId);
+        AgentUpdateNotice = null;
+        _agentUpdateTimeout ??= new DispatcherTimer(DispatcherPriority.Normal, _dispatcher) { Interval = UpdateAllPendingTimeout };
+        _agentUpdateTimeout.Tick -= OnAgentUpdateTimeout;
+        _agentUpdateTimeout.Tick += OnAgentUpdateTimeout;
+        _agentUpdateTimeout.Stop();
+        _agentUpdateTimeout.Start();
+        Changed?.Invoke();
+    }
+
+    private void OnAgentUpdateTimeout(object? sender, EventArgs e)
+    {
+        _agentUpdateTimeout?.Stop();
+        if (_agentUpdateRequests.Count == 0) return;
+        _log.LogWarning("The service did not answer {Count} agent update request(s) within {Seconds:F0} s", _agentUpdateRequests.Count, UpdateAllPendingTimeout.TotalSeconds);
+        _agentUpdateRequests.Clear();
+        Changed?.Invoke();
+    }
+
     /// <summary>Updates that are not finished yet — what the tray badge counts.</summary>
     public int ActiveUpdateCount => _updates.Count(u => u.State != UpdateState.Installed);
 
@@ -176,14 +217,29 @@ public sealed class AgentStateStore : IHostedService
             // Nothing will confirm the requests now; the button is disabled by IsConnected anyway.
             _updateAllKeys.Clear();
             _updateAllTimeout?.Stop();
+            // An agent update that reached the service drops the pipe on purpose (the service restarts the tray),
+            // so a dropped connection must not leave the buttons disabled once it comes back.
+            _agentUpdateRequests.Clear();
+            _agentUpdateTimeout?.Stop();
         }
         Changed?.Invoke();
     }
 
     private void OnMessage(IpcMessage message)
     {
-        if (message is not StateMessage state) return;
-        Apply(state);
+        switch (message)
+        {
+            case StateMessage state:
+                Apply(state);
+                break;
+            // The answer to "Check for updates"/"Update now": the text is what the user sees under the version row.
+            case AckMessage ack when ack.InReplyTo is { } id && _agentUpdateRequests.Remove(id):
+                _agentUpdateTimeout?.Stop();
+                AgentUpdateNotice = ack.Message;
+                _log.LogInformation("Agent update request answered: ok={Ok} {Message}", ack.Ok, ack.Message);
+                Changed?.Invoke();
+                break;
+        }
     }
 
     /// <summary>Replaces everything the UI shows with the service's snapshot.</summary>
@@ -195,6 +251,8 @@ public sealed class AgentStateStore : IHostedService
         ScanInProgress = state.ScanInProgress;
         ServiceVersion = state.ServiceVersion;
         Settings = state.Settings ?? new SettingsSummary();
+        // Null from a service that predates client-initiated self-update; the UI then hides the status and buttons.
+        AgentUpdate = state.AgentUpdate;
         HasReceivedState = true;
 
         // Drop local statuses for updates the service no longer reports or has already finished.

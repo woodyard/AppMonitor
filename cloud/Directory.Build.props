@@ -1,0 +1,11 @@
+<Project>
+  <!-- Inherit the repository-wide properties, then undo the Windows-desktop specifics: the cloud
+       projects are portable (net10.0) and must publish as AnyCPU so they can run on a Linux
+       Flex Consumption plan. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <PropertyGroup>
+    <Platforms>AnyCPU</Platforms>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

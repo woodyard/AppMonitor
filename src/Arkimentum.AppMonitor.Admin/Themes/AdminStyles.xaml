@@ -1,0 +1,497 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:inf="clr-namespace:Arkimentum.AppMonitor.Admin.Infrastructure"
+                    xmlns:res="clr-namespace:Arkimentum.AppMonitor.Admin.Resources">
+
+    <!-- Styles specific to the admin console. The brand tokens (Brand*) and the shared type ramp come from
+         Arkimentum.AppMonitor.UI/Themes/Styles.xaml, merged here as well as in App.xaml so this dictionary
+         resolves on its own; everything is keyed and uses DynamicResource, so a light/dark flip repaints in place.
+         Spacing follows the 8 px grid: 4 / 8 / 16 / 24 / 32. -->
+
+    <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="pack://application:,,,/Arkimentum.AppMonitor.UI;component/Themes/Styles.xaml" />
+    </ResourceDictionary.MergedDictionaries>
+
+    <inf:InverseBoolConverter x:Key="InverseBool" />
+    <inf:CountToVisibilityConverter x:Key="CountToVisibility" />
+    <inf:NullToVisibilityConverter x:Key="NullToVisibility" />
+    <inf:SettingEditorTemplateSelector x:Key="SettingEditorSelector" />
+
+    <FontFamily x:Key="MonoFontFamily">Cascadia Mono, Consolas, Courier New</FontFamily>
+
+    <!-- ==== type -->
+
+    <Style x:Key="PageTitleText" TargetType="TextBlock" BasedOn="{StaticResource SubtitleText}">
+        <Setter Property="FontSize" Value="20" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+    </Style>
+
+    <Style x:Key="CardTitleText" TargetType="TextBlock" BasedOn="{StaticResource BodyStrongText}">
+        <Setter Property="FontSize" Value="15" />
+        <Setter Property="Margin" Value="0,0,0,12" />
+    </Style>
+
+    <Style x:Key="GroupHeaderText" TargetType="TextBlock" BasedOn="{StaticResource BodyStrongText}">
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+        <Setter Property="Margin" Value="0,0,0,8" />
+    </Style>
+
+    <Style x:Key="TableHeaderText" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandSubtleTextBrush}" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+    </Style>
+
+    <Style x:Key="TableCellText" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <Style x:Key="ErrorText" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandTerracottaTextBrush}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style x:Key="SuccessText" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <!-- ==== navigation rail: a ListBox that reads as a NavigationView -->
+
+    <Style x:Key="NavigationRail" TargetType="ListBox">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="8,0" />
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Cycle" />
+    </Style>
+
+    <Style x:Key="NavigationItem" TargetType="ListBoxItem">
+        <!-- The item's content is a glyph plus a label, so name it explicitly for screen readers and automation. -->
+        <Setter Property="AutomationProperties.Name" Value="{Binding AutomationName}" />
+        <Setter Property="Margin" Value="0,2" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Grid>
+                        <Border x:Name="Fill"
+                                Background="Transparent"
+                                CornerRadius="6"
+                                MinHeight="40" />
+                        <!-- the olive selection indicator, as in the Windows 11 NavigationView -->
+                        <Border x:Name="Indicator"
+                                Width="3"
+                                Height="18"
+                                CornerRadius="2"
+                                HorizontalAlignment="Left"
+                                Margin="2,0,0,0"
+                                Opacity="0"
+                                Background="{DynamicResource BrandPrimaryFillBrush}" />
+                        <ContentPresenter Margin="14,8,12,8" VerticalAlignment="Center" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Fill" Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Fill" Property="Background" Value="{DynamicResource BrandPrimarySurfaceBrush}" />
+                            <Setter TargetName="Indicator" Property="Opacity" Value="1" />
+                            <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+                            <Setter Property="FontWeight" Value="SemiBold" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Fill" Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
+                            <Setter TargetName="Fill" Property="BorderThickness" Value="2" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <!-- A group label ("This machine", "Organization") lives in the same list as the pages so the rail is one
+                 ListBox. IsEnabled=False keeps it out of the keyboard's way; the template is replaced wholesale, so
+                 the usual disabled dimming never applies and the label renders at full strength. -->
+            <DataTrigger Binding="{Binding IsHeader}" Value="True">
+                <Setter Property="IsEnabled" Value="False" />
+                <Setter Property="Focusable" Value="False" />
+                <Setter Property="Margin" Value="0,16,0,4" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ListBoxItem">
+                            <TextBlock Margin="16,0,12,0"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="NoWrap"
+                                       Foreground="{DynamicResource BrandSubtleTextBrush}"
+                                       Text="{Binding Title, Converter={StaticResource LetterSpacing}}" />
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ==== the scope badge in the header: which configuration the current page edits -->
+
+    <Style x:Key="ScopeBadge" TargetType="Border" BasedOn="{StaticResource Badge}">
+        <Setter Property="Padding" Value="10,4" />
+        <Setter Property="CornerRadius" Value="11" />
+    </Style>
+
+    <Style x:Key="ScopeBadgeText" TargetType="TextBlock" BasedOn="{StaticResource BadgeText}">
+        <Setter Property="FontSize" Value="12" />
+    </Style>
+
+    <!-- ==== master list of applications -->
+
+    <Style x:Key="AppListItem" TargetType="ListBoxItem">
+        <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Fill"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="12,8">
+                        <ContentPresenter />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Fill" Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Fill" Property="Background" Value="{DynamicResource BrandPrimarySurfaceBrush}" />
+                            <Setter TargetName="Fill" Property="BorderBrush" Value="{DynamicResource BrandPrimaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Fill" Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==== a CheckBox drawn as the Windows 11 toggle switch -->
+
+    <Style x:Key="ToggleSwitch" TargetType="CheckBox">
+        <Setter Property="Focusable" Value="True" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <Grid Width="40" Height="20" VerticalAlignment="Center">
+                            <Border x:Name="Track"
+                                    CornerRadius="10"
+                                    BorderThickness="1"
+                                    BorderBrush="{DynamicResource ControlStrongStrokeColorDefaultBrush}"
+                                    Background="{DynamicResource ControlAltFillColorSecondaryBrush}" />
+                            <Border x:Name="Thumb"
+                                    Width="12"
+                                    Height="12"
+                                    CornerRadius="6"
+                                    HorizontalAlignment="Left"
+                                    Margin="4,0,0,0"
+                                    Background="{DynamicResource BrandMutedStrongBrush}" />
+                            <Border x:Name="Focus"
+                                    CornerRadius="12"
+                                    Margin="-3"
+                                    BorderThickness="2"
+                                    BorderBrush="Transparent" />
+                        </Grid>
+                        <ContentPresenter x:Name="Label"
+                                          Margin="12,0,0,0"
+                                          VerticalAlignment="Center"
+                                          TextBlock.Foreground="{DynamicResource BrandInkBrush}"
+                                          TextBlock.FontSize="13" />
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Track" Property="Background" Value="{DynamicResource BrandPrimaryFillBrush}" />
+                            <Setter TargetName="Track" Property="BorderBrush" Value="{DynamicResource BrandPrimaryFillBrush}" />
+                            <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right" />
+                            <Setter TargetName="Thumb" Property="Margin" Value="0,0,4,0" />
+                            <Setter TargetName="Thumb" Property="Width" Value="14" />
+                            <Setter TargetName="Thumb" Property="Height" Value="14" />
+                            <Setter TargetName="Thumb" Property="Background" Value="{DynamicResource BrandOnPrimaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Track" Property="Opacity" Value="0.85" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Focus" Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==== small pieces -->
+
+    <Style x:Key="PolicyBadge" TargetType="Border" BasedOn="{StaticResource Badge}">
+        <Setter Property="Background" Value="{DynamicResource BrandGoldSurfaceBrush}" />
+    </Style>
+
+    <Style x:Key="PolicyBadgeText" TargetType="TextBlock" BasedOn="{StaticResource BadgeText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandGoldTextBrush}" />
+    </Style>
+
+    <Style x:Key="PreferenceBadge" TargetType="Border" BasedOn="{StaticResource Badge}">
+        <Setter Property="Background" Value="{DynamicResource BrandPrimarySurfaceBrush}" />
+    </Style>
+
+    <Style x:Key="PreferenceBadgeText" TargetType="TextBlock" BasedOn="{StaticResource BadgeText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+    </Style>
+
+    <!-- The source badge of a generated row: Policy reads gold, Preference olive, Organization sky, Default neutral.
+         The literals are the badge texts Strings.Badge* produce. -->
+    <Style x:Key="SourceStateBadge" TargetType="Border" BasedOn="{StaticResource Badge}">
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SourceBadge}" Value="Policy">
+                <Setter Property="Background" Value="{DynamicResource BrandGoldSurfaceBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding SourceBadge}" Value="Preference">
+                <Setter Property="Background" Value="{DynamicResource BrandPrimarySurfaceBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding SourceBadge}" Value="Organization">
+                <Setter Property="Background" Value="{DynamicResource BrandSkySurfaceBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="SourceStateBadgeText" TargetType="TextBlock" BasedOn="{StaticResource BadgeText}">
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SourceBadge}" Value="Policy">
+                <Setter Property="Foreground" Value="{DynamicResource BrandGoldTextBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding SourceBadge}" Value="Preference">
+                <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding SourceBadge}" Value="Organization">
+                <Setter Property="Foreground" Value="{DynamicResource BrandSkyTextBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- The shared LinkButton has no disabled look; an inline row action that can be unavailable needs one. -->
+    <Style x:Key="RowLinkButton" TargetType="Button" BasedOn="{StaticResource LinkButton}">
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4" />
+                <Setter Property="Cursor" Value="Arrow" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ==== a read-only, monospaced block for a generated snippet -->
+
+    <Style x:Key="SnippetBox" TargetType="TextBox">
+        <Setter Property="IsReadOnly" Value="True" />
+        <Setter Property="IsReadOnlyCaretVisible" Value="True" />
+        <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="AcceptsReturn" Value="True" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+        <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+        <Setter Property="HorizontalScrollBarVisibility" Value="Auto" />
+        <Setter Property="MaxHeight" Value="220" />
+    </Style>
+
+    <!-- ==== one row of a device / inventory / event table -->
+
+    <Style x:Key="TableRow" TargetType="Border">
+        <Setter Property="BorderBrush" Value="{DynamicResource BrandBorderBrush}" />
+        <Setter Property="BorderThickness" Value="0,1,0,0" />
+        <Setter Property="Padding" Value="0,8" />
+    </Style>
+
+    <Style x:Key="SettingCard" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource BrandCardBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BrandBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="16" />
+        <Setter Property="Margin" Value="0,0,0,8" />
+    </Style>
+
+    <!-- Keyed Button/TextBox styles are deliberately absent: WPF's Fluent theme is applied through *implicit*
+         styles, and an explicit Style with no BasedOn replaces it wholesale, dropping the control back to the
+         classic Aero look. The few spacing tweaks the pages need are set on the control itself instead. -->
+    <!-- ==== the generated editors, chosen by SettingEditorTemplateSelector from SettingKind -->
+
+    <DataTemplate x:Key="SettingEditorBool">
+        <CheckBox Style="{StaticResource ToggleSwitch}"
+                  IsChecked="{Binding BoolValue, Mode=TwoWay}"
+                  IsEnabled="{Binding IsEditorEnabled}"
+                  AutomationProperties.Name="{Binding Title}" />
+    </DataTemplate>
+
+    <DataTemplate x:Key="SettingEditorInt">
+        <StackPanel Orientation="Horizontal">
+            <TextBox Width="120"
+                     Text="{Binding TextValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                     IsEnabled="{Binding IsEditorEnabled}"
+                     AutomationProperties.Name="{Binding Title}" />
+            <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                       Margin="8,0,0,0"
+                       VerticalAlignment="Center"
+                       Text="{Binding RangeHint}"
+                       Visibility="{Binding HasRangeHint, Converter={StaticResource BoolToVisibility}}" />
+        </StackPanel>
+    </DataTemplate>
+
+    <DataTemplate x:Key="SettingEditorString">
+        <TextBox Text="{Binding TextValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 IsEnabled="{Binding IsEditorEnabled}"
+                 AutomationProperties.Name="{Binding Title}" />
+    </DataTemplate>
+
+    <DataTemplate x:Key="SettingEditorChoice">
+        <ComboBox MinWidth="200"
+                  HorizontalAlignment="Left"
+                  ItemsSource="{Binding Choices}"
+                  SelectedItem="{Binding TextValue, Mode=TwoWay}"
+                  IsEnabled="{Binding IsEditorEnabled}"
+                  AutomationProperties.Name="{Binding Title}" />
+    </DataTemplate>
+
+    <DataTemplate x:Key="SettingEditorPath">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox Grid.Column="0"
+                     Text="{Binding TextValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                     IsEnabled="{Binding IsEditorEnabled}"
+                     AutomationProperties.Name="{Binding Title}" />
+            <Button Grid.Column="1"
+                    Margin="8,0,0,0"
+                    Padding="12,5"
+                    Content="{x:Static res:Strings.Browse}"
+                    ToolTip="{x:Static res:Strings.TipBrowse}"
+                    IsEnabled="{Binding IsEditorEnabled}"
+                    Command="{Binding DataContext.BrowseCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                    CommandParameter="{Binding}" />
+        </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="SettingEditorIntList">
+        <TextBox MaxWidth="320"
+                 HorizontalAlignment="Left"
+                 MinWidth="200"
+                 Text="{Binding TextValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 IsEnabled="{Binding IsEditorEnabled}"
+                 AutomationProperties.Name="{Binding Title}" />
+    </DataTemplate>
+
+    <DataTemplate x:Key="SettingEditorStringList">
+        <TextBox MinHeight="72"
+                 MaxHeight="140"
+                 AcceptsReturn="True"
+                 TextWrapping="NoWrap"
+                 VerticalScrollBarVisibility="Auto"
+                 Text="{Binding TextValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 IsEnabled="{Binding IsEditorEnabled}"
+                 AutomationProperties.Name="{Binding Title}" />
+    </DataTemplate>
+
+    <!-- ==== one generated setting row -->
+
+    <DataTemplate x:Key="SettingRowTemplate">
+        <Border Style="{StaticResource SettingCard}"
+                Visibility="{Binding IsShown, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- title + source badge -->
+                <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Margin="0,0,16,0">
+                    <TextBlock Style="{StaticResource BodyStrongText}"
+                               VerticalAlignment="Center"
+                               Text="{Binding Title}" />
+                    <Border Style="{StaticResource SourceStateBadge}" Margin="8,0,0,0">
+                        <TextBlock Style="{StaticResource SourceStateBadgeText}" Text="{Binding SourceBadge}" />
+                    </Border>
+                </StackPanel>
+
+                <!-- the override switch decides whether the value is written at all -->
+                <CheckBox Grid.Row="0" Grid.Column="1"
+                          VerticalAlignment="Center"
+                          Content="{x:Static res:Strings.Override}"
+                          FontSize="12"
+                          IsChecked="{Binding IsOverridden, Mode=TwoWay}"
+                          IsEnabled="{Binding IsLockedByPolicy, Converter={StaticResource InverseBool}}"
+                          ToolTip="{x:Static res:Strings.TipOverride}"
+                          AutomationProperties.Name="{Binding Title}" />
+
+                <TextBlock Grid.Row="1" Grid.ColumnSpan="2"
+                           Style="{StaticResource CaptionText}"
+                           Margin="0,4,0,0"
+                           Text="{Binding Description}"
+                           Visibility="{Binding Description, Converter={StaticResource StringToVisibility}}" />
+
+                <ContentPresenter Grid.Row="2" Grid.ColumnSpan="2"
+                                  Margin="0,12,0,0"
+                                  Content="{Binding}"
+                                  ContentTemplateSelector="{StaticResource SettingEditorSelector}" />
+
+                <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Margin="0,8,0,0">
+                    <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                               Text="{Binding HintText}"
+                               Visibility="{Binding IsEditorEnabled, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+                    <TextBlock Style="{StaticResource CaptionText}"
+                               Foreground="{DynamicResource BrandGoldTextBrush}"
+                               Text="{x:Static res:Strings.PolicyLockedTooltip}"
+                               ToolTip="{Binding PolicyTooltip}"
+                               Visibility="{Binding IsLockedByPolicy, Converter={StaticResource BoolToVisibility}}" />
+                    <TextBlock Style="{StaticResource ErrorText}"
+                               Margin="0,4,0,0"
+                               Text="{Binding Error}"
+                               Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </DataTemplate>
+
+    <!-- ==== one category of generated rows -->
+
+    <DataTemplate x:Key="SettingGroupTemplate">
+        <StackPanel Margin="0,0,0,16"
+                    Visibility="{Binding IsShown, Converter={StaticResource BoolToVisibility}}">
+            <TextBlock Style="{StaticResource GroupHeaderText}" Text="{Binding Title}" />
+            <ItemsControl ItemsSource="{Binding Rows}" ItemTemplate="{StaticResource SettingRowTemplate}" />
+        </StackPanel>
+    </DataTemplate>
+
+</ResourceDictionary>

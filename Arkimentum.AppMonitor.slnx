@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Arkimentum.AppMonitor.Admin/Arkimentum.AppMonitor.Admin.csproj" />
+    <Project Path="src/Arkimentum.AppMonitor.Core/Arkimentum.AppMonitor.Core.csproj" />
+    <Project Path="src/Arkimentum.AppMonitor.Service/Arkimentum.AppMonitor.Service.csproj" />
+    <Project Path="src/Arkimentum.AppMonitor.Tests/Arkimentum.AppMonitor.Tests.csproj" />
+    <Project Path="src/Arkimentum.AppMonitor.Tray/Arkimentum.AppMonitor.Tray.csproj" />
+    <Project Path="src/Arkimentum.AppMonitor.UI/Arkimentum.AppMonitor.UI.csproj" />
+  </Folder>
+  <Folder Name="/cloud/">
+    <Project Path="cloud/api/Arkimentum.AppMonitor.Api/Arkimentum.AppMonitor.Api.csproj" />
+    <Project Path="cloud/api/Arkimentum.AppMonitor.Api.Tests/Arkimentum.AppMonitor.Api.Tests.csproj" />
+  </Folder>
+</Solution>

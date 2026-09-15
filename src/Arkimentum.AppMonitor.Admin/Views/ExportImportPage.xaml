@@ -1,0 +1,202 @@
+<UserControl x:Class="Arkimentum.AppMonitor.Admin.Views.ExportImportPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:res="clr-namespace:Arkimentum.AppMonitor.Admin.Resources"
+             FontFamily="{StaticResource AppFontFamily}"
+             Foreground="{DynamicResource BrandInkBrush}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Style="{StaticResource PageTitleText}" Margin="4,0,0,16" Text="{Binding Title}" />
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+            <StackPanel Margin="4,0,4,24">
+
+                <!-- ==== export -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="300" MinWidth="260" />
+                            <ColumnDefinition Width="24" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Grid.ColumnSpan="3">
+                            <TextBlock Style="{StaticResource CardTitleText}" Margin="0,0,0,4" Text="{x:Static res:Strings.ExportCard}" />
+                            <TextBlock Style="{StaticResource CaptionText}" Text="{x:Static res:Strings.ExportSubtitle}" />
+                            <Border Style="{StaticResource Banner}"
+                                    Margin="0,12,0,0"
+                                    Padding="10"
+                                    Visibility="{Binding ShowDirtyWarning, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Style="{StaticResource CaptionText}"
+                                           Foreground="{DynamicResource BrandGoldTextBrush}"
+                                           Text="{x:Static res:Strings.ExportDirtyWarning}" />
+                            </Border>
+                        </StackPanel>
+
+                        <!-- options -->
+                        <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,16,0,0">
+                            <TextBlock Style="{StaticResource GroupHeaderText}" Text="{x:Static res:Strings.LabelTargetLayer}" />
+                            <!-- The key paths are long; the label wraps rather than being clipped. -->
+                            <RadioButton GroupName="Layer"
+                                         Margin="0,0,0,6"
+                                         IsChecked="{Binding IsPolicyTarget, Mode=TwoWay, Converter={StaticResource InverseBool}}">
+                                <TextBlock TextWrapping="Wrap" Text="{x:Static res:Strings.LayerPreference}" />
+                            </RadioButton>
+                            <RadioButton GroupName="Layer"
+                                         IsChecked="{Binding IsPolicyTarget, Mode=TwoWay}">
+                                <TextBlock TextWrapping="Wrap" Text="{x:Static res:Strings.LayerPolicy}" />
+                            </RadioButton>
+
+                            <CheckBox Margin="0,16,0,0"
+                                      Style="{StaticResource ToggleSwitch}"
+                                      Content="{x:Static res:Strings.LabelReplaceApps}"
+                                      ToolTip="{x:Static res:Strings.TipReplaceApps}"
+                                      IsChecked="{Binding ReplaceApps, Mode=TwoWay}" />
+
+                            <TextBlock Style="{StaticResource GroupHeaderText}" Margin="0,20,0,8" Text="{x:Static res:Strings.LabelDescription}" />
+                            <TextBox Text="{Binding Description, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="{x:Static res:Strings.LabelDescription}" />
+
+                            <TextBlock Style="{StaticResource GroupHeaderText}" Margin="0,20,0,8" Text="{x:Static res:Strings.LabelFormat}" />
+                            <RadioButton GroupName="Format" Margin="0,0,0,6"
+                                         Content="{x:Static res:Strings.FormatJson}"
+                                         IsChecked="{Binding IsJson, Mode=TwoWay}" />
+                            <RadioButton GroupName="Format" Margin="0,0,0,6"
+                                         Content="{x:Static res:Strings.FormatReg}"
+                                         IsChecked="{Binding IsReg, Mode=TwoWay}" />
+                            <RadioButton GroupName="Format"
+                                         Content="{x:Static res:Strings.FormatPs1}"
+                                         IsChecked="{Binding IsPowerShell, Mode=TwoWay}" />
+                            <TextBlock Style="{StaticResource TertiaryCaptionText}" Margin="0,8,0,0" Text="{Binding FormatCaption}" />
+                        </StackPanel>
+
+                        <!-- preview -->
+                        <Grid Grid.Row="1" Grid.Column="2" Margin="0,16,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBox Grid.Row="0"
+                                     FontFamily="{StaticResource MonoFontFamily}"
+                                     FontSize="12"
+                                     IsReadOnly="True"
+                                     AcceptsReturn="True"
+                                     TextWrapping="NoWrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     MinHeight="280"
+                                     MaxHeight="420"
+                                     Text="{Binding Preview, Mode=OneWay}"
+                                     AutomationProperties.Name="{x:Static res:Strings.LabelFormat}" />
+                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,12,0,0">
+                                <Button Style="{DynamicResource AccentButtonStyle}"
+                                        MinWidth="110"
+                                        Padding="16,8"
+                                        Margin="0,0,8,0"
+                                        Content="{x:Static res:Strings.ButtonSaveAs}"
+                                        Command="{Binding SaveAsCommand}" />
+                                <Button MinWidth="90"
+                                        Padding="16,8"
+                                        Content="{x:Static res:Strings.ButtonCopy}"
+                                        Command="{Binding CopyCommand}" />
+                                <TextBlock Style="{StaticResource SuccessText}"
+                                           Margin="16,0,0,0"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           Text="{Binding ExportNotice}"
+                                           Visibility="{Binding HasExportNotice, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <!-- ==== import -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource CardTitleText}" Margin="0,0,0,4" Text="{x:Static res:Strings.ImportCard}" />
+                        <TextBlock Style="{StaticResource CaptionText}" Text="{x:Static res:Strings.ImportSubtitle}" />
+
+                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                            <Button Padding="16,8"
+                                    Content="{x:Static res:Strings.ButtonOpenProfile}"
+                                    Command="{Binding OpenProfileCommand}" />
+                            <TextBlock Style="{StaticResource CaptionText}"
+                                       Margin="16,0,0,0"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       Text="{Binding ImportNotice}"
+                                       Visibility="{Binding HasImportNotice, Converter={StaticResource BoolToVisibility}}" />
+                        </StackPanel>
+
+                        <!-- validation problems -->
+                        <Border Style="{StaticResource CriticalBanner}"
+                                Margin="0,16,0,0"
+                                Visibility="{Binding HasProblems, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource BodyStrongText}"
+                                           Foreground="{DynamicResource BrandTerracottaTextBrush}"
+                                           Text="{x:Static res:Strings.ImportProblems}" />
+                                <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding Problems}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Style="{StaticResource CaptionText}" Text="{Binding}" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- change summary -->
+                        <TextBlock Style="{StaticResource GroupHeaderText}" Margin="0,20,0,8" Text="{x:Static res:Strings.ImportSummary}" />
+                        <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                   Text="{Binding SummaryEmptyText}"
+                                   Visibility="{Binding HasSummary, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+                        <ItemsControl ItemsSource="{Binding Summary}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource SubtleCard}" Padding="12" Margin="0,0,0,8">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource BodyStrongText}" FontSize="13" Text="{Binding Title}" />
+                                            <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding Items}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Style="{StaticResource CaptionText}" Text="{Binding}" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock Style="{StaticResource GroupHeaderText}" Margin="0,16,0,8" Text="{x:Static res:Strings.LabelMode}" />
+                        <RadioButton GroupName="Mode" Margin="0,0,0,6" IsChecked="{Binding IsReplace, Mode=TwoWay}">
+                            <TextBlock TextWrapping="Wrap" Text="{x:Static res:Strings.ModeReplace}" />
+                        </RadioButton>
+                        <RadioButton GroupName="Mode" IsChecked="{Binding IsMerge, Mode=TwoWay}">
+                            <TextBlock TextWrapping="Wrap" Text="{x:Static res:Strings.ModeMerge}" />
+                        </RadioButton>
+
+                        <Button HorizontalAlignment="Left"
+                                MinWidth="110"
+                                Margin="0,20,0,0"
+                                Padding="16,8"
+                                Style="{DynamicResource AccentButtonStyle}"
+                                Content="{x:Static res:Strings.ButtonImport}"
+                                Command="{Binding ImportCommand}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

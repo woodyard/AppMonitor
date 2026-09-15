@@ -1,0 +1,222 @@
+Windows Registry Editor Version 5.00
+
+; =============================================================================================
+; Arkimentum AppMonitor - example configuration
+;
+; Import elevated:   reg import Sample-Configuration.reg
+; or double-click (accepts the UAC and regedit prompts).
+;
+; This writes local PREFERENCES under HKLM\SOFTWARE\Arkimentum\AppMonitor. Anything configured under
+; HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor (Group Policy / Intune) overrides these values.
+;
+; Value names, types and ranges follow RegistryConfigurationReader.cs - see docs\Registry.md.
+; DWORD values are written in hex, as regedit requires; the decimal value is in the comment.
+; Booleans are DWORD 0/1. All values are optional: anything left out keeps its built-in default.
+; =============================================================================================
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Arkimentum\AppMonitor]
+; Scan for updates every 4 hours (240; allowed 5-10080)
+"ScanIntervalMinutes"=dword:000000f0
+; Repeat a notification for the same update at most every 4 hours (240; allowed 1-10080)
+"NotificationIntervalMinutes"=dword:000000f0
+; Wait 2 minutes after service start before the first scan (120; allowed 0-3600)
+"StartupDelaySeconds"=dword:00000078
+; Scan once when the service starts
+"ScanOnStartup"=dword:00000001
+; Update sources
+"WingetEnabled"=dword:00000001
+"WebSourcesEnabled"=dword:00000001
+; Prerequisites: install or repair winget (Microsoft.DesktopAppInstaller) for the SYSTEM account when
+; it is missing or older than WingetMinimumVersion. Check at service start and every 24 hours
+; (allowed 1-720). Needs outbound HTTPS to github.com, aka.ms, nuget.org and the PowerShell Gallery -
+; set AutoInstallPrerequisites to 0 on isolated machines and provision App Installer in the image.
+"AutoInstallPrerequisites"=dword:00000001
+"PrerequisiteCheckIntervalHours"=dword:00000018
+"WingetMinimumVersion"="1.6.0"
+; Let the service start the tray agent in every interactive session
+"LaunchTrayAgent"=dword:00000001
+; Notifications
+"NotificationsEnabled"=dword:00000001
+"ShowInstalledNotifications"=dword:00000001
+; Logging: Trace, Debug, Information, Warning, Error
+"LogLevel"="Information"
+; Keep 30 days of logs (allowed 1-3650), roll each file at 10 MB (allowed 1-1024)
+"LogRetentionDays"=dword:0000001e
+"MaxLogFileSizeMB"=dword:0000000a
+; Abort a single installer run after 30 minutes (allowed 1-600)
+"InstallTimeoutMinutes"=dword:0000001e
+; Abort a single update check - one winget call or one web request - after 3 minutes (allowed 1-60)
+"CheckTimeoutMinutes"=dword:00000003
+; Fill missing per-app values from catalog.json next to the service executable
+"UseCatalog"=dword:00000001
+; Ignore winget rows whose installed version is "Unknown"
+"WingetIncludeUnknown"=dword:00000000
+; Deadline / deferral / blocking-process evaluation every 60 s (allowed 10-600)
+"PolicyTickSeconds"=dword:0000003c
+
+; ---- defaults for apps that do not set the value themselves ----------------------------------
+"DefaultMandatory"=dword:00000000
+; 72 hours (allowed 0-8760; 0 = no deadline)
+"DefaultDeadlineHours"=dword:00000048
+; 3 deferrals (allowed 0-1000; 0 = unlimited)
+"DefaultMaxDeferrals"=dword:00000003
+; Deferral choices offered to the user, in minutes: 1 h, 4 h, 24 h
+"DefaultDeferralOptions"="60,240,1440"
+"DefaultAutoInstall"=dword:00000000
+; 15 minutes to save work once a forced close has been announced (allowed 0-1440)
+"DefaultCloseGracePeriodMinutes"=dword:0000000f
+"DefaultForceCloseAtDeadline"=dword:00000001
+
+; ---- optional, environment specific: uncomment and adjust ------------------------------------
+;"ProxyUrl"="http://proxy.contoso.com:8080"
+;"WingetGlobalArgs"="--disable-interactivity"
+;"LogDirectory"="D:\\Logs\\Arkimentum"
+;"StateDirectory"="D:\\State\\Arkimentum"
+;"CatalogPath"="C:\\ProgramData\\Arkimentum\\catalog.json"
+; Full path to the tray executable when it is not in <service folder>\..\Tray
+;"TrayPath"="C:\\Program Files\\Arkimentum\\AppMonitor\\Tray\\Arkimentum.AppMonitor.Tray.exe"
+; Explicit winget.exe; empty = auto-detect. Troubleshooting only - the path contains the App
+; Installer version and changes when the package is updated.
+;"WingetPath"="C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.26.0.0_x64__8wekyb3d8bbwe\\winget.exe"
+; Monitor every app in the catalog without listing them individually
+;"EnableAllCatalogApps"=dword:00000001
+
+; ---- organization connection (the cloud service) ---------------------------------------------
+; Set these three and the device enrols itself on its first sync: it exchanges the enrollment key
+; for a per-device key kept DPAPI-protected in %ProgramData%\Arkimentum\AppMonitor\device.credential,
+; then collects the organization configuration instead of needing one pushed to every machine.
+; They are the ONLY values that have to be provisioned per device when the cloud is in use.
+; Precedence becomes: Policies key > organization configuration from the cloud > these preferences
+; > catalog > built-in default. The cloud can never override these three values themselves.
+; Leave them out to run stand-alone: nothing then leaves the device. See docs\Cloud.md.
+;"CloudServerUrl"="https://appmonitor-contoso.azurewebsites.net"
+;"CloudOrganizationId"="3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+;"CloudEnrollmentKey"="ek_live_replace_me"
+; Poll for configuration, report and pick up commands every 15 minutes (allowed 1-1440)
+;"CloudSyncIntervalMinutes"=dword:0000000f
+; 1 = apply the organization configuration; 0 = enrol and report, but configure locally only
+;"CloudConfigEnabled"=dword:00000001
+; 1 = report inventory, update state, events and prerequisites; 0 = fetch configuration only
+;"CloudReportingEnabled"=dword:00000001
+
+; ---- agent self-update ------------------------------------------------------------------------
+; The service reads a release manifest, verifies the package SHA-256 and installs it as SYSTEM.
+; Set AgentAutoUpdate to 0 when Intune, Configuration Manager or an RMM owns the binaries.
+;"AgentAutoUpdate"=dword:00000001
+; GitHub latest-release API URL, or a direct manifest.json URL. Empty/absent = the cloud API mirror.
+;"AgentUpdateFeedUrl"="https://api.github.com/repos/arkimentum/appmonitor/releases/latest"
+; stable (default) or preview
+;"AgentUpdateChannel"="stable"
+; Check for a new release every 12 hours (allowed 1-720)
+;"AgentUpdateCheckIntervalHours"=dword:0000000c
+; Pin the fleet to one validated build; empty/absent = always the newest in the channel
+;"AgentTargetVersion"="1.4.2"
+
+; =============================================================================================
+; Applications
+;
+; The keys below use the AppIds of the shipped catalog (chrome, 7zip, vscode, powershell,
+; firefox), so values left out here - detection regexes, vendor URLs, process names - are filled
+; in from catalog.json. Registry values always win over the catalog, and behaviour is never taken
+; from it: Mandatory, DeadlineHours, MaxDeferrals, DeferralOptions, AutoInstall,
+; CloseGracePeriodMinutes and ForceCloseAtDeadline come from these keys or the Default* values.
+; =============================================================================================
+
+; =============================================================================================
+; 1) Mandatory winget app with a hard deadline
+;    Chrome must be current. 72 h after the update is first seen it is enforced: the user may
+;    defer three times (1 h / 4 h / 24 h); at the deadline the tray agent asks for chrome.exe to
+;    be closed, waits 15 minutes, then the process is terminated and the update installed.
+; =============================================================================================
+[HKEY_LOCAL_MACHINE\SOFTWARE\Arkimentum\AppMonitor\Apps\chrome]
+"DisplayName"="Google Chrome"
+"Enabled"=dword:00000001
+"Source"="winget"
+"WingetId"="Google.Chrome"
+"Context"="system"
+"Mandatory"=dword:00000001
+; 72 hours
+"DeadlineHours"=dword:00000048
+"MaxDeferrals"=dword:00000003
+"DeferralOptions"="60,240,1440"
+; REG_MULTI_SZ: chrome (the .exe suffix is optional and stripped by the reader)
+"ProcessNames"=hex(7):63,00,68,00,72,00,6f,00,6d,00,65,00,00,00,00,00
+; 15 minutes
+"CloseGracePeriodMinutes"=dword:0000000f
+"ForceCloseAtDeadline"=dword:00000001
+
+; =============================================================================================
+; 2) Optional app updated from the vendor web site (no winget)
+;    VersionUrl is fetched, VersionRegex extracts the latest version, DetectDisplayNameRegex
+;    finds the installed version in the Uninstall keys, and DownloadUrl is expanded with the
+;    placeholders {version}, {version_nodots}, {version_major}, {version_underscore}.
+;    7-zip.org publishes 26.03 as 7z2603-x64.exe, hence {version_nodots}.
+;    Mandatory=0: the user can postpone indefinitely.
+; =============================================================================================
+[HKEY_LOCAL_MACHINE\SOFTWARE\Arkimentum\AppMonitor\Apps\7zip]
+"DisplayName"="7-Zip"
+"Enabled"=dword:00000001
+"Source"="web"
+"Context"="system"
+"VersionUrl"="https://www.7-zip.org/download.html"
+"VersionRegex"="Download 7-Zip (\\d+\\.\\d+)"
+"DownloadUrl"="https://www.7-zip.org/a/7z{version_nodots}-x64.exe"
+"InstallerType"="exe"
+"InstallerArgs"="/S"
+"DetectDisplayNameRegex"="^7-Zip"
+"DetectPublisherRegex"="Igor Pavlov"
+"Mandatory"=dword:00000000
+; REG_MULTI_SZ: 7zFM, 7zG
+"ProcessNames"=hex(7):37,00,7a,00,46,00,4d,00,00,00,37,00,7a,00,47,00,00,00,00,00
+
+; =============================================================================================
+; 3) Per-user install: the tray agent does the work in the user's session
+;    VS Code User Setup is registered in HKCU, so LocalSystem cannot update it. Context=user
+;    makes the service delegate the check and the install to the tray agent of that user.
+;    (Context=auto would reach the same result by finding the app only in a user hive.)
+;    MaxDeferrals=0 means unlimited deferrals.
+; =============================================================================================
+[HKEY_LOCAL_MACHINE\SOFTWARE\Arkimentum\AppMonitor\Apps\vscode]
+"DisplayName"="Visual Studio Code (User Setup)"
+"Enabled"=dword:00000001
+"Source"="winget"
+"WingetId"="Microsoft.VisualStudioCode"
+"Context"="user"
+"WingetExtraArgs"="--scope user"
+"DetectDisplayNameRegex"="^Microsoft Visual Studio Code( \\(User\\))?$"
+"Mandatory"=dword:00000000
+"MaxDeferrals"=dword:00000000
+; ProcessNames as a comma-separated REG_SZ - equivalent to the REG_MULTI_SZ form above
+"ProcessNames"="Code"
+
+; =============================================================================================
+; 4) Silent automatic install of an MSI from the web
+;    AutoInstall=1: no prompt, the service installs as soon as nothing blocks it. No ProcessNames
+;    are configured, so nothing ever blocks. Mandatory with a 24 h deadline as a backstop.
+; =============================================================================================
+[HKEY_LOCAL_MACHINE\SOFTWARE\Arkimentum\AppMonitor\Apps\powershell]
+"DisplayName"="PowerShell 7"
+"Enabled"=dword:00000001
+"Source"="web"
+"Context"="system"
+"VersionUrl"="https://api.github.com/repos/PowerShell/PowerShell/releases/latest"
+"VersionRegex"="\"tag_name\"\\s*:\\s*\"v(\\d+\\.\\d+\\.\\d+)\""
+"DownloadUrl"="https://github.com/PowerShell/PowerShell/releases/download/v{version}/PowerShell-{version}-win-x64.msi"
+"InstallerType"="msi"
+"InstallerArgs"="/qn /norestart"
+"DetectDisplayNameRegex"="^PowerShell 7"
+"AutoInstall"=dword:00000001
+"Mandatory"=dword:00000001
+; 24 hours
+"DeadlineHours"=dword:00000018
+
+; =============================================================================================
+; 5) The flat AppList format
+;    One REG_SZ value per app: the value NAME is the AppId, the DATA is Name=Value;Name=Value.
+;    This is the format produced by the ADMX "Monitored applications" list element and by Intune,
+;    neither of which can create nested registry keys. Inside an entry, list values use '|' as
+;    the separator because ';' already separates the pairs; the reader converts '|' to ',' for
+;    ProcessNames and DeferralOptions.
+; =============================================================================================
+[HKEY_LOCAL_MACHINE\SOFTWARE\Arkimentum\AppMonitor\AppList]
+"firefox"="DisplayName=Mozilla Firefox;Enabled=1;Source=winget;WingetId=Mozilla.Firefox;Context=system;Mandatory=1;DeadlineHours=48;MaxDeferrals=2;DeferralOptions=60|240|1440;ProcessNames=firefox|crashreporter;CloseGracePeriodMinutes=10;ForceCloseAtDeadline=1"

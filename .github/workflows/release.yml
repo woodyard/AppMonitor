@@ -1,0 +1,89 @@
+name: Release
+
+# Publishes an agent release: the zip produced by deploy\Build-Release.ps1 plus the manifest.json the agent's
+# self-updater reads (see docs/SelfUpdate.md). Point AgentUpdateFeedUrl at
+#   https://api.github.com/repos/<owner>/<repo>/releases/latest
+# and the agents pick the release up on their next check.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build and release, without the leading v (e.g. 1.2.0 or 1.2.0-preview.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Resolve version, tag and channel
+        id: version
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $version = '${{ inputs.version }}'.Trim().TrimStart('v')
+            $tag = "v$version"
+          } else {
+            $tag = '${{ github.ref_name }}'
+            $version = $tag.TrimStart('v')
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?(-[0-9A-Za-z.-]+)?$') {
+            throw "Version '$version' is not a valid version number."
+          }
+          $channel = if ($tag -like '*-preview*') { 'preview' } else { 'stable' }
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Append
+          "tag=$tag"         | Out-File $env:GITHUB_OUTPUT -Append
+          "channel=$channel" | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "version=$version tag=$tag channel=$channel"
+
+      - name: Build release package
+        shell: pwsh
+        run: ./deploy/Build-Release.ps1 -Version '${{ steps.version.outputs.version }}'
+
+      - name: Write manifest.json
+        id: manifest
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $tag     = '${{ steps.version.outputs.tag }}'
+          $zip     = "artifacts/Arkimentum.AppMonitor-$version.zip"
+          if (-not (Test-Path $zip)) { throw "Build-Release.ps1 did not produce $zip." }
+          $file = Get-Item $zip
+          $manifest = [ordered]@{
+            version         = $version
+            channel         = '${{ steps.version.outputs.channel }}'
+            packageUrl      = "https://github.com/${{ github.repository }}/releases/download/$tag/Arkimentum.AppMonitor-$version.zip"
+            sha256          = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+            sizeBytes       = $file.Length
+            publishedUtc    = (Get-Date).ToUniversalTime().ToString('o')
+            releaseNotesUrl = "https://github.com/${{ github.repository }}/releases/tag/$tag"
+          }
+          $json = $manifest | ConvertTo-Json -Depth 5
+          $json | Set-Content -Path 'artifacts/manifest.json' -Encoding utf8
+          Write-Host $json
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.channel == 'preview' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/Arkimentum.AppMonitor-${{ steps.version.outputs.version }}.zip
+            artifacts/manifest.json

@@ -1,0 +1,624 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions"
+                           xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                           revision="1.0" schemaVersion="1.0">
+  <displayName>Arkimentum AppMonitor</displayName>
+  <description>Administrative template for the Arkimentum AppMonitor agent.</description>
+
+  <resources>
+    <stringTable>
+
+      <string id="SUPPORTED_ArkimentumAppMonitor_1_0">Arkimentum AppMonitor agent 1.0 or later</string>
+      <string id="SUPPORTED_ArkimentumAppMonitor_1_1">Arkimentum AppMonitor agent 1.1 or later</string>
+
+      <string id="Cat_Arkimentum">Arkimentum</string>
+      <string id="Cat_Upgrade">AppMonitor</string>
+      <string id="Cat_Upgrade_Help">Settings for the Arkimentum AppMonitor agent, which monitors applications for updates from winget and vendor web sites, notifies users and installs updates according to policy.
+
+All settings in this category are written to HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor and override the corresponding local values in HKLM\SOFTWARE\Arkimentum\AppMonitor. A setting left Not Configured falls back to the organization configuration delivered by the cloud service (when one is in use), then to the local value, then to the agent's built-in default.</string>
+
+      <string id="Cat_OrgConnection">Organization connection</string>
+      <string id="Cat_OrgConnection_Help">How this device reaches the Arkimentum AppMonitor cloud service, and what it does once it is there.
+
+Three values connect a device to an organization: the server URL, the organization id and the enrollment key. With them in place the device enrols once, receives a per-device key of its own, and from then on collects its configuration from the organization instead of needing it pushed to every machine. The enrollment key is used only at enrolment and is never sent again.
+
+Settings delivered by the cloud sit BELOW this policy key and ABOVE the local preferences: a value set here always wins, a value set only in the cloud wins over the local preference, and a value set in neither falls back to the local preference and then to the built-in default. The connection values themselves can never be changed by the cloud - the device would lose the way back.
+
+Leave this category Not Configured to run the agent stand-alone: no data then leaves the device.
+
+See docs\Cloud.md for the data flows, the exact list of fields reported, and the provisioning recipes for Intune and Group Policy.</string>
+
+      <string id="Cat_AgentUpdates">Agent updates</string>
+      <string id="Cat_AgentUpdates_Help">How the AppMonitor agent updates itself.
+
+The service periodically reads a release manifest, compares its version with the running one, downloads the release package over HTTPS, verifies its SHA-256 against the manifest, extracts it and runs the installer script from the extracted package as SYSTEM. The service, the tray agents and the admin console are replaced; the configuration, the state file and the device credential are kept.
+
+Turn the whole mechanism off with "Update the agent automatically" if you deploy the agent through Intune, Configuration Manager or an RMM and want that tool to remain the only source of the binaries.
+
+See docs\SelfUpdate.md and docs\Cloud.md.</string>
+
+      <!-- ================================================== scanning and notification -->
+
+      <string id="ScanInterval">Update scan interval</string>
+      <string id="ScanInterval_Help">Sets how often the agent checks the monitored applications for updates.
+
+If you enable this setting, the agent scans every N minutes (5 to 10080; 10080 = 7 days).
+
+If you disable or do not configure this setting, the local value is used, otherwise the default of 240 minutes (4 hours).
+
+Registry value: ScanIntervalMinutes (REG_DWORD).</string>
+
+      <string id="NotificationInterval">Notification interval</string>
+      <string id="NotificationInterval_Help">Sets how often the user is reminded about the same pending update.
+
+If you enable this setting, a reminder for an update the user has already seen (or dismissed) is shown at most every N minutes (1 to 10080).
+
+If you disable or do not configure this setting, the local value is used, otherwise the default of 240 minutes (4 hours).
+
+Individual applications can override this with their own NotificationIntervalMinutes value.
+
+Registry value: NotificationIntervalMinutes (REG_DWORD).</string>
+
+      <string id="StartupDelay">Startup delay</string>
+      <string id="StartupDelay_Help">Sets how long the service waits after it starts before it runs the first update scan. A delay keeps the agent out of the way during logon and boot.
+
+If you enable this setting, the agent waits N seconds (0 to 3600).
+
+If you disable or do not configure this setting, the local value is used, otherwise the default of 120 seconds.
+
+Registry value: StartupDelaySeconds (REG_DWORD).</string>
+
+      <string id="ScanOnStartup">Scan when the service starts</string>
+      <string id="ScanOnStartup_Help">Controls whether the agent runs an update scan when the service starts, in addition to the periodic scan.
+
+If you enable this setting (the default behaviour), a scan runs once the startup delay has elapsed.
+
+If you disable this setting, the agent only scans on the configured interval.
+
+If you do not configure this setting, the local value is used, otherwise scanning at startup is enabled.
+
+Registry value: ScanOnStartup (REG_DWORD, 1 or 0).</string>
+
+      <!-- ================================================== sources -->
+
+      <string id="WingetEnabled">Enable winget source</string>
+      <string id="WingetEnabled_Help">Controls whether applications configured with Source=winget are checked and updated using the Windows Package Manager (winget).
+
+If you enable this setting, winget is used (the default).
+
+If you disable this setting, winget-based applications are skipped; only web-source applications are processed.
+
+If you do not configure this setting, the local value is used, otherwise winget is enabled.
+
+Note: winget must be available in the SYSTEM context on the device. See docs\Troubleshooting.md.
+
+Registry value: WingetEnabled (REG_DWORD, 1 or 0).</string>
+
+      <string id="WebSourcesEnabled">Enable web sources</string>
+      <string id="WebSourcesEnabled_Help">Controls whether applications configured with Source=web are checked and updated by downloading the installer from the vendor's web site.
+
+If you enable this setting, web sources are used (the default).
+
+If you disable this setting, web-source applications are skipped; only winget-based applications are processed.
+
+If you do not configure this setting, the local value is used, otherwise web sources are enabled.
+
+Registry value: WebSourcesEnabled (REG_DWORD, 1 or 0).</string>
+
+      <string id="WingetGlobalArgs">Winget global arguments</string>
+      <string id="WingetGlobalArgs_Help">Additional command line arguments appended to every winget invocation made by the agent.
+
+If you enable this setting, type the arguments exactly as they would appear on a winget command line, for example:
+    --disable-interactivity
+    --source winget
+
+If you disable or do not configure this setting, the local value is used, otherwise no extra arguments are passed.
+
+Use this sparingly: arguments that change winget's output format can break update detection.
+
+Registry value: WingetGlobalArgs (REG_SZ).</string>
+
+      <string id="WingetIncludeUnknown">Include unknown winget versions</string>
+      <string id="WingetIncludeUnknown_Help">Controls whether winget results whose installed version is reported as "Unknown" are treated as updatable.
+
+If you enable this setting, such applications are included. This finds more updates but can produce repeated installs of packages whose installed version winget cannot determine.
+
+If you disable this setting, they are ignored (the default).
+
+If you do not configure this setting, the local value is used, otherwise they are ignored.
+
+Registry value: WingetIncludeUnknown (REG_DWORD, 1 or 0).</string>
+
+      <string id="Prerequisites">Automatically install prerequisites</string>
+      <string id="Prerequisites_Help">Controls whether the agent installs or repairs its only runtime prerequisite - the Windows Package Manager (winget, the Microsoft.DesktopAppInstaller package) - on its own.
+
+The service checks at startup, and then at the interval you set, whether winget is available to the SYSTEM account and at least the minimum version. When it is not, the service installs or repairs it as SYSTEM, without involving the user: first through the Microsoft.WinGet.Client PowerShell module (Repair-WinGetPackageManager -AllUsers -Latest), and if that is unavailable by downloading the current App Installer bundle and its dependencies and provisioning them for all users. The tray agent then registers the provisioned package for the signed-in user, so per-user updates work without administrative rights.
+
+If you enable this setting, tick the check box to allow the automatic install/repair, set how often the check runs (1 to 720 hours) and the minimum acceptable winget version.
+
+If you disable this setting, the agent never installs or repairs winget; applications with source "winget" simply fail their update check until winget is provisioned by other means.
+
+If you do not configure this setting, the local value is used, otherwise the automatic install is on, the check runs every 24 hours and the minimum version is 1.6.0.
+
+The automatic install needs outbound HTTPS to github.com, aka.ms, nuget.org and the PowerShell Gallery (psg-prod-eastus.azureedge.net, www.powershellgallery.com). On devices without that access, provision App Installer in the image instead and disable this setting.
+
+Registry values: AutoInstallPrerequisites (REG_DWORD, 1 or 0), PrerequisiteCheckIntervalHours (REG_DWORD, 1 to 720), WingetMinimumVersion (REG_SZ).</string>
+
+      <string id="WingetPath">Winget executable path</string>
+      <string id="WingetPath_Help">Full path to winget.exe, for devices where the agent cannot find it on its own.
+
+If you enable this setting, type a full path. Environment variables are expanded, for example:
+    C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.26.0.0_x64__8wekyb3d8bbwe\winget.exe
+
+If you disable or do not configure this setting, the local value is used, otherwise the agent detects winget itself, including the WindowsApps package folder used when it runs as the SYSTEM account.
+
+Only set this as a troubleshooting measure: the path contains the App Installer version and changes when the package is updated.
+
+Registry value: WingetPath (REG_SZ or REG_EXPAND_SZ).</string>
+
+      <string id="CheckTimeout">Update check timeout</string>
+      <string id="CheckTimeout_Help">Maximum time a single update check may take - one winget call, or one request to a vendor version page.
+
+If you enable this setting, specify a number of minutes (1 to 60). Checks that exceed it are reported as an error for that application only; the rest of the scan continues.
+
+If you disable or do not configure this setting, the local value is used, otherwise 3 minutes.
+
+Registry value: CheckTimeoutMinutes (REG_DWORD).</string>
+
+      <string id="ProxyUrl">Proxy URL</string>
+      <string id="ProxyUrl_Help">Proxy used when the agent contacts vendor web sites (version pages, downloads, hash files).
+
+If you enable this setting, type a full proxy URL, for example:
+    http://proxy.contoso.com:8080
+
+If you disable or do not configure this setting, the local value is used, otherwise the system proxy configuration of the SYSTEM account applies.
+
+This setting does not configure winget's own proxy. See docs\Troubleshooting.md.
+
+Registry value: ProxyUrl (REG_SZ).</string>
+
+      <!-- ================================================== user experience -->
+
+      <string id="LaunchTrayAgent">Launch tray agent</string>
+      <string id="LaunchTrayAgent_Help">Controls whether the service starts the tray agent (Arkimentum.AppMonitor.Tray.exe) in interactive user sessions.
+
+If you enable this setting, the service launches the tray agent into every interactive session where it is not already running (the default). The tray agent shows notifications, offers deferrals and performs per-user installs.
+
+If you disable this setting, the service does not launch it. Updates in user context cannot be handled and users receive no notifications unless the agent is started some other way (for example the ArkimentumAppMonitorTray Run value created by the installer).
+
+If you do not configure this setting, the local value is used, otherwise the tray agent is launched.
+
+Registry value: LaunchTrayAgent (REG_DWORD, 1 or 0).</string>
+
+      <string id="NotificationsEnabled">Enable notifications</string>
+      <string id="NotificationsEnabled_Help">Controls whether the tray agent shows toast notifications about pending updates, deadlines and forced application closes.
+
+If you enable this setting, notifications are shown (the default).
+
+If you disable this setting, the tray icon still works and mandatory updates are still enforced, but the user receives no unsolicited toasts. Use with care for mandatory updates with forced close: users would then only see the close prompt.
+
+If you do not configure this setting, the local value is used, otherwise notifications are enabled.
+
+Registry value: NotificationsEnabled (REG_DWORD, 1 or 0).</string>
+
+      <string id="ShowInstalledNotifications">Show installed notifications</string>
+      <string id="ShowInstalledNotifications_Help">Controls whether a notification is shown after an update has been installed successfully.
+
+If you enable this setting, the user is told when an application was updated (the default).
+
+If you disable this setting, only failures and pending updates are announced.
+
+If you do not configure this setting, the local value is used, otherwise the notification is shown.
+
+Registry value: ShowInstalledNotifications (REG_DWORD, 1 or 0).</string>
+
+      <!-- ================================================== logging -->
+
+      <string id="LogLevel">Log level</string>
+      <string id="LogLevel_Help">Minimum severity written to the agent log files by both the service and the tray agent.
+
+If you enable this setting, choose one of Trace, Debug, Information, Warning or Error. Use Debug or Trace only while troubleshooting: they produce large files.
+
+If you disable or do not configure this setting, the local value is used, otherwise Information.
+
+Registry value: LogLevel (REG_SZ).</string>
+      <string id="LogLevel_Trace">Trace (most detailed)</string>
+      <string id="LogLevel_Debug">Debug</string>
+      <string id="LogLevel_Information">Information (default)</string>
+      <string id="LogLevel_Warning">Warning</string>
+      <string id="LogLevel_Error">Error (least detailed)</string>
+
+      <string id="LogDirectory">Log directory</string>
+      <string id="LogDirectory_Help">Folder where the service writes its log files.
+
+If you enable this setting, type a full path. Environment variables are expanded, for example:
+    D:\Logs\Arkimentum
+    %ProgramData%\Arkimentum\AppMonitor\Logs
+
+The folder must be writable by LocalSystem. The service creates it if necessary.
+
+If you disable or do not configure this setting, the local value is used, otherwise %ProgramData%\Arkimentum\AppMonitor\Logs.
+
+This setting does not move the tray agent log, which always lives in %LOCALAPPDATA%\Arkimentum\AppMonitor\Logs in each user profile.
+
+Registry value: LogDirectory (REG_SZ or REG_EXPAND_SZ).</string>
+
+      <string id="LogRetentionDays">Log retention days</string>
+      <string id="LogRetentionDays_Help">How long log files are kept. Files older than this are deleted the next time a log file is opened.
+
+If you enable this setting, specify a number of days (1 to 3650).
+
+If you disable or do not configure this setting, the local value is used, otherwise 30 days.
+
+Registry value: LogRetentionDays (REG_DWORD).</string>
+
+      <string id="MaxLogFileSize">Maximum log file size</string>
+      <string id="MaxLogFileSize_Help">Size at which the current log file is rolled over to a new file. Files are named Arkimentum.AppMonitor.Service_yyyyMMdd.log, then _1, _2 and so on for each roll on the same day.
+
+If you enable this setting, specify a size in megabytes (1 to 1024).
+
+If you disable or do not configure this setting, the local value is used, otherwise 10 MB.
+
+Registry value: MaxLogFileSizeMB (REG_DWORD).</string>
+
+      <!-- ================================================== installation -->
+
+      <string id="InstallTimeout">Install timeout</string>
+      <string id="InstallTimeout_Help">Maximum time a single installer (winget, .exe or .msi) is allowed to run before the agent gives up and marks the update as failed.
+
+If you enable this setting, specify a number of minutes (1 to 600).
+
+If you disable or do not configure this setting, the local value is used, otherwise 30 minutes.
+
+Registry value: InstallTimeoutMinutes (REG_DWORD).</string>
+
+      <string id="DefaultUpdateBehaviour">Default update behaviour</string>
+      <string id="DefaultUpdateBehaviour_Help">Default behaviour for monitored applications that do not specify these values themselves. Per-application settings always win over these defaults.
+
+Mandatory: the update must be installed. The user can defer only while deferrals remain and the deadline has not passed.
+
+Deadline (hours): hours after an update is first detected at which a mandatory update is enforced. 0 means no deadline.
+
+Maximum deferrals: how many times the user may postpone. 0 means unlimited.
+
+Deferral options (minutes): comma-separated list of the choices offered to the user, for example 60,240,1440 for 1 hour, 4 hours and 1 day.
+
+Install automatically: install without asking as soon as no blocking process is running.
+
+Close grace period (minutes): how long the user is given to save work after a forced close has been announced.
+
+Force close at deadline: terminate the configured blocking processes when the deadline has passed and the grace period has elapsed. When this is off, a mandatory update simply waits for the user to close the application.
+
+If you disable or do not configure this setting, the local values are used, otherwise the built-in defaults: not mandatory, no deadline, 3 deferrals, 60/240/1440 minutes, no automatic install, 15 minute grace period, force close enabled.
+
+Registry values: DefaultMandatory, DefaultDeadlineHours, DefaultMaxDeferrals, DefaultDeferralOptions, DefaultAutoInstall, DefaultCloseGracePeriodMinutes, DefaultForceCloseAtDeadline.</string>
+
+      <!-- ================================================== catalog -->
+
+      <string id="UseCatalog">Use catalog</string>
+      <string id="UseCatalog_Help">Controls whether the built-in application catalog is used to fill in values that a monitored application does not specify (winget id, vendor version and download URLs, detection rules, process names).
+
+If you enable this setting, catalog entries are merged in behind the configured values (the default). Registry values always win over the catalog.
+
+If you disable this setting, only what is configured in the registry is used. Applications that then lack a WingetId, or a VersionUrl and DownloadUrl, are skipped and a warning is logged.
+
+If you do not configure this setting, the local value is used, otherwise the catalog is used.
+
+Registry value: UseCatalog (REG_DWORD, 1 or 0).</string>
+
+      <string id="CatalogPath">Catalog path</string>
+      <string id="CatalogPath_Help">Path to a catalog JSON file that replaces the catalog.json shipped next to the service executable. Use this to distribute your own application definitions.
+
+If you enable this setting, type a full path. Environment variables are expanded, for example:
+    C:\ProgramData\Arkimentum\catalog.json
+    %ProgramData%\Arkimentum\catalog.json
+
+The file must be readable by LocalSystem and by the users running the tray agent. Place it where standard users cannot write, because it controls what gets downloaded and installed.
+
+If you disable or do not configure this setting, the local value is used, otherwise the catalog.json in the service folder.
+
+Registry value: CatalogPath (REG_SZ or REG_EXPAND_SZ).</string>
+
+      <string id="EnableAllCatalogApps">Enable all catalog applications</string>
+      <string id="EnableAllCatalogApps_Help">Controls whether every application in the catalog is monitored, instead of only the ones listed explicitly.
+
+If you enable this setting, all catalog entries are added to the monitored set with the catalog's own values, and the default update behaviour above applies. Explicit per-application configuration still wins, so an application can be excluded again with Enabled=0.
+
+If you disable this setting, only applications configured explicitly (Apps subkeys or the monitored applications list) are processed (the default).
+
+If you do not configure this setting, the local value is used, otherwise only explicit applications are processed.
+
+Test this on a pilot group first: it can put a large number of applications under management at once.
+
+Registry value: EnableAllCatalogApps (REG_DWORD, 1 or 0).</string>
+
+      <!-- ================================================== monitored applications -->
+
+      <string id="MonitoredApps">Monitored applications</string>
+      <string id="MonitoredApps_Help">The list of applications the agent monitors, and how each of them is treated.
+
+Each entry is a value name and a value:
+  Value name  the application id (AppId). For winget applications use the winget package id.
+  Value       a semicolon-separated list of Name=Value pairs.
+
+Because a semicolon separates the pairs, lists inside an entry use a vertical bar as the separator: ProcessNames=chrome|chrome_proxy and DeferralOptions=60|240|1440.
+
+Common names:
+  Enabled=1                  0 turns the application off without removing the entry
+  DisplayName=Google Chrome  name shown to the user
+  Source=winget              winget (default) or web
+  WingetId=Google.Chrome     required for Source=winget
+  Context=auto               auto (default), system or user
+  Mandatory=1                the update is enforced
+  DeadlineHours=72           hours until enforcement; 0 = no deadline
+  MaxDeferrals=3             0 = unlimited
+  DeferralOptions=60|240|1440  choices offered to the user, in minutes
+  ProcessNames=chrome        processes that must be closed before installing
+  CloseGracePeriodMinutes=15 time to save work once a forced close is announced
+  ForceCloseAtDeadline=1     terminate those processes at the deadline
+  AutoInstall=0              1 installs silently when nothing is blocking
+  MinimumVersion=            only flag versions below this one
+
+For Source=web, also:
+  VersionUrl=https://www.7-zip.org/download.html
+  VersionRegex=Download 7-Zip (\d+\.\d+)
+  DownloadUrl=https://www.7-zip.org/a/7z{version_nodots}-x64.exe
+  InstallerType=exe          exe (default), msi or msix
+  InstallerArgs=/S
+  DetectDisplayNameRegex=^7-Zip
+  Sha256Url= or Sha256=      verify the download before running it
+The placeholders {version}, {version_nodots}, {version_major} and {version_underscore} are replaced in DownloadUrl.
+
+Examples:
+  Name:  Google.Chrome
+  Value: DisplayName=Google Chrome;Enabled=1;Source=winget;WingetId=Google.Chrome;Mandatory=1;DeadlineHours=72;MaxDeferrals=3;DeferralOptions=60|240|1440;ProcessNames=chrome;CloseGracePeriodMinutes=15;ForceCloseAtDeadline=1
+
+  Name:  Microsoft.VisualStudioCode
+  Value: DisplayName=Visual Studio Code;Enabled=1;Source=winget;WingetId=Microsoft.VisualStudioCode;Context=user;Mandatory=0;ProcessNames=Code
+
+  Name:  7zip.7zip
+  Value: DisplayName=7-Zip;Enabled=1;Source=web;VersionUrl=https://www.7-zip.org/download.html;VersionRegex=Download 7-Zip (\d+\.\d+);DownloadUrl=https://www.7-zip.org/a/7z{version_nodots}-x64.exe;InstallerArgs=/S;DetectDisplayNameRegex=^7-Zip;ProcessNames=7zFM|7zG
+
+Values not given fall back to the catalog entry with the same AppId, then to the default update behaviour above.
+
+If you disable or do not configure this setting, applications configured locally under HKLM\SOFTWARE\Arkimentum\AppMonitor are used instead.
+
+Entries are written to HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor\AppList as REG_SZ values.</string>
+
+      <!-- ================================================== organization connection -->
+
+      <string id="CloudConnection">Organization connection</string>
+      <string id="CloudConnection_Help">Connects this device to an organization in the Arkimentum AppMonitor cloud service.
+
+If you enable this setting, fill in all three fields:
+
+Server URL: the base URL of the organization's AppMonitor API, for example
+    https://appmonitor-contoso.azurewebsites.net
+It must use https. No path, no trailing slash.
+
+Organization id: the GUID shown on the Enrollment page of the admin console's organization mode, for example
+    3f2504e0-4f89-11d3-9a0c-0305e82c3301
+
+Enrollment key: the organization enrollment key from the same page. The service presents it once, receives a per-device key in return and stores that key DPAPI-protected in %ProgramData%\Arkimentum\AppMonitor\device.credential, readable only by SYSTEM and Administrators. The enrollment key is never sent again and is not used to authenticate anything afterwards, so rotating it on the server does not disturb devices that have already enrolled.
+
+Because the key is a shared organization secret that any reader of this policy can see, restrict who can read the GPO, and rotate the key in the console when a device that had it is lost.
+
+If you disable or do not configure this setting, the local values are used (typically written by Install-ArkimentumAppMonitor.ps1 or by Intune); with none of them set, the agent runs stand-alone and contacts nothing.
+
+Registry values: CloudServerUrl (REG_SZ), CloudOrganizationId (REG_SZ), CloudEnrollmentKey (REG_SZ).</string>
+
+      <string id="CloudSyncInterval">Organization sync interval</string>
+      <string id="CloudSyncInterval_Help">How often the agent contacts the cloud service to collect the organization configuration, hand in its report and pick up queued commands (Scan now, Report now, Repair prerequisites, Update agent).
+
+If you enable this setting, specify a number of minutes (1 to 1440). The server may ask for a longer interval than you set - it returns its own back-off with every configuration response - but never a shorter one.
+
+If you disable or do not configure this setting, the local value is used, otherwise the default of 15 minutes.
+
+A device that cannot reach the service keeps running on the configuration it last cached and retries on the next interval; nothing is lost and no update handling stops.
+
+Registry value: CloudSyncIntervalMinutes (REG_DWORD).</string>
+
+      <string id="CloudConfigEnabled">Apply the organization configuration</string>
+      <string id="CloudConfigEnabled_Help">Controls whether the configuration published for the organization is applied on this device.
+
+If you enable this setting, settings and applications published in the admin console's organization mode are layered above the local preferences and below this policy key (the default).
+
+If you disable this setting, the device still enrols and still reports - so it remains visible in the console - but its configuration comes only from this policy key, the local preferences and the built-in defaults. Use this to hold a pilot machine on a local configuration while it is being investigated.
+
+If you do not configure this setting, the local value is used, otherwise the organization configuration is applied.
+
+Whatever you choose, the cloud can never supply the connection values above: the server URL, the organization id and the enrollment key are always taken from policy or from the local preferences.
+
+Registry value: CloudConfigEnabled (REG_DWORD, 1 or 0).</string>
+
+      <string id="CloudReportingEnabled">Report inventory to the organization</string>
+      <string id="CloudReportingEnabled_Help">Controls whether the device sends its inventory and update state to the organization after each scan.
+
+If you enable this setting, the agent reports (the default): the installed applications it found (display name, version, publisher, winget id, install context), the tracked updates with their state, deadlines and deferral counts, the install outcomes since the last report, the prerequisite status, the agent version, the OS version, the device name and the account of the last interactive logon.
+
+If you disable this setting, nothing is reported. The device still fetches its configuration and still executes queued commands, but the console's Devices and Inventory pages will show no data for it beyond its enrolment.
+
+If you do not configure this setting, the local value is used, otherwise reporting is on.
+
+No file contents, no document names, no browsing data and no passwords are ever collected. docs\Cloud.md lists every field verbatim.
+
+Registry value: CloudReportingEnabled (REG_DWORD, 1 or 0).</string>
+
+      <!-- ================================================== agent updates -->
+
+      <string id="AgentAutoUpdate">Update the agent automatically</string>
+      <string id="AgentAutoUpdate_Help">Controls whether the AppMonitor agent replaces itself with a newer release.
+
+If you enable this setting, the service checks the release feed on the interval below, verifies the SHA-256 of the downloaded package against the manifest and installs it as SYSTEM (the default). Configuration, state and the device credential survive the upgrade.
+
+If you disable this setting, the agent never updates itself. Choose this when Intune, Configuration Manager or an RMM owns the binaries - two mechanisms replacing the same files will otherwise fight over the version.
+
+If you do not configure this setting, the local value is used, otherwise the agent updates itself.
+
+An update is also installed on demand when an administrator sends the "Update agent" command from the console, or when someone runs Arkimentum.AppMonitor.Service.exe --update-now on the device. Disabling this setting stops the scheduled check; it does not block those explicit requests.
+
+Registry value: AgentAutoUpdate (REG_DWORD, 1 or 0).</string>
+
+      <string id="AgentUpdateSource">Agent update source</string>
+      <string id="AgentUpdateSource_Help">Where the agent looks for new releases, which channel it follows, and how often it checks.
+
+Feed URL: either a GitHub releases API URL
+    https://api.github.com/repos/woodyard/AppMonitor/releases/latest (the default)
+    https://api.github.com/repos/OWNER/REPO/releases/tags/v1.2.0
+or a direct URL to a manifest.json. Leave it empty to use the mirror served by the organization's own API (/api/v1/device/release), which is the right choice for devices that may not reach github.com. With neither a feed URL nor a cloud server, the agent has nowhere to look and never updates itself.
+
+Only public repositories work: the agent never sends a token. Mirror a private repository through the cloud API or a URL of your own. A GitHub HTML page URL (github.com/.../releases/latest) is not a feed and is rejected.
+
+Channel: stable (the default) or preview. A release manifest names its own channel; a device only installs manifests matching the channel set here.
+
+Check every: hours between checks (1 to 720). The check is a single HTTPS request for the manifest; the package is downloaded only when the manifest offers a newer version.
+
+If you disable or do not configure this setting, the local values are used, otherwise: no feed URL (the cloud mirror), the stable channel and a check every 12 hours.
+
+Registry values: AgentUpdateFeedUrl (REG_SZ), AgentUpdateChannel (REG_SZ, stable or preview), AgentUpdateCheckIntervalHours (REG_DWORD).</string>
+
+      <string id="AgentUpdateChannel_Stable">Stable (default)</string>
+      <string id="AgentUpdateChannel_Preview">Preview</string>
+
+      <string id="AgentTargetVersion">Pin the agent to a version</string>
+      <string id="AgentTargetVersion_Help">Holds the agent at one specific version instead of always taking the newest release in the channel.
+
+If you enable this setting, type an exact version, for example
+    1.4.2
+A device below that version updates to it; a device already at it stays there and ignores anything newer. Use this to keep a fleet on a validated build, or to hold a ring back while a release is being evaluated.
+
+If you disable or do not configure this setting, the local value is used, otherwise the newest release in the channel is installed.
+
+This does not downgrade: a published version newer than the target is skipped and logged, and a device already running a higher version is left exactly as it is.
+
+Registry value: AgentTargetVersion (REG_SZ).</string>
+
+    </stringTable>
+
+    <presentationTable>
+
+      <presentation id="ScanInterval">
+        <decimalTextBox refId="ScanIntervalMinutes" defaultValue="240" spinStep="30">Scan interval (minutes):</decimalTextBox>
+      </presentation>
+
+      <presentation id="NotificationInterval">
+        <decimalTextBox refId="NotificationIntervalMinutes" defaultValue="240" spinStep="30">Notification interval (minutes):</decimalTextBox>
+      </presentation>
+
+      <presentation id="StartupDelay">
+        <decimalTextBox refId="StartupDelaySeconds" defaultValue="120" spinStep="30">Startup delay (seconds):</decimalTextBox>
+      </presentation>
+
+      <presentation id="WingetGlobalArgs">
+        <textBox refId="WingetGlobalArgs">
+          <label>Arguments appended to every winget call:</label>
+        </textBox>
+      </presentation>
+
+      <presentation id="ProxyUrl">
+        <textBox refId="ProxyUrl">
+          <label>Proxy URL:</label>
+        </textBox>
+      </presentation>
+
+      <presentation id="WingetPath">
+        <textBox refId="WingetPath">
+          <label>Full path to winget.exe:</label>
+        </textBox>
+      </presentation>
+
+      <presentation id="Prerequisites">
+        <checkBox refId="AutoInstallPrerequisites" defaultChecked="true">Install or repair winget automatically</checkBox>
+        <decimalTextBox refId="PrerequisiteCheckIntervalHours" defaultValue="24" spinStep="1">Check every (hours):</decimalTextBox>
+        <textBox refId="WingetMinimumVersion">
+          <label>Minimum winget version:</label>
+          <defaultValue>1.6.0</defaultValue>
+        </textBox>
+      </presentation>
+
+      <presentation id="CheckTimeout">
+        <decimalTextBox refId="CheckTimeoutMinutes" defaultValue="3" spinStep="1">Update check timeout (minutes):</decimalTextBox>
+      </presentation>
+
+      <presentation id="LogLevel">
+        <dropdownList refId="LogLevel" noSort="true" defaultItem="2">Minimum log level:</dropdownList>
+      </presentation>
+
+      <presentation id="LogDirectory">
+        <textBox refId="LogDirectory">
+          <label>Service log folder:</label>
+          <defaultValue>%ProgramData%\Arkimentum\AppMonitor\Logs</defaultValue>
+        </textBox>
+      </presentation>
+
+      <presentation id="LogRetentionDays">
+        <decimalTextBox refId="LogRetentionDays" defaultValue="30" spinStep="1">Keep log files for (days):</decimalTextBox>
+      </presentation>
+
+      <presentation id="MaxLogFileSize">
+        <decimalTextBox refId="MaxLogFileSizeMB" defaultValue="10" spinStep="1">Roll log file at (MB):</decimalTextBox>
+      </presentation>
+
+      <presentation id="InstallTimeout">
+        <decimalTextBox refId="InstallTimeoutMinutes" defaultValue="30" spinStep="5">Install timeout (minutes):</decimalTextBox>
+      </presentation>
+
+      <presentation id="DefaultUpdateBehaviour">
+        <checkBox refId="DefaultMandatory" defaultChecked="false">Updates are mandatory by default</checkBox>
+        <decimalTextBox refId="DefaultDeadlineHours" defaultValue="72" spinStep="12">Deadline (hours, 0 = none):</decimalTextBox>
+        <decimalTextBox refId="DefaultMaxDeferrals" defaultValue="3" spinStep="1">Maximum deferrals (0 = unlimited):</decimalTextBox>
+        <textBox refId="DefaultDeferralOptions">
+          <label>Deferral options (minutes, comma separated):</label>
+          <defaultValue>60,240,1440</defaultValue>
+        </textBox>
+        <checkBox refId="DefaultAutoInstall" defaultChecked="false">Install automatically when nothing is blocking</checkBox>
+        <decimalTextBox refId="DefaultCloseGracePeriodMinutes" defaultValue="15" spinStep="5">Close grace period (minutes):</decimalTextBox>
+        <checkBox refId="DefaultForceCloseAtDeadline" defaultChecked="true">Force applications closed at the deadline</checkBox>
+      </presentation>
+
+      <presentation id="CatalogPath">
+        <textBox refId="CatalogPath">
+          <label>Catalog file:</label>
+          <defaultValue>%ProgramData%\Arkimentum\catalog.json</defaultValue>
+        </textBox>
+      </presentation>
+
+      <presentation id="MonitoredApps">
+        <listBox refId="MonitoredApps">Monitored applications (value name = AppId, value = Name=Value;Name=Value):</listBox>
+      </presentation>
+
+      <presentation id="CloudConnection">
+        <textBox refId="CloudServerUrl">
+          <label>Server URL (https):</label>
+          <defaultValue>https://appmonitor-contoso.azurewebsites.net</defaultValue>
+        </textBox>
+        <textBox refId="CloudOrganizationId">
+          <label>Organization id (GUID):</label>
+        </textBox>
+        <textBox refId="CloudEnrollmentKey">
+          <label>Enrollment key:</label>
+        </textBox>
+      </presentation>
+
+      <presentation id="CloudSyncInterval">
+        <decimalTextBox refId="CloudSyncIntervalMinutes" defaultValue="15" spinStep="5">Sync every (minutes):</decimalTextBox>
+      </presentation>
+
+      <presentation id="AgentUpdateSource">
+        <textBox refId="AgentUpdateFeedUrl">
+          <label>Release feed URL (empty = the organization's own mirror):</label>
+        </textBox>
+        <dropdownList refId="AgentUpdateChannel" noSort="true" defaultItem="0">Channel:</dropdownList>
+        <decimalTextBox refId="AgentUpdateCheckIntervalHours" defaultValue="12" spinStep="1">Check every (hours):</decimalTextBox>
+      </presentation>
+
+      <presentation id="AgentTargetVersion">
+        <textBox refId="AgentTargetVersion">
+          <label>Exact agent version to stay on:</label>
+        </textBox>
+      </presentation>
+
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

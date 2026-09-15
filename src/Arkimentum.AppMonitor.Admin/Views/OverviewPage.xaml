@@ -1,0 +1,476 @@
+<UserControl x:Class="Arkimentum.AppMonitor.Admin.Views.OverviewPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:res="clr-namespace:Arkimentum.AppMonitor.Admin.Resources"
+             FontFamily="{StaticResource AppFontFamily}"
+             Foreground="{DynamicResource BrandInkBrush}">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+        <StackPanel Margin="4,0,4,24">
+
+            <!-- ==== service -->
+            <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource CardTitleText}" Text="{x:Static res:Strings.CardService}" />
+
+                    <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                        <Border Style="{StaticResource Badge}"
+                                Background="{DynamicResource BrandPrimarySurfaceBrush}"
+                                Visibility="{Binding ServiceRunning, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Style="{StaticResource BadgeText}"
+                                       Foreground="{DynamicResource BrandPrimaryTextBrush}"
+                                       Text="{Binding ServiceState}" />
+                        </Border>
+                        <Border Style="{StaticResource Badge}"
+                                Background="{DynamicResource BrandGoldSurfaceBrush}"
+                                Visibility="{Binding ServiceRunning, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                            <TextBlock Style="{StaticResource BadgeText}"
+                                       Foreground="{DynamicResource BrandGoldTextBrush}"
+                                       Text="{Binding ServiceState}" />
+                        </Border>
+                        <Button Margin="8,0,0,0"
+                                Padding="8,4"
+                                Command="{Binding RefreshCommand}"
+                                ToolTip="{x:Static res:Strings.TipRefresh}"
+                                AutomationProperties.Name="{x:Static res:Strings.ButtonRefresh}">
+                            <TextBlock Style="{StaticResource SymbolGlyph}"
+                                       FontSize="14"
+                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                       Text="{x:Static res:Strings.GlyphRefresh}" />
+                        </Button>
+                    </StackPanel>
+
+                    <Grid Grid.Row="1" Grid.ColumnSpan="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" MinWidth="140" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.LabelStartType}" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding ServiceStartType}" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelAccount}" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ServiceAccount}" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelVersion}" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ServiceVersion}" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelExecutable}" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding ServiceExecutable}" />
+                    </Grid>
+
+                    <WrapPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,8,0,0">
+                        <Button Padding="14,7" Margin="0,8,8,0" FontSize="13" Content="{x:Static res:Strings.ButtonStart}"
+                                ToolTip="{x:Static res:Strings.TipStart}" Command="{Binding StartCommand}" />
+                        <Button Padding="14,7" Margin="0,8,8,0" FontSize="13" Content="{x:Static res:Strings.ButtonStop}"
+                                ToolTip="{x:Static res:Strings.TipStop}" Command="{Binding StopCommand}" />
+                        <Button Padding="14,7" Margin="0,8,8,0" FontSize="13" Content="{x:Static res:Strings.ButtonRestart}"
+                                ToolTip="{x:Static res:Strings.TipRestart}" Command="{Binding RestartCommand}" />
+                        <Button Padding="14,7" Margin="0,8,8,0" FontSize="13" Content="{x:Static res:Strings.ButtonScanNow}"
+                                ToolTip="{x:Static res:Strings.TipScanNow}" Command="{Binding ScanNowCommand}" />
+                        <Button Padding="14,7" Margin="0,8,8,0" FontSize="13" Content="{x:Static res:Strings.ButtonOpenLogFolder}"
+                                ToolTip="{x:Static res:Strings.TipOpenLogFolder}" Command="{Binding OpenLogFolderCommand}" />
+                        <Button Padding="14,7" Margin="0,8,8,0" FontSize="13" Content="{x:Static res:Strings.ButtonOpenStateFolder}"
+                                ToolTip="{x:Static res:Strings.TipOpenStateFolder}" Command="{Binding OpenStateFolderCommand}" />
+                    </WrapPanel>
+
+                    <StackPanel Grid.Row="3" Grid.ColumnSpan="2">
+                        <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                   Margin="0,12,0,0"
+                                   Text="{Binding ServiceHint}"
+                                   Visibility="{Binding ShowServiceHint, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Style="{StaticResource CaptionText}"
+                                   Margin="0,8,0,0"
+                                   Text="{Binding Notice}"
+                                   Visibility="{Binding HasNotice, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ==== prerequisites (winget / App Installer), as the service last checked them -->
+            <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource CardTitleText}" Text="{x:Static res:Strings.CardPrerequisites}" />
+
+                    <StackPanel Grid.Row="0" Grid.Column="1"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Top"
+                                Visibility="{Binding HasPrerequisites, Converter={StaticResource BoolToVisibility}}">
+                        <Border Style="{StaticResource Badge}"
+                                Background="{DynamicResource BrandPrimarySurfaceBrush}"
+                                Visibility="{Binding PrerequisitesHealthy, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Style="{StaticResource BadgeText}"
+                                       Foreground="{DynamicResource BrandPrimaryTextBrush}"
+                                       Text="{Binding PrerequisiteBadge}" />
+                        </Border>
+                        <Border Style="{StaticResource Badge}"
+                                Background="{DynamicResource BrandTerracottaSurfaceBrush}"
+                                Visibility="{Binding PrerequisitesHealthy, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                            <TextBlock Style="{StaticResource BadgeText}"
+                                       Foreground="{DynamicResource BrandTerracottaTextBrush}"
+                                       Text="{Binding PrerequisiteBadge}" />
+                        </Border>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="2"
+                               Style="{StaticResource BodyText}"
+                               Margin="0,0,0,12"
+                               Text="{Binding PrerequisiteSummary}" />
+
+                    <Grid Grid.Row="2" Grid.ColumnSpan="2"
+                          Visibility="{Binding HasPrerequisites, Converter={StaticResource BoolToVisibility}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" MinWidth="180" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.LabelWingetVersion}" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding WingetVersionText}" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelMinimumVersion}" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding MinimumVersionText}" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelWingetPath}" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding WingetPathText}" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelAppInstaller}" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding AppInstallerText}" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelAutoInstall}" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding AutoInstallText}" />
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelCheckedAt}" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding PrerequisiteCheckedText}" />
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0"
+                                   Text="{x:Static res:Strings.LabelLastAction}"
+                                   Visibility="{Binding HasPrerequisiteLastAction, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Grid.Row="6" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" TextWrapping="Wrap"
+                                   Text="{Binding PrerequisiteLastAction}"
+                                   Visibility="{Binding HasPrerequisiteLastAction, Converter={StaticResource BoolToVisibility}}" />
+
+                        <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0"
+                                   Text="{x:Static res:Strings.LabelLastError}"
+                                   Visibility="{Binding HasPrerequisiteLastError, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Grid.Row="7" Grid.Column="1" Style="{StaticResource ErrorText}" Margin="0,8,0,0" TextWrapping="Wrap"
+                                   Text="{Binding PrerequisiteLastError}"
+                                   Visibility="{Binding HasPrerequisiteLastError, Converter={StaticResource BoolToVisibility}}" />
+                    </Grid>
+
+                    <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Orientation="Horizontal">
+                        <Button Padding="14,7" Margin="0,8,8,0" FontSize="13"
+                                Content="{x:Static res:Strings.ButtonRepairPrerequisites}"
+                                ToolTip="{x:Static res:Strings.TipRepairPrerequisites}"
+                                Command="{Binding RepairPrerequisitesCommand}" />
+                        <TextBlock Style="{StaticResource CaptionText}"
+                                   Margin="12,12,0,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource BrandGoldTextBrush}"
+                                   Text="{x:Static res:Strings.RepairRunning}"
+                                   Visibility="{Binding RepairInProgress, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ==== agent connection + configuration summary -->
+            <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource Card}">
+                    <StackPanel>
+                        <Grid>
+                            <TextBlock Style="{StaticResource CardTitleText}" Text="{x:Static res:Strings.CardAgent}" />
+                            <Border Style="{StaticResource Badge}"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Background="{DynamicResource BrandSkySurfaceBrush}">
+                                <TextBlock Style="{StaticResource BadgeText}"
+                                           Foreground="{DynamicResource BrandSkyTextBrush}"
+                                           Text="{Binding ConnectionText}" />
+                            </Border>
+                        </Grid>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" MinWidth="140" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.LabelLastScan}" />
+                            <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding LastScanText}" />
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelNextScan}" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding NextScanText}" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelMonitoredApps}" />
+                            <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding MonitoredAppsText}" />
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelServiceVersion}" />
+                            <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ReportedServiceVersion}" />
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                   Margin="0,12,0,0"
+                                   Text="{x:Static res:Strings.AgentDisconnectedHint}"
+                                   Visibility="{Binding ShowConnectionHint, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2" Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource CardTitleText}" Text="{x:Static res:Strings.CardConfiguration}" />
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" MinWidth="140" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.LabelAppsConfigured}" />
+                            <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding ConfiguredAppsText}" />
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelAppsLocked}" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding LockedAppsText}" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelLogLevel}" />
+                            <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding LogLevelText}" />
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelScanInterval}" />
+                            <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ScanIntervalText}" />
+
+                            <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelConfigurationKey}" />
+                            <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding ConfigurationKey}" />
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                   Margin="0,12,0,0"
+                                   Text="{x:Static res:Strings.ConfigurationOk}"
+                                   Visibility="{Binding HasConfigurationProblems, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+
+                        <Border Style="{StaticResource CriticalBanner}"
+                                Margin="0,12,0,0"
+                                Visibility="{Binding HasConfigurationProblems, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource BodyStrongText}"
+                                           Foreground="{DynamicResource BrandTerracottaTextBrush}"
+                                           Text="{x:Static res:Strings.ConfigurationWarnings}" />
+                                <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding ConfigurationProblems}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Style="{StaticResource CaptionText}" Text="{Binding}" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- ==== organization, as the service last recorded it in <StateDirectory>\cloud-status.json.
+                 The console only reads that file: enrolment is the agent's business, not the console's. -->
+            <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource CardTitleText}" Text="{x:Static res:Strings.CardOrganizationStatus}" />
+
+                    <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                        <Border Style="{StaticResource Badge}"
+                                Background="{DynamicResource BrandSkySurfaceBrush}"
+                                Visibility="{Binding IsCloudConnected, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Style="{StaticResource BadgeText}"
+                                       Foreground="{DynamicResource BrandSkyTextBrush}"
+                                       Text="{x:Static res:Strings.BadgeConnected}" />
+                        </Border>
+                        <Border Style="{StaticResource Badge}"
+                                Visibility="{Binding IsCloudConnected, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                            <TextBlock Style="{StaticResource BadgeText}" Text="{x:Static res:Strings.CloudNotConnected}" />
+                        </Border>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="2"
+                               Style="{StaticResource TertiaryCaptionText}"
+                               MaxWidth="620"
+                               HorizontalAlignment="Left"
+                               Text="{x:Static res:Strings.CloudNotConnectedHint}"
+                               Visibility="{Binding IsCloudConnected, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+
+                    <Grid Grid.Row="1" Grid.ColumnSpan="2"
+                          Visibility="{Binding IsCloudConnected, Converter={StaticResource BoolToVisibility}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" MinWidth="170" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.LabelOrganization}" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding CloudOrganizationText}" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelCloudServer}" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding CloudServerText}" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelDeviceId}" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding CloudDeviceIdText}" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelEnrolled}" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding CloudEnrolledText}" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelLastConfig}" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding CloudConfigText}" />
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelLastReport}" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding CloudReportText}" />
+                    </Grid>
+
+                    <Border Grid.Row="2" Grid.ColumnSpan="2"
+                            Style="{StaticResource CriticalBanner}"
+                            Margin="0,12,0,0"
+                            Visibility="{Binding HasCloudError, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource BodyStrongText}"
+                                       Foreground="{DynamicResource BrandTerracottaTextBrush}"
+                                       Text="{x:Static res:Strings.LabelLastError}" />
+                            <TextBlock Style="{StaticResource CaptionText}" Margin="0,4,0,0" Text="{Binding CloudError}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- ==== pending updates -->
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource CardTitleText}" Text="{x:Static res:Strings.CardPending}" />
+
+                    <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                               Text="{x:Static res:Strings.NoPendingUpdates}"
+                               Visibility="{Binding HasPendingUpdates, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+
+                    <Grid Visibility="{Binding HasPendingUpdates, Converter={StaticResource BoolToVisibility}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*" MinWidth="140" />
+                                <ColumnDefinition Width="2*" MinWidth="140" />
+                                <ColumnDefinition Width="*" MinWidth="80" />
+                                <ColumnDefinition Width="*" MinWidth="70" />
+                                <ColumnDefinition Width="1.4*" MinWidth="110" />
+                                <ColumnDefinition Width="*" MinWidth="70" />
+                                <ColumnDefinition Width="*" MinWidth="70" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource TableHeaderText}" Text="{x:Static res:Strings.ColumnApplication}" />
+                            <TextBlock Grid.Column="1" Style="{StaticResource TableHeaderText}" Text="{x:Static res:Strings.ColumnVersions}" />
+                            <TextBlock Grid.Column="2" Style="{StaticResource TableHeaderText}" Text="{x:Static res:Strings.ColumnState}" />
+                            <TextBlock Grid.Column="3" Style="{StaticResource TableHeaderText}" Text="{x:Static res:Strings.ColumnMandatory}" />
+                            <TextBlock Grid.Column="4" Style="{StaticResource TableHeaderText}" Text="{x:Static res:Strings.ColumnDeadline}" />
+                            <TextBlock Grid.Column="5" Style="{StaticResource TableHeaderText}" Text="{x:Static res:Strings.ColumnDeferrals}" />
+                            <TextBlock Grid.Column="6" Style="{StaticResource TableHeaderText}" Text="{x:Static res:Strings.ColumnContext}" />
+                        </Grid>
+
+                        <ItemsControl Grid.Row="1" ItemsSource="{Binding PendingUpdates}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border BorderBrush="{DynamicResource BrandBorderBrush}" BorderThickness="0,1,0,0" Padding="0,8">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="2*" MinWidth="140" />
+                                                <ColumnDefinition Width="2*" MinWidth="140" />
+                                                <ColumnDefinition Width="*" MinWidth="80" />
+                                                <ColumnDefinition Width="*" MinWidth="70" />
+                                                <ColumnDefinition Width="1.4*" MinWidth="110" />
+                                                <ColumnDefinition Width="*" MinWidth="70" />
+                                                <ColumnDefinition Width="*" MinWidth="70" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Style="{StaticResource TableCellText}"
+                                                       FontWeight="SemiBold" Text="{Binding DisplayName}" ToolTip="{Binding AppId}" />
+                                            <TextBlock Grid.Column="1" Style="{StaticResource TableCellText}" Text="{Binding Versions}" />
+                                            <TextBlock Grid.Column="2" Style="{StaticResource TableCellText}" Text="{Binding State}" />
+                                            <TextBlock Grid.Column="3" Style="{StaticResource TableCellText}" Text="{Binding Mandatory}" />
+                                            <TextBlock Grid.Column="4" Style="{StaticResource TableCellText}" Text="{Binding Deadline}" />
+                                            <TextBlock Grid.Column="5" Style="{StaticResource TableCellText}" Text="{Binding Deferrals}" />
+                                            <TextBlock Grid.Column="6" Style="{StaticResource TableCellText}" Text="{Binding Context}" />
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

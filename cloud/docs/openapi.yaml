@@ -1,0 +1,1178 @@
+openapi: 3.0.3
+info:
+  title: Arkimentum AppMonitor Cloud API
+  version: "1.0.0"
+  description: |
+    Wire contract between the Arkimentum AppMonitor agent / admin console and the cloud backend.
+
+    The schemas here are hand-maintained to match
+    `src/Arkimentum.AppMonitor.Core/Cloud/CloudContracts.cs`, which is the source of truth, and
+    `cloud/api/Arkimentum.AppMonitor.Api/Contracts/CloudContracts.cs`, which is the server's copy of it.
+    `Arkimentum.AppMonitor.Api.Tests.ContractRoundTripTests` proves the two C# copies agree byte for byte.
+
+    JSON conventions: camelCase property names, enums as camelCase strings, null properties omitted.
+    The keys inside `SettingsDocument.global` and `SettingsDocument.apps` are **registry value names** and keep
+    their original casing.
+
+    Two authentication schemes:
+      * `deviceAuth` - `Authorization: Device {deviceId}:{deviceKey}`, issued by `POST /device/enroll`.
+      * `bearerAuth` - an Entra ID access token for `api://{api-app-id}/AppMonitor.Admin` carrying the
+        `AppMonitor.Admin` or `AppMonitor.GlobalAdmin` app role.
+  contact:
+    name: Arkimentum
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://{functionApp}.azurewebsites.net
+    description: Deployed API
+    variables:
+      functionApp:
+        default: appmon-prod-func-000000
+
+tags:
+  - name: public
+    description: Unauthenticated endpoints.
+  - name: device
+    description: Called by the Windows service on each managed machine.
+  - name: admin
+    description: Called by the admin console and the operator scripts.
+
+paths:
+  # --------------------------------------------------------------------------------------------------- public
+
+  /api/v1/public/auth-config:
+    get:
+      tags: [public]
+      operationId: getAuthConfig
+      summary: How the admin console should sign in
+      description: The only thing an administrator has to type into the console is the server URL; everything else comes from here.
+      responses:
+        "200":
+          description: Sign-in configuration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthConfigResponse" }
+        "503":
+          description: The server has no Entra ID app registrations configured.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/v1/public/health:
+    get:
+      tags: [public]
+      operationId: getHealth
+      summary: Liveness probe
+      responses:
+        "200":
+          description: The API is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  apiVersion: { type: string, example: v1 }
+
+  # --------------------------------------------------------------------------------------------------- device
+
+  /api/v1/device/enroll:
+    post:
+      tags: [device]
+      operationId: enrollDevice
+      summary: Exchange the organization enrollment key for a per-device key
+      description: |
+        Matches on (organizationId, machineGuid) so a re-installed machine re-attaches to its own history. A new
+        device key is issued on every call and returned **once**; the previous one stops working immediately.
+        Rate-limited per source address and per organization.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnrollRequest" }
+      responses:
+        "200":
+          description: Enrolled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Unknown organization or wrong enrollment key (the two are deliberately indistinguishable).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "403":
+          description: The organization is not active.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "429":
+          description: Too many enrollment attempts.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/v1/device/config:
+    get:
+      tags: [device]
+      operationId: getDeviceConfig
+      summary: Organization configuration and queued commands
+      description: |
+        The ETag is the ConfigVersion. A `304 Not Modified` is returned only when the ETag matches **and** the
+        device has no unacknowledged commands - otherwise queued commands would be invisible until somebody
+        changed the configuration. Unacknowledged commands are re-delivered on every 200 (at most 20 at a time)
+        until the device lists them in `DeviceReport.acknowledgedCommands`.
+      security:
+        - deviceAuth: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
+          example: '"12-aabbccdd"'
+      responses:
+        "200":
+          description: The current configuration.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceConfigResponse" }
+        "304":
+          description: Unchanged, and nothing queued for this device.
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+
+  /api/v1/device/report:
+    post:
+      tags: [device]
+      operationId: postDeviceReport
+      summary: Post the inventory and update state of one device
+      description: |
+        The report is authoritative: the installed-application and tracked-update snapshots are replaced wholesale,
+        events are appended, and the listed commands are marked acknowledged. The raw body is archived to
+        `reports/{organizationId}/{deviceId}/{yyyy}/{MM}/{timestamp}.json` in Blob Storage.
+      security:
+        - deviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceReport" }
+      responses:
+        "200":
+          description: Accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "404":
+          description: The device has been deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/v1/device/release:
+    get:
+      tags: [device]
+      operationId: getDeviceRelease
+      summary: Release manifest mirror for the self-updater
+      security:
+        - deviceAuth: []
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema: { type: string, default: stable }
+      responses:
+        "200":
+          description: The published manifest for the channel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseManifest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "404":
+          description: Nothing is published for that channel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  # ---------------------------------------------------------------------------------------------------- admin
+
+  /api/v1/admin/me:
+    get:
+      tags: [admin]
+      operationId: getAdminMe
+      summary: The caller and the organizations they may manage
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The caller's identity and organizations.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminMeResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/organizations:
+    get:
+      tags: [admin]
+      operationId: listOrganizations
+      summary: Organizations the caller may manage
+      description: A global administrator sees every organization; anyone else sees the one mapped to their own tenant.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The organizations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OrganizationSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [admin]
+      operationId: createOrganization
+      summary: Create an organization (global administrators only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrganizationRequest" }
+      responses:
+        "201":
+          description: Created. The enrollment key is returned here and never again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateOrganizationResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Another organization is already mapped to that Entra tenant.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/v1/admin/organizations/{organizationId}/devices:
+    get:
+      tags: [admin]
+      operationId: listDevices
+      summary: Devices of an organization
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Matches device name, last logon user, OS version or agent version.
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of devices.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PagedResult"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/DeviceSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/organizations/{organizationId}/devices/{deviceId}:
+    get:
+      tags: [admin]
+      operationId: getDevice
+      summary: Everything known about one device
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: The device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [admin]
+      operationId: deleteDevice
+      summary: Remove a device
+      description: |
+        Soft-deletes the device (so a machine that re-enrolls re-attaches to its history), revokes its device key
+        and drops its inventory snapshot immediately.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/organizations/{organizationId}/devices/{deviceId}/commands:
+    post:
+      tags: [admin]
+      operationId: createDeviceCommand
+      summary: Queue a command for a device
+      description: The device picks it up on its next configuration poll and acknowledges it in its next report.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceCommandRequest" }
+      responses:
+        "201":
+          description: Queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceCommand" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/organizations/{organizationId}/inventory:
+    get:
+      tags: [admin]
+      operationId: getInventory
+      summary: Every application seen across the organization
+      description: |
+        Aggregated from the latest device reports, grouped by winget id when there is one and by display name
+        otherwise. `monitoredAppId` is set when the organization configuration already contains an application
+        whose AppId, catalog id, or one of its winget id alternatives (separated by `;` `,` or `|`) matches.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Matches display name, winget id, publisher or catalog id.
+        - name: onlyUnmonitored
+          in: query
+          schema: { type: boolean, default: false }
+          description: Return only applications the organization does not yet monitor.
+      responses:
+        "200":
+          description: The inventory, most-installed first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OrganizationInventoryItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/organizations/{organizationId}/config:
+    get:
+      tags: [admin]
+      operationId: getOrganizationConfig
+      summary: The organization configuration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: The configuration; the ETag is the ConfigVersion.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrganizationConfigResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [admin]
+      operationId: putOrganizationConfig
+      summary: Replace the organization configuration
+      description: |
+        The document is validated against the same schema the agent uses (`SettingsSchema`), so an out-of-range
+        number or an unknown value name is rejected here rather than silently ignored on the device.
+
+        Optimistic concurrency: send the version you started from as `If-Match` (preferred) or as
+        `baseConfigVersion` in the body. `If-Match` wins. A mismatch is a 409; send `If-Match: *` or omit both to
+        overwrite unconditionally.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: If-Match
+          in: header
+          schema: { type: string }
+          example: '"12-aabbccdd"'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrganizationConfigUpdateRequest" }
+      responses:
+        "200":
+          description: Saved. The new ConfigVersion is in the body and the ETag.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrganizationConfigResponse" }
+        "400":
+          description: The document failed validation (`code` is `validation_failed`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Somebody else saved a newer version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/v1/admin/organizations/{organizationId}/config/history:
+    get:
+      tags: [admin]
+      operationId: getConfigHistory
+      summary: Who changed the configuration, when and why
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of history entries, newest first.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PagedResult"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ConfigHistoryEntry" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/organizations/{organizationId}/config/history/{historyId}:
+    get:
+      tags: [admin]
+      operationId: getConfigRevision
+      summary: One historical configuration revision
+      description: |
+        The settings exactly as they were at that revision. `configVersion`, `updatedUtc` and `updatedBy` are the
+        historical values, not the current ones.
+
+        No `ETag` is returned, deliberately: a **restore** is a normal `PUT .../config` of these settings with
+        `If-Match` set to the *current* `ConfigVersion`, which creates a new revision rather than rewinding the
+        history. Sending the historical version as `If-Match` would always 409.
+
+        A `historyId` that belongs to another organization is a 404, not a cross-tenant read.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: historyId
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+          description: The `id` of a `ConfigHistoryEntry` from GET .../config/history.
+      responses:
+        "200":
+          description: The configuration as of that revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrganizationConfigResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/organizations/{organizationId}/enrollment:
+    get:
+      tags: [admin]
+      operationId: getEnrollmentInfo
+      summary: Enrollment information (never the key)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: The server URL and when the key was last rotated. `enrollmentKey` is always absent here.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollmentInfoResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/organizations/{organizationId}/enrollment/rotate:
+    post:
+      tags: [admin]
+      operationId: rotateEnrollmentKey
+      summary: Issue a new enrollment key
+      description: |
+        The old key stops working immediately. Devices that have already enrolled are unaffected - they hold their
+        own per-device key.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: Rotated. The new key is returned here and never again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollmentInfoResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/organizations/{organizationId}/release:
+    get:
+      tags: [admin]
+      operationId: getReleaseManifest
+      summary: The mirrored release manifest for a channel
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: channel
+          in: query
+          schema: { type: string, default: stable }
+      responses:
+        "200":
+          description: The manifest.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseManifest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [admin]
+      operationId: putReleaseManifest
+      summary: Publish a release manifest (global administrators only)
+      description: The manifest is shared by every organization; `packageUrl` must be https and `sha256` 64 hex characters.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: channel
+          in: query
+          schema: { type: string, default: stable }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReleaseManifest" }
+      responses:
+        "200":
+          description: Published.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseManifest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/organizations/{organizationId}/events:
+    get:
+      tags: [admin]
+      operationId: getOrganizationEvents
+      summary: Recent install, deferral and repair events across the organization
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of events, newest first.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PagedResult"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/OrganizationEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+# ------------------------------------------------------------------------------------------------- components
+
+components:
+  securitySchemes:
+    deviceAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: '`Device {deviceId}:{deviceKey}` - the credential returned by POST /api/v1/device/enroll.'
+    bearerAuth:
+      type: oauth2
+      description: Entra ID access token carrying the `AppMonitor.Admin` or `AppMonitor.GlobalAdmin` app role.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize
+          tokenUrl: https://login.microsoftonline.com/organizations/oauth2/v2.0/token
+          scopes:
+            api://{api-app-id}/AppMonitor.Admin: Manage AppMonitor
+
+  parameters:
+    OrganizationId:
+      name: organizationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+  responses:
+    BadRequest:
+      description: The request body or a parameter is not valid.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Unauthorized:
+      description: No valid Entra ID access token.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, example: Bearer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    DeviceUnauthorized:
+      description: No valid device credential.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, example: Device }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Forbidden:
+      description: |
+        The caller may not manage this organization. Returned - rather than 404 - for an organization that does
+        not exist either, so a caller cannot enumerate organization ids.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+  schemas:
+    # ------------------------------------------------------------------------------------------------- enums
+
+    InstallContext:
+      type: string
+      enum: [auto, system, user]
+      description: auto = detect from the inventory; system = machine-wide; user = per user.
+
+    UpdateState:
+      type: string
+      enum: [available, deferred, scheduled, waitingForClose, installing, installed, failed]
+
+    DeviceCommandKind:
+      type: string
+      enum: [scanNow, repairPrerequisites, updateAgent, reportNow]
+
+    ReportedEventKind:
+      type: string
+      enum: [updateDetected, installSucceeded, installFailed, deferred, forcedClose, prerequisiteRepaired, agentUpdated]
+
+    # ------------------------------------------------------------------------------------------------- errors
+
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine-readable code. One of: bad_request, unauthorized, forbidden, not_found, conflict,
+            validation_failed, rate_limited, invalid_enrollment_key, organization_inactive, internal_error.
+          example: validation_failed
+        message:
+          type: string
+          example: "'chrome\\DeadlineHours' must be between 0 and 8760."
+        traceId:
+          type: string
+          description: Correlates with the Application Insights trace.
+
+    # -------------------------------------------------------------------------------------------- enrollment
+
+    EnrollRequest:
+      type: object
+      required: [organizationId, enrollmentKey, deviceName, machineGuid]
+      properties:
+        organizationId: { type: string, format: uuid }
+        enrollmentKey:
+          type: string
+          description: |
+            The organization enrollment key, exactly as it was handed out. Keys issued from the `ek_live_` era
+            carry that prefix; older keys do not. The server hashes whatever is presented, so both work.
+          example: ek_live_kQ7fZ2x1Tn8sV4bR6mJpL9wC3yA0dE5uH7gK2iN1oQs
+        deviceName: { type: string, maxLength: 256 }
+        machineGuid:
+          type: string
+          maxLength: 64
+          description: HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid - stable per Windows installation.
+        entraTenantId: { type: string, nullable: true }
+        entraDeviceId: { type: string, nullable: true }
+        osVersion: { type: string, nullable: true }
+        agentVersion: { type: string, nullable: true }
+
+    EnrollResponse:
+      type: object
+      required: [deviceId, deviceKey, organizationName]
+      properties:
+        deviceId: { type: string, format: uuid }
+        deviceKey:
+          type: string
+          description: Base64url of 256 random bits. Shown once; stored DPAPI-protected by the agent.
+        organizationName: { type: string }
+        configVersion: { type: string, nullable: true }
+
+    # ----------------------------------------------------------------------------------------- configuration
+
+    SettingValue:
+      description: A registry value in its natural JSON type.
+      oneOf:
+        - type: boolean
+        - type: number
+        - type: string
+        - type: array
+          items: { type: string }
+
+    SettingsDocument:
+      type: object
+      required: [$schema]
+      description: |
+        The distributable settings profile, identical to the one the admin console exports. Keys are registry
+        value names and keep their casing; values are validated against `SettingsSchema` on write.
+      properties:
+        $schema:
+          type: string
+          enum: ["arkimentum-appmonitor-settings/1"]
+        description: { type: string, nullable: true }
+        exportedUtc: { type: string, format: date-time, nullable: true }
+        exportedBy: { type: string, nullable: true }
+        exportedFrom: { type: string, nullable: true }
+        productVersion: { type: string, nullable: true }
+        global:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/SettingValue" }
+          example:
+            ScanIntervalMinutes: 240
+            NotificationsEnabled: true
+            LogLevel: Information
+        apps:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: { $ref: "#/components/schemas/SettingValue" }
+          example:
+            chrome:
+              Source: winget
+              WingetId: Google.Chrome
+              Mandatory: true
+              DeadlineHours: 72
+              ProcessNames: [chrome, chrome_proxy]
+
+    DeviceCommand:
+      type: object
+      required: [commandId, kind]
+      properties:
+        commandId: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/DeviceCommandKind" }
+        argument: { type: string, nullable: true }
+        issuedUtc: { type: string, format: date-time }
+        issuedBy: { type: string, nullable: true }
+
+    DeviceCommandRequest:
+      type: object
+      required: [kind]
+      properties:
+        kind: { $ref: "#/components/schemas/DeviceCommandKind" }
+        argument: { type: string, nullable: true }
+
+    DeviceConfigResponse:
+      type: object
+      required: [organizationId, organizationName, configVersion, settings]
+      properties:
+        organizationId: { type: string, format: uuid }
+        organizationName: { type: string }
+        configVersion:
+          type: string
+          description: Opaque version, also the ETag. Format "{n}-{shorthash}".
+          example: 12-aabbccdd
+        updatedUtc: { type: string, format: date-time }
+        updatedBy: { type: string, nullable: true }
+        settings: { $ref: "#/components/schemas/SettingsDocument" }
+        commands:
+          type: array
+          items: { $ref: "#/components/schemas/DeviceCommand" }
+        pollIntervalSeconds: { type: integer, default: 900 }
+
+    # -------------------------------------------------------------------------------------------- reporting
+
+    PrerequisiteStatus:
+      type: object
+      properties:
+        wingetAvailable: { type: boolean }
+        wingetPath: { type: string, nullable: true }
+        wingetVersion: { type: string, nullable: true }
+        minimumVersion: { type: string, nullable: true }
+        wingetMeetsMinimum: { type: boolean }
+        appInstallerProvisioned: { type: boolean, nullable: true }
+        appInstallerProvisionedVersion: { type: string, nullable: true }
+        autoInstallEnabled: { type: boolean }
+        checkedUtc: { type: string, format: date-time, nullable: true }
+        lastAction: { type: string, nullable: true }
+        lastError: { type: string, nullable: true }
+        repairInProgress: { type: boolean }
+        isHealthy:
+          type: boolean
+          readOnly: true
+          description: Computed; present in the JSON but ignored on read.
+        summary:
+          type: string
+          readOnly: true
+          description: Computed; present in the JSON but ignored on read.
+
+    ReportedApp:
+      type: object
+      required: [displayName]
+      properties:
+        displayName: { type: string }
+        version: { type: string, nullable: true }
+        publisher: { type: string, nullable: true }
+        wingetId: { type: string, nullable: true }
+        availableVersion: { type: string, nullable: true }
+        context: { $ref: "#/components/schemas/InstallContext" }
+        catalogAppId: { type: string, nullable: true }
+        monitoredAppId: { type: string, nullable: true }
+
+    ReportedUpdate:
+      type: object
+      required: [appId]
+      properties:
+        appId: { type: string }
+        displayName: { type: string, nullable: true }
+        installedVersion: { type: string, nullable: true }
+        availableVersion: { type: string, nullable: true }
+        state: { $ref: "#/components/schemas/UpdateState" }
+        context: { $ref: "#/components/schemas/InstallContext" }
+        mandatory: { type: boolean }
+        deadlineUtc: { type: string, format: date-time, nullable: true }
+        deferredUntilUtc: { type: string, format: date-time, nullable: true }
+        deferralCount: { type: integer }
+        firstDetectedUtc: { type: string, format: date-time }
+        installedAtUtc: { type: string, format: date-time, nullable: true }
+        lastError: { type: string, nullable: true }
+
+    ReportedEvent:
+      type: object
+      required: [occurredUtc, kind]
+      properties:
+        occurredUtc: { type: string, format: date-time }
+        kind: { $ref: "#/components/schemas/ReportedEventKind" }
+        appId: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+        fromVersion: { type: string, nullable: true }
+        toVersion: { type: string, nullable: true }
+
+    DeviceReport:
+      type: object
+      required: [reportedUtc, agentVersion]
+      properties:
+        reportedUtc: { type: string, format: date-time }
+        agentVersion: { type: string }
+        osVersion: { type: string, nullable: true }
+        deviceName: { type: string, nullable: true }
+        lastLogonUser: { type: string, nullable: true }
+        lastScanUtc: { type: string, format: date-time, nullable: true }
+        configVersionApplied: { type: string, nullable: true }
+        prerequisites:
+          allOf: [{ $ref: "#/components/schemas/PrerequisiteStatus" }]
+          nullable: true
+        installedApps:
+          type: array
+          maxItems: 5000
+          items: { $ref: "#/components/schemas/ReportedApp" }
+        updates:
+          type: array
+          maxItems: 2000
+          items: { $ref: "#/components/schemas/ReportedUpdate" }
+        events:
+          type: array
+          maxItems: 1000
+          items: { $ref: "#/components/schemas/ReportedEvent" }
+        acknowledgedCommands:
+          type: array
+          maxItems: 200
+          items: { type: string, format: uuid }
+
+    ReportResponse:
+      type: object
+      properties:
+        accepted: { type: boolean, default: true }
+        configChanged:
+          type: boolean
+          description: True when the server's ConfigVersion differs from the reported configVersionApplied.
+        configVersion: { type: string, nullable: true }
+
+    # --------------------------------------------------------------------------------------------- releases
+
+    ReleaseManifest:
+      type: object
+      required: [version, packageUrl, sha256]
+      properties:
+        version: { type: string, example: "1.2.0" }
+        channel: { type: string, default: stable }
+        packageUrl: { type: string, format: uri }
+        sha256:
+          type: string
+          pattern: "^[0-9a-fA-F]{64}$"
+          description: Lower-case hex SHA-256 of the zip.
+        sizeBytes: { type: integer, format: int64, nullable: true }
+        publishedUtc: { type: string, format: date-time, nullable: true }
+        minimumSupportedVersion: { type: string, nullable: true }
+        releaseNotesUrl: { type: string, nullable: true }
+
+    # ------------------------------------------------------------------------------------------- admin API
+
+    AuthConfigResponse:
+      type: object
+      required: [clientId, authority, scope]
+      properties:
+        clientId:
+          type: string
+          description: Application (client) id of the admin console public client.
+        authority:
+          type: string
+          example: https://login.microsoftonline.com/organizations
+        scope:
+          type: string
+          example: api://00000000-0000-0000-0000-000000000000/AppMonitor.Admin
+        apiVersion: { type: string, nullable: true, example: v1 }
+
+    AdminMeResponse:
+      type: object
+      required: [userPrincipalName, tenantId]
+      properties:
+        userPrincipalName: { type: string }
+        displayName: { type: string, nullable: true }
+        tenantId: { type: string }
+        isGlobalAdmin:
+          type: boolean
+          description: True only for AppMonitor.GlobalAdmin tokens issued by the operator tenant.
+        organizations:
+          type: array
+          items: { $ref: "#/components/schemas/OrganizationSummary" }
+
+    OrganizationSummary:
+      type: object
+      required: [organizationId, name]
+      properties:
+        organizationId: { type: string, format: uuid }
+        name: { type: string }
+        entraTenantId: { type: string, nullable: true }
+        deviceCount: { type: integer }
+        devicesWithPendingUpdates: { type: integer }
+        devicesNotSeenIn7Days: { type: integer }
+        configVersion: { type: string, nullable: true }
+        configUpdatedUtc: { type: string, format: date-time, nullable: true }
+
+    CreateOrganizationRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 200 }
+        entraTenantId: { type: string, format: uuid, nullable: true }
+
+    CreateOrganizationResponse:
+      type: object
+      required: [organization, enrollment]
+      properties:
+        organization: { $ref: "#/components/schemas/OrganizationSummary" }
+        enrollment: { $ref: "#/components/schemas/EnrollmentInfoResponse" }
+
+    DeviceSummary:
+      type: object
+      required: [deviceId, deviceName]
+      properties:
+        deviceId: { type: string, format: uuid }
+        deviceName: { type: string }
+        lastLogonUser: { type: string, nullable: true }
+        osVersion: { type: string, nullable: true }
+        agentVersion: { type: string, nullable: true }
+        enrolledUtc: { type: string, format: date-time }
+        lastSeenUtc: { type: string, format: date-time, nullable: true }
+        lastScanUtc: { type: string, format: date-time, nullable: true }
+        configVersionApplied: { type: string, nullable: true }
+        pendingUpdateCount: { type: integer }
+        failedUpdateCount: { type: integer }
+        prerequisitesHealthy: { type: boolean, default: true }
+
+    DeviceDetail:
+      type: object
+      required: [summary]
+      properties:
+        summary: { $ref: "#/components/schemas/DeviceSummary" }
+        machineGuid: { type: string, nullable: true }
+        entraDeviceId: { type: string, nullable: true }
+        prerequisites:
+          allOf: [{ $ref: "#/components/schemas/PrerequisiteStatus" }]
+          nullable: true
+        installedApps:
+          type: array
+          items: { $ref: "#/components/schemas/ReportedApp" }
+        updates:
+          type: array
+          items: { $ref: "#/components/schemas/ReportedUpdate" }
+        recentEvents:
+          type: array
+          items: { $ref: "#/components/schemas/ReportedEvent" }
+        pendingCommands:
+          type: array
+          items: { $ref: "#/components/schemas/DeviceCommand" }
+
+    VersionCount:
+      type: object
+      required: [version]
+      properties:
+        version: { type: string }
+        deviceCount: { type: integer }
+
+    OrganizationInventoryItem:
+      type: object
+      required: [displayName]
+      properties:
+        displayName: { type: string }
+        wingetId: { type: string, nullable: true }
+        publisher: { type: string, nullable: true }
+        catalogAppId: { type: string, nullable: true }
+        monitoredAppId: { type: string, nullable: true }
+        deviceCount: { type: integer }
+        devicesWithUpdateAvailable: { type: integer }
+        versions:
+          type: array
+          description: Distinct installed versions with device counts, newest first.
+          items: { $ref: "#/components/schemas/VersionCount" }
+        predominantContext: { $ref: "#/components/schemas/InstallContext" }
+        lastSeenUtc: { type: string, format: date-time }
+
+    OrganizationConfigResponse:
+      type: object
+      required: [organizationId, configVersion, settings]
+      properties:
+        organizationId: { type: string, format: uuid }
+        configVersion: { type: string }
+        updatedUtc: { type: string, format: date-time }
+        updatedBy: { type: string, nullable: true }
+        settings: { $ref: "#/components/schemas/SettingsDocument" }
+
+    OrganizationConfigUpdateRequest:
+      type: object
+      required: [settings]
+      properties:
+        baseConfigVersion: { type: string, nullable: true }
+        settings: { $ref: "#/components/schemas/SettingsDocument" }
+        comment: { type: string, nullable: true, maxLength: 1000 }
+
+    ConfigHistoryEntry:
+      type: object
+      required: [id, configVersion]
+      properties:
+        id: { type: integer, format: int64 }
+        configVersion: { type: string }
+        updatedUtc: { type: string, format: date-time }
+        updatedBy: { type: string, nullable: true }
+        comment: { type: string, nullable: true }
+
+    EnrollmentInfoResponse:
+      type: object
+      required: [organizationId, serverUrl]
+      properties:
+        organizationId: { type: string, format: uuid }
+        enrollmentKey:
+          type: string
+          nullable: true
+          description: |
+            Present only in the response that created or rotated it. Newly issued keys are `ek_live_` followed by
+            the base64url of 256 random bits.
+          example: ek_live_kQ7fZ2x1Tn8sV4bR6mJpL9wC3yA0dE5uH7gK2iN1oQs
+        keyRotatedUtc: { type: string, format: date-time, nullable: true }
+        serverUrl: { type: string, format: uri }
+
+    OrganizationEvent:
+      type: object
+      required: [deviceId, occurredUtc, kind]
+      properties:
+        deviceId: { type: string, format: uuid }
+        deviceName: { type: string, nullable: true }
+        occurredUtc: { type: string, format: date-time }
+        kind: { $ref: "#/components/schemas/ReportedEventKind" }
+        appId: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+        fromVersion: { type: string, nullable: true }
+        toVersion: { type: string, nullable: true }
+
+    PagedResult:
+      type: object
+      properties:
+        items:
+          type: array
+          items: {}
+        total: { type: integer }
+        page: { type: integer, default: 1 }
+        pageSize: { type: integer, default: 50 }

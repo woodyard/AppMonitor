@@ -1,0 +1,261 @@
+<Window x:Class="Arkimentum.AppMonitor.Tray.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:res="clr-namespace:Arkimentum.AppMonitor.Tray.Resources"
+        xmlns:ui="clr-namespace:Arkimentum.AppMonitor.UI;assembly=Arkimentum.AppMonitor.UI"
+        Title="{Binding Title}"
+        Width="560"
+        Height="680"
+        MinWidth="440"
+        MinHeight="480"
+        WindowStartupLocation="CenterScreen"
+        Icon="pack://application:,,,/Arkimentum.AppMonitor.UI;component/Assets/app.ico"
+        FontFamily="{StaticResource AppFontFamily}"
+        Foreground="{DynamicResource BrandInkBrush}"
+        Background="{DynamicResource BrandBackgroundBrush}">
+
+    <Grid Margin="24,20,24,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ==== header: wordmark, status line, primary action -->
+        <Grid Grid.Row="0" Margin="0,0,0,24">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Brand bars, wordmark and product word come from the shared UI library. -->
+            <ui:BrandHeader Grid.Column="0"
+                            VerticalAlignment="Center"
+                            BrandName="{x:Static res:Strings.WordmarkBrand}"
+                            ProductName="{x:Static res:Strings.WordmarkProduct}"
+                            Subtitle="{Binding StatusLine}" />
+
+            <Button Grid.Column="1"
+                    VerticalAlignment="Bottom"
+                    MinWidth="112"
+                    Padding="16,8"
+                    Style="{DynamicResource AccentButtonStyle}"
+                    Content="{x:Static res:Strings.CheckNow}"
+                    Command="{Binding CheckNowCommand}" />
+        </Grid>
+
+        <!-- ==== disconnected banner -->
+        <Border Grid.Row="1"
+                Style="{StaticResource Banner}"
+                Margin="0,0,0,16"
+                Visibility="{Binding ShowDisconnectedBanner, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Style="{StaticResource SymbolGlyph}"
+                           FontSize="16"
+                           Margin="0,1,12,0"
+                           VerticalAlignment="Top"
+                           Foreground="{DynamicResource BrandGoldTextBrush}"
+                           Text="&#xE7BA;" />
+                <StackPanel>
+                    <TextBlock Style="{StaticResource BodyStrongText}"
+                               Foreground="{DynamicResource BrandGoldTextBrush}"
+                               Text="{x:Static res:Strings.DisconnectedBanner}" />
+                    <TextBlock Style="{StaticResource CaptionText}"
+                               Margin="0,4,0,0"
+                               MaxWidth="400"
+                               HorizontalAlignment="Left"
+                               Text="{x:Static res:Strings.DisconnectedBannerDetail}" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- ==== update list -->
+        <Grid Grid.Row="2">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Padding="0,0,8,0"
+                          Margin="-4,-4,-4,0"
+                          Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                <ItemsControl ItemsSource="{Binding Updates}" Margin="4,4,4,0">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Style="{StaticResource UpdateCard}" Margin="0,0,0,12">
+                                <StackPanel>
+
+                                    <!-- name + badges -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                                   Style="{StaticResource BodyStrongText}"
+                                                   FontSize="15"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,8,0"
+                                                   Text="{Binding DisplayName}" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Border Style="{StaticResource SourceBadge}" Margin="0,0,4,0">
+                                                <TextBlock Style="{StaticResource SourceBadgeText}" Text="{Binding SourceBadge}" />
+                                            </Border>
+                                            <Border Style="{StaticResource ContextBadge}">
+                                                <TextBlock Style="{StaticResource BadgeText}" Text="{Binding ContextBadge}" />
+                                            </Border>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                               Margin="0,4,0,0"
+                                               Text="{Binding VersionText}" />
+
+                                    <TextBlock Style="{StaticResource StatusText}"
+                                               Margin="0,8,0,0"
+                                               Text="{Binding StatusText}" />
+
+                                    <TextBlock Style="{StaticResource DeadlineText}"
+                                               Margin="0,4,0,0"
+                                               Text="{Binding DeadlineText}"
+                                               Visibility="{Binding HasDeadline, Converter={StaticResource BoolToVisibility}}" />
+
+                                    <!-- actions -->
+                                    <WrapPanel Margin="0,16,0,0"
+                                               Visibility="{Binding ShowAnyAction, Converter={StaticResource BoolToVisibility}}">
+                                        <Button MinWidth="104"
+                                                Margin="0,0,8,0"
+                                                Padding="14,6"
+                                                Style="{DynamicResource AccentButtonStyle}"
+                                                Content="{x:Static res:Strings.InstallNow}"
+                                                Command="{Binding InstallCommand}"
+                                                Visibility="{Binding ShowInstall, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <Button Margin="0,0,8,0"
+                                                Padding="14,6"
+                                                ui:DropDownButton.OpensMenu="True"
+                                                Visibility="{Binding ShowDefer, Converter={StaticResource BoolToVisibility}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{x:Static res:Strings.Defer}" />
+                                                <TextBlock Style="{StaticResource SymbolGlyph}"
+                                                           FontSize="10"
+                                                           Margin="8,3,0,0"
+                                                           Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}"
+                                                           Text="&#xE70D;" />
+                                            </StackPanel>
+                                            <Button.ContextMenu>
+                                                <ContextMenu ItemsSource="{Binding DeferralOptions}">
+                                                    <ContextMenu.ItemContainerStyle>
+                                                        <Style TargetType="MenuItem">
+                                                            <Setter Property="Header" Value="{Binding Label}" />
+                                                            <Setter Property="Command" Value="{Binding Command}" />
+                                                        </Style>
+                                                    </ContextMenu.ItemContainerStyle>
+                                                </ContextMenu>
+                                            </Button.ContextMenu>
+                                        </Button>
+
+                                        <Button Margin="0,0,8,0"
+                                                Padding="14,6"
+                                                Content="{x:Static res:Strings.RemindMeLater}"
+                                                Command="{Binding DismissCommand}"
+                                                Visibility="{Binding ShowRemindMeLater, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                                   VerticalAlignment="Center"
+                                                   Text="{x:Static res:Strings.NoMoreDeferrals}"
+                                                   Visibility="{Binding ShowNoMoreDeferrals, Converter={StaticResource BoolToVisibility}}" />
+                                    </WrapPanel>
+
+                                    <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                               Margin="0,8,0,0"
+                                               Text="{Binding DeferralsUsedText}"
+                                               Visibility="{Binding DeferralsUsedText, Converter={StaticResource StringToVisibility}}" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <!-- ==== empty state -->
+            <StackPanel VerticalAlignment="Center"
+                        HorizontalAlignment="Center"
+                        Margin="0,0,0,32"
+                        Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibility}}">
+                <Border Width="96"
+                        Height="96"
+                        CornerRadius="48"
+                        HorizontalAlignment="Center"
+                        Background="{DynamicResource BrandPrimarySurfaceBrush}">
+                    <TextBlock Style="{StaticResource SymbolGlyph}"
+                               FontSize="40"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource BrandPrimaryTextBrush}"
+                               Text="{Binding EmptyGlyph}" />
+                </Border>
+                <TextBlock Style="{StaticResource SubtitleText}"
+                           Margin="0,24,0,0"
+                           HorizontalAlignment="Center"
+                           Text="{x:Static res:Strings.EmptyTitle}" />
+                <TextBlock Style="{StaticResource CaptionText}"
+                           Margin="0,8,0,0"
+                           MaxWidth="320"
+                           TextAlignment="Center"
+                           HorizontalAlignment="Center"
+                           Text="{Binding EmptySubtitle}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ==== details footer -->
+        <Expander Grid.Row="3"
+                  Margin="0,16,0,0"
+                  Foreground="{DynamicResource BrandInkBrush}"
+                  Header="{x:Static res:Strings.DetailsHeader}">
+            <Grid Margin="0,12,0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" MinWidth="144" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.DetailsScanInterval}" />
+                <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding ScanIntervalText}" />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsNotificationInterval}" />
+                <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding NotificationIntervalText}" />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsSources}" />
+                <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding SourcesText}" />
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsNotifications}" />
+                <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding NotificationsText}" />
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsMonitoredApps}" />
+                <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding MonitoredAppsText}" />
+
+                <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsLogFolder}" />
+                <StackPanel Grid.Row="5" Grid.Column="1" Margin="0,8,0,0">
+                    <TextBlock Style="{StaticResource DetailValue}" Text="{Binding LogDirectory}" TextWrapping="Wrap" />
+                    <Button Style="{StaticResource LinkButton}"
+                            Margin="0,4,0,0"
+                            Content="{x:Static res:Strings.DetailsOpen}"
+                            Command="{Binding OpenLogFolderCommand}" />
+                </StackPanel>
+
+                <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsServiceVersion}" />
+                <TextBlock Grid.Row="6" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ServiceVersion}" />
+
+                <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsAgentVersion}" />
+                <TextBlock Grid.Row="7" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding AgentVersion}" />
+            </Grid>
+        </Expander>
+    </Grid>
+</Window>

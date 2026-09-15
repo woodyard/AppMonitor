@@ -1,0 +1,171 @@
+<UserControl x:Class="Arkimentum.AppMonitor.Admin.Views.OrganizationEnrollmentPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:res="clr-namespace:Arkimentum.AppMonitor.Admin.Resources"
+             FontFamily="{StaticResource AppFontFamily}"
+             Foreground="{DynamicResource BrandInkBrush}">
+
+    <UserControl.Resources>
+        <!-- One generated artefact: heading, caption, the text, and a Copy button that does not need the text on
+             screen to work. The snippets are read-only — they are generated, never edited here. -->
+        <DataTemplate x:Key="SnippetTemplate">
+            <StackPanel Margin="0,0,0,20">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                        <TextBlock Style="{StaticResource BodyStrongText}" Text="{Binding Heading}" />
+                        <TextBlock Style="{StaticResource TertiaryCaptionText}" Margin="0,2,0,0" Text="{Binding Caption}" />
+                    </StackPanel>
+                    <Button Grid.Column="1"
+                            VerticalAlignment="Top"
+                            Padding="12,5"
+                            FontSize="12"
+                            Content="{x:Static res:Strings.ButtonCopy}"
+                            Command="{Binding DataContext.CopyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                            CommandParameter="{Binding Text}" />
+                </Grid>
+                <TextBox Style="{StaticResource SnippetBox}"
+                         Margin="0,8,0,0"
+                         Text="{Binding Text, Mode=OneWay}"
+                         AutomationProperties.Name="{Binding Heading}" />
+            </StackPanel>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+        <StackPanel Margin="4,0,4,24">
+
+            <Grid Margin="0,0,12,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,24,0">
+                    <TextBlock Style="{StaticResource PageTitleText}" Text="{Binding Title}" />
+                    <TextBlock Style="{StaticResource CaptionText}" MaxWidth="700" HorizontalAlignment="Left" Text="{Binding Subtitle}" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        VerticalAlignment="Top"
+                        Padding="8,4"
+                        Command="{Binding RefreshCommand}"
+                        ToolTip="{x:Static res:Strings.ButtonRefresh}"
+                        AutomationProperties.Name="{x:Static res:Strings.ButtonRefresh}">
+                    <TextBlock Style="{StaticResource SymbolGlyph}"
+                               FontSize="14"
+                               Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                               Text="{x:Static res:Strings.GlyphRefresh}" />
+                </Button>
+            </Grid>
+
+            <Border Style="{StaticResource InfoBanner}" Margin="0,0,0,12"
+                    Visibility="{Binding IsSignedIn, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                <TextBlock Style="{StaticResource CaptionText}" Text="{x:Static res:Strings.SignInFirst}" />
+            </Border>
+            <Border Style="{StaticResource CriticalBanner}" Margin="0,0,0,12"
+                    Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource CaptionText}"
+                           Foreground="{DynamicResource BrandTerracottaTextBrush}"
+                           Text="{Binding Error}" />
+            </Border>
+
+            <!-- ==== the three values -->
+            <Border Style="{StaticResource Card}" Margin="0,0,0,16"
+                    Visibility="{Binding IsSignedIn, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource CardTitleText}" Text="{x:Static res:Strings.CardEnrollmentValues}" />
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" MinWidth="170" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.LabelOrganization}" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding OrganizationName}" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelOrganizationId}" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding OrganizationIdText}" />
+                        <Button Grid.Row="1" Grid.Column="2" Margin="12,8,0,0" Padding="10,4" FontSize="12"
+                                Content="{x:Static res:Strings.ButtonCopy}"
+                                Command="{Binding CopyCommand}"
+                                CommandParameter="{Binding OrganizationIdText}" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelCloudServer}" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" TextWrapping="Wrap" Text="{Binding ServerUrlText}" />
+                        <Button Grid.Row="2" Grid.Column="2" Margin="12,8,0,0" Padding="10,4" FontSize="12"
+                                Content="{x:Static res:Strings.ButtonCopy}"
+                                Command="{Binding CopyCommand}"
+                                CommandParameter="{Binding ServerUrlText}" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.LabelEnrollmentKey}" />
+                        <TextBlock Grid.Row="3" Grid.Column="1"
+                                   Style="{StaticResource DetailValue}"
+                                   Margin="0,8,0,0"
+                                   FontFamily="{StaticResource MonoFontFamily}"
+                                   TextWrapping="Wrap"
+                                   Text="{Binding KeyText}" />
+                        <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal" Margin="12,8,0,0">
+                            <Button Padding="10,4" FontSize="12"
+                                    Content="{Binding ToggleKeyText}"
+                                    Command="{Binding ToggleKeyCommand}" />
+                            <Button Margin="6,0,0,0" Padding="10,4" FontSize="12"
+                                    Content="{x:Static res:Strings.ButtonCopy}"
+                                    Command="{Binding CopyCommand}"
+                                    CommandParameter="{Binding RawKey}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" MinWidth="170" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.LabelKeyRotated}" />
+                        <TextBlock Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding KeyRotatedText}" />
+                    </Grid>
+
+                    <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                               Margin="0,12,0,0"
+                               MaxWidth="640"
+                               HorizontalAlignment="Left"
+                               Text="{x:Static res:Strings.KeyNotShown}"
+                               Visibility="{Binding ShowKeyNotReturnedHint, Converter={StaticResource BoolToVisibility}}" />
+
+                    <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                        <Button Padding="14,7"
+                                Content="{x:Static res:Strings.ButtonRotateKey}"
+                                ToolTip="{x:Static res:Strings.TipRotateKey}"
+                                Command="{Binding RotateKeyCommand}" />
+                        <TextBlock Style="{StaticResource SuccessText}"
+                                   Margin="12,0,0,0"
+                                   VerticalAlignment="Center"
+                                   MaxWidth="520"
+                                   Text="{Binding Notice}"
+                                   Visibility="{Binding HasNotice, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ==== snippets -->
+            <Border Style="{StaticResource Card}"
+                    Visibility="{Binding IsSignedIn, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource CardTitleText}" Text="{x:Static res:Strings.CardSnippets}" />
+                    <TextBlock Style="{StaticResource TertiaryCaptionText}" Margin="0,0,0,16" Text="{Binding RegistryPath}" />
+
+                    <ItemsControl ItemsSource="{Binding Snippets}" ItemTemplate="{StaticResource SnippetTemplate}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

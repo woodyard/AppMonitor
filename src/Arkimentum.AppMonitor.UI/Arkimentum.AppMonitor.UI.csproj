@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Arkimentum.AppMonitor.UI</RootNamespace>
+    <AssemblyName>Arkimentum.AppMonitor.UI</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Application.ThemeMode (WPF Fluent theme) is still marked experimental in .NET 10. -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The brand icon, so XAML in any host app can use
+         pack://application:,,,/Arkimentum.AppMonitor.UI;component/Assets/app.ico (BrandAssets.AppIconUri).
+         The Tray keeps its own copy for <ApplicationIcon>, which the build needs on disk. -->
+    <Resource Include="Assets\**\*.ico" />
+    <!-- Gelasio (SIL Open Font License 1.1) — the brand serif, embedded so the wordmark renders on any machine.
+         Referenced as pack://application:,,,/Arkimentum.AppMonitor.UI;component/Fonts/#Gelasio. -->
+    <Resource Include="Fonts\*.ttf" />
+    <Content Include="Fonts\OFL.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

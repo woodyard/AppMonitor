@@ -1,0 +1,403 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Arkimentum AppMonitor - administrative template.
+  Computer Configuration > Administrative Templates > Arkimentum > AppMonitor
+  All settings are written to HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor, which overrides the local
+  preferences in HKLM\SOFTWARE\Arkimentum\AppMonitor. See docs\Registry.md for the full reference.
+-->
+<policyDefinitions xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions"
+                   xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   revision="1.0" schemaVersion="1.0">
+
+  <policyNamespaces>
+    <target prefix="arkimentumappmonitor" namespace="Arkimentum.Policies.AppMonitor" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+
+  <resources minRequiredRevision="1.0" />
+
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_ArkimentumAppMonitor_1_0" displayName="$(string.SUPPORTED_ArkimentumAppMonitor_1_0)" />
+      <!-- The organization connection and agent self-update settings arrived with agent 1.1. -->
+      <definition name="SUPPORTED_ArkimentumAppMonitor_1_1" displayName="$(string.SUPPORTED_ArkimentumAppMonitor_1_1)" />
+    </definitions>
+  </supportedOn>
+
+  <categories>
+    <category name="Arkimentum" displayName="$(string.Cat_Arkimentum)" />
+    <category name="AppMonitor" displayName="$(string.Cat_Upgrade)" explainText="$(string.Cat_Upgrade_Help)">
+      <parentCategory ref="Arkimentum" />
+    </category>
+    <category name="OrganizationConnection" displayName="$(string.Cat_OrgConnection)" explainText="$(string.Cat_OrgConnection_Help)">
+      <parentCategory ref="AppMonitor" />
+    </category>
+    <category name="AgentUpdates" displayName="$(string.Cat_AgentUpdates)" explainText="$(string.Cat_AgentUpdates_Help)">
+      <parentCategory ref="AppMonitor" />
+    </category>
+  </categories>
+
+  <policies>
+
+    <!-- ============================================================ scanning and notification -->
+
+    <policy name="ScanInterval" class="Machine" displayName="$(string.ScanInterval)"
+            explainText="$(string.ScanInterval_Help)" presentation="$(presentation.ScanInterval)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <decimal id="ScanIntervalMinutes" valueName="ScanIntervalMinutes" minValue="5" maxValue="10080" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="NotificationInterval" class="Machine" displayName="$(string.NotificationInterval)"
+            explainText="$(string.NotificationInterval_Help)" presentation="$(presentation.NotificationInterval)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <decimal id="NotificationIntervalMinutes" valueName="NotificationIntervalMinutes" minValue="1" maxValue="10080" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="StartupDelay" class="Machine" displayName="$(string.StartupDelay)"
+            explainText="$(string.StartupDelay_Help)" presentation="$(presentation.StartupDelay)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <decimal id="StartupDelaySeconds" valueName="StartupDelaySeconds" minValue="0" maxValue="3600" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="ScanOnStartup" class="Machine" displayName="$(string.ScanOnStartup)"
+            explainText="$(string.ScanOnStartup_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="ScanOnStartup">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- ============================================================ sources -->
+
+    <policy name="WingetEnabled" class="Machine" displayName="$(string.WingetEnabled)"
+            explainText="$(string.WingetEnabled_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="WingetEnabled">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="WebSourcesEnabled" class="Machine" displayName="$(string.WebSourcesEnabled)"
+            explainText="$(string.WebSourcesEnabled_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="WebSourcesEnabled">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="WingetGlobalArgs" class="Machine" displayName="$(string.WingetGlobalArgs)"
+            explainText="$(string.WingetGlobalArgs_Help)" presentation="$(presentation.WingetGlobalArgs)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <text id="WingetGlobalArgs" valueName="WingetGlobalArgs" required="false" maxLength="512" />
+      </elements>
+    </policy>
+
+    <policy name="WingetIncludeUnknown" class="Machine" displayName="$(string.WingetIncludeUnknown)"
+            explainText="$(string.WingetIncludeUnknown_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="WingetIncludeUnknown">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="WingetPath" class="Machine" displayName="$(string.WingetPath)"
+            explainText="$(string.WingetPath_Help)" presentation="$(presentation.WingetPath)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <text id="WingetPath" valueName="WingetPath" required="true" maxLength="260" />
+      </elements>
+    </policy>
+
+    <policy name="Prerequisites" class="Machine" displayName="$(string.Prerequisites)"
+            explainText="$(string.Prerequisites_Help)" presentation="$(presentation.Prerequisites)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <boolean id="AutoInstallPrerequisites" valueName="AutoInstallPrerequisites">
+          <trueValue><decimal value="1" /></trueValue>
+          <falseValue><decimal value="0" /></falseValue>
+        </boolean>
+        <decimal id="PrerequisiteCheckIntervalHours" valueName="PrerequisiteCheckIntervalHours" minValue="1" maxValue="720" required="true" />
+        <text id="WingetMinimumVersion" valueName="WingetMinimumVersion" required="false" maxLength="32" />
+      </elements>
+    </policy>
+
+    <policy name="ProxyUrl" class="Machine" displayName="$(string.ProxyUrl)"
+            explainText="$(string.ProxyUrl_Help)" presentation="$(presentation.ProxyUrl)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <text id="ProxyUrl" valueName="ProxyUrl" required="false" maxLength="512" />
+      </elements>
+    </policy>
+
+    <!-- ============================================================ user experience -->
+
+    <policy name="LaunchTrayAgent" class="Machine" displayName="$(string.LaunchTrayAgent)"
+            explainText="$(string.LaunchTrayAgent_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="LaunchTrayAgent">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="NotificationsEnabled" class="Machine" displayName="$(string.NotificationsEnabled)"
+            explainText="$(string.NotificationsEnabled_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="NotificationsEnabled">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="ShowInstalledNotifications" class="Machine" displayName="$(string.ShowInstalledNotifications)"
+            explainText="$(string.ShowInstalledNotifications_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="ShowInstalledNotifications">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- ============================================================ logging -->
+
+    <policy name="LogLevel" class="Machine" displayName="$(string.LogLevel)"
+            explainText="$(string.LogLevel_Help)" presentation="$(presentation.LogLevel)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <enum id="LogLevel" valueName="LogLevel" required="true">
+          <item displayName="$(string.LogLevel_Trace)"><value><string>Trace</string></value></item>
+          <item displayName="$(string.LogLevel_Debug)"><value><string>Debug</string></value></item>
+          <item displayName="$(string.LogLevel_Information)"><value><string>Information</string></value></item>
+          <item displayName="$(string.LogLevel_Warning)"><value><string>Warning</string></value></item>
+          <item displayName="$(string.LogLevel_Error)"><value><string>Error</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+    <policy name="LogDirectory" class="Machine" displayName="$(string.LogDirectory)"
+            explainText="$(string.LogDirectory_Help)" presentation="$(presentation.LogDirectory)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <text id="LogDirectory" valueName="LogDirectory" required="true" maxLength="260" />
+      </elements>
+    </policy>
+
+    <policy name="LogRetentionDays" class="Machine" displayName="$(string.LogRetentionDays)"
+            explainText="$(string.LogRetentionDays_Help)" presentation="$(presentation.LogRetentionDays)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <decimal id="LogRetentionDays" valueName="LogRetentionDays" minValue="1" maxValue="3650" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="MaxLogFileSize" class="Machine" displayName="$(string.MaxLogFileSize)"
+            explainText="$(string.MaxLogFileSize_Help)" presentation="$(presentation.MaxLogFileSize)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <decimal id="MaxLogFileSizeMB" valueName="MaxLogFileSizeMB" minValue="1" maxValue="1024" required="true" />
+      </elements>
+    </policy>
+
+    <!-- ============================================================ installation -->
+
+    <policy name="InstallTimeout" class="Machine" displayName="$(string.InstallTimeout)"
+            explainText="$(string.InstallTimeout_Help)" presentation="$(presentation.InstallTimeout)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <decimal id="InstallTimeoutMinutes" valueName="InstallTimeoutMinutes" minValue="1" maxValue="600" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="CheckTimeout" class="Machine" displayName="$(string.CheckTimeout)"
+            explainText="$(string.CheckTimeout_Help)" presentation="$(presentation.CheckTimeout)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <decimal id="CheckTimeoutMinutes" valueName="CheckTimeoutMinutes" minValue="1" maxValue="60" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="DefaultUpdateBehaviour" class="Machine" displayName="$(string.DefaultUpdateBehaviour)"
+            explainText="$(string.DefaultUpdateBehaviour_Help)" presentation="$(presentation.DefaultUpdateBehaviour)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <boolean id="DefaultMandatory" valueName="DefaultMandatory">
+          <trueValue><decimal value="1" /></trueValue>
+          <falseValue><decimal value="0" /></falseValue>
+        </boolean>
+        <decimal id="DefaultDeadlineHours" valueName="DefaultDeadlineHours" minValue="0" maxValue="8760" required="true" />
+        <decimal id="DefaultMaxDeferrals" valueName="DefaultMaxDeferrals" minValue="0" maxValue="1000" required="true" />
+        <text id="DefaultDeferralOptions" valueName="DefaultDeferralOptions" required="false" maxLength="128" />
+        <boolean id="DefaultAutoInstall" valueName="DefaultAutoInstall">
+          <trueValue><decimal value="1" /></trueValue>
+          <falseValue><decimal value="0" /></falseValue>
+        </boolean>
+        <decimal id="DefaultCloseGracePeriodMinutes" valueName="DefaultCloseGracePeriodMinutes" minValue="0" maxValue="1440" required="true" />
+        <boolean id="DefaultForceCloseAtDeadline" valueName="DefaultForceCloseAtDeadline">
+          <trueValue><decimal value="1" /></trueValue>
+          <falseValue><decimal value="0" /></falseValue>
+        </boolean>
+      </elements>
+    </policy>
+
+    <!-- ============================================================ catalog -->
+
+    <policy name="UseCatalog" class="Machine" displayName="$(string.UseCatalog)"
+            explainText="$(string.UseCatalog_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="UseCatalog">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="CatalogPath" class="Machine" displayName="$(string.CatalogPath)"
+            explainText="$(string.CatalogPath_Help)" presentation="$(presentation.CatalogPath)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <text id="CatalogPath" valueName="CatalogPath" required="true" maxLength="260" />
+      </elements>
+    </policy>
+
+    <policy name="EnableAllCatalogApps" class="Machine" displayName="$(string.EnableAllCatalogApps)"
+            explainText="$(string.EnableAllCatalogApps_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="EnableAllCatalogApps">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- ============================================================ monitored applications -->
+
+    <policy name="MonitoredApps" class="Machine" displayName="$(string.MonitoredApps)"
+            explainText="$(string.MonitoredApps_Help)" presentation="$(presentation.MonitoredApps)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor\AppList">
+      <parentCategory ref="AppMonitor" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_0" />
+      <elements>
+        <list id="MonitoredApps" key="SOFTWARE\Policies\Arkimentum\AppMonitor\AppList" explicitValue="true" />
+      </elements>
+    </policy>
+
+    <!-- ============================================================ organization connection -->
+
+    <policy name="CloudConnection" class="Machine" displayName="$(string.CloudConnection)"
+            explainText="$(string.CloudConnection_Help)" presentation="$(presentation.CloudConnection)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="OrganizationConnection" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_1" />
+      <elements>
+        <text id="CloudServerUrl" valueName="CloudServerUrl" required="true" maxLength="512" />
+        <text id="CloudOrganizationId" valueName="CloudOrganizationId" required="true" maxLength="64" />
+        <text id="CloudEnrollmentKey" valueName="CloudEnrollmentKey" required="false" maxLength="512" />
+      </elements>
+    </policy>
+
+    <policy name="CloudSyncInterval" class="Machine" displayName="$(string.CloudSyncInterval)"
+            explainText="$(string.CloudSyncInterval_Help)" presentation="$(presentation.CloudSyncInterval)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="OrganizationConnection" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_1" />
+      <elements>
+        <decimal id="CloudSyncIntervalMinutes" valueName="CloudSyncIntervalMinutes" minValue="1" maxValue="1440" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="CloudConfigEnabled" class="Machine" displayName="$(string.CloudConfigEnabled)"
+            explainText="$(string.CloudConfigEnabled_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="CloudConfigEnabled">
+      <parentCategory ref="OrganizationConnection" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_1" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="CloudReportingEnabled" class="Machine" displayName="$(string.CloudReportingEnabled)"
+            explainText="$(string.CloudReportingEnabled_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="CloudReportingEnabled">
+      <parentCategory ref="OrganizationConnection" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_1" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- ============================================================ agent updates -->
+
+    <policy name="AgentAutoUpdate" class="Machine" displayName="$(string.AgentAutoUpdate)"
+            explainText="$(string.AgentAutoUpdate_Help)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor" valueName="AgentAutoUpdate">
+      <parentCategory ref="AgentUpdates" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_1" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="AgentUpdateSource" class="Machine" displayName="$(string.AgentUpdateSource)"
+            explainText="$(string.AgentUpdateSource_Help)" presentation="$(presentation.AgentUpdateSource)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AgentUpdates" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_1" />
+      <elements>
+        <text id="AgentUpdateFeedUrl" valueName="AgentUpdateFeedUrl" required="false" maxLength="512" />
+        <enum id="AgentUpdateChannel" valueName="AgentUpdateChannel" required="true">
+          <item displayName="$(string.AgentUpdateChannel_Stable)"><value><string>stable</string></value></item>
+          <item displayName="$(string.AgentUpdateChannel_Preview)"><value><string>preview</string></value></item>
+        </enum>
+        <decimal id="AgentUpdateCheckIntervalHours" valueName="AgentUpdateCheckIntervalHours" minValue="1" maxValue="720" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="AgentTargetVersion" class="Machine" displayName="$(string.AgentTargetVersion)"
+            explainText="$(string.AgentTargetVersion_Help)" presentation="$(presentation.AgentTargetVersion)"
+            key="SOFTWARE\Policies\Arkimentum\AppMonitor">
+      <parentCategory ref="AgentUpdates" />
+      <supportedOn ref="SUPPORTED_ArkimentumAppMonitor_1_1" />
+      <elements>
+        <text id="AgentTargetVersion" valueName="AgentTargetVersion" required="true" maxLength="32" />
+      </elements>
+    </policy>
+
+  </policies>
+</policyDefinitions>

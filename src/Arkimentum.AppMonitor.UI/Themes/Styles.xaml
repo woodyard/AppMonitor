@@ -1,0 +1,267 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:ui="clr-namespace:Arkimentum.AppMonitor.UI">
+
+    <!-- Arkimentum brand surface styles.
+         Colours come from the Brand.Light/Brand.Dark dictionary that BrandTheme merges last into
+         Application.Resources; every reference below is DynamicResource so a theme flip repaints in place.
+         Spacing follows the 8 px grid: 4 / 8 / 16 / 24 / 32. Corner radius is 8 px (pills excepted). -->
+
+    <ui:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+    <ui:StringToVisibilityConverter x:Key="StringToVisibility" />
+    <ui:LetterSpacingConverter x:Key="LetterSpacing" />
+
+    <!-- ==== fonts
+         Body text stays on the Windows UI font per the Windows design guidance; Gelasio (SIL OFL, embedded
+         under Fonts/) is reserved for the wordmark and the window headings, as on the Arkimentum web sites. -->
+
+    <FontFamily x:Key="AppFontFamily">Segoe UI Variable Text, Segoe UI Variable, Segoe UI</FontFamily>
+    <FontFamily x:Key="DisplayFontFamily">Segoe UI Variable Display, Segoe UI Variable, Segoe UI</FontFamily>
+    <FontFamily x:Key="SymbolFontFamily">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+    <FontFamily x:Key="SerifFontFamily">pack://application:,,,/Arkimentum.AppMonitor.UI;component/Fonts/#Gelasio, Georgia, serif</FontFamily>
+
+    <!-- ==== wordmark -->
+
+    <!-- "Arkimentum" — Gelasio, olive, large. -->
+    <Style x:Key="WordmarkText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource SerifFontFamily}" />
+        <Setter Property="FontSize" Value="30" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandWordmarkBrush}" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+
+    <!-- "APPMONITOR" — small letter-spaced terracotta caps under the wordmark. -->
+    <Style x:Key="ProductMarkText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandTerracottaTextBrush}" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+    </Style>
+
+    <!-- The two brand bars from the favicon: terracotta then sky. -->
+    <Style x:Key="BrandRule" TargetType="Border">
+        <Setter Property="Height" Value="3" />
+        <Setter Property="CornerRadius" Value="2" />
+        <Setter Property="HorizontalAlignment" Value="Left" />
+    </Style>
+
+    <!-- ==== type ramp -->
+
+    <Style x:Key="TitleText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource SerifFontFamily}" />
+        <Setter Property="FontSize" Value="24" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+
+    <Style x:Key="SubtitleText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource SerifFontFamily}" />
+        <Setter Property="FontSize" Value="19" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+
+    <Style x:Key="BodyText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="BodyStrongText" TargetType="TextBlock" BasedOn="{StaticResource BodyText}">
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+
+    <Style x:Key="CaptionText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandMutedBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="TertiaryCaptionText" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandSubtleTextBrush}" />
+    </Style>
+
+    <Style x:Key="SymbolGlyph" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource SymbolFontFamily}" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+    </Style>
+
+    <!-- ==== surfaces -->
+
+    <Style x:Key="Card" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource BrandCardBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BrandBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="16" />
+        <Setter Property="Effect" Value="{DynamicResource BrandCardShadow}" />
+    </Style>
+
+    <!-- An update card. Mandatory updates (the ones with a deadline) carry a terracotta edge. -->
+    <Style x:Key="UpdateCard" TargetType="Border" BasedOn="{StaticResource Card}">
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding HasDeadline}" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource BrandTerracottaBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- An inset panel: the warm accent surface, so it reads as paper rather than as a grey box. -->
+    <Style x:Key="SubtleCard" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource BrandAccentSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BrandBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="16" />
+    </Style>
+
+    <!-- A notice strip. Default is the gold caution tint; CriticalBanner turns it terracotta. -->
+    <Style x:Key="Banner" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource BrandGoldSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BrandGoldBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="12" />
+    </Style>
+
+    <Style x:Key="CriticalBanner" TargetType="Border" BasedOn="{StaticResource Banner}">
+        <Setter Property="Background" Value="{DynamicResource BrandTerracottaSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BrandTerracottaBrush}" />
+    </Style>
+
+    <Style x:Key="InfoBanner" TargetType="Border" BasedOn="{StaticResource Banner}">
+        <Setter Property="Background" Value="{DynamicResource BrandSkySurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BrandSkyBrush}" />
+    </Style>
+
+    <!-- ==== badges (small pills) -->
+
+    <Style x:Key="BadgeText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="LineHeight" Value="14" />
+        <Setter Property="LineStackingStrategy" Value="BlockLineHeight" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandMutedStrongBrush}" />
+    </Style>
+
+    <Style x:Key="Badge" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource BrandAccentSurfaceBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="9" />
+        <Setter Property="Padding" Value="8,2" />
+        <Setter Property="MinHeight" Value="18" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <!-- Source pill: winget reads sky, web reads olive. The trigger matches the literal badge text the host
+         view model produces ("winget"); see Arkimentum.AppMonitor.Tray Resources/Strings.BadgeWinget. -->
+    <Style x:Key="SourceBadge" TargetType="Border" BasedOn="{StaticResource Badge}">
+        <Setter Property="Background" Value="{DynamicResource BrandPrimarySurfaceBrush}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SourceBadge}" Value="winget">
+                <Setter Property="Background" Value="{DynamicResource BrandSkySurfaceBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="SourceBadgeText" TargetType="TextBlock" BasedOn="{StaticResource BadgeText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SourceBadge}" Value="winget">
+                <Setter Property="Foreground" Value="{DynamicResource BrandSkyTextBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Context pill: System / User both sit on the warm accent surface. -->
+    <Style x:Key="ContextBadge" TargetType="Border" BasedOn="{StaticResource Badge}" />
+
+    <!-- ==== links -->
+
+    <!-- A text-only button for inline links such as "Open" next to the log folder. -->
+    <Style x:Key="LinkButton" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <TextBlock x:Name="Text"
+                               Text="{TemplateBinding Content}"
+                               Foreground="{TemplateBinding Foreground}"
+                               FontFamily="{TemplateBinding FontFamily}"
+                               FontWeight="{TemplateBinding FontWeight}"
+                               FontSize="{TemplateBinding FontSize}" />
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Text" Property="TextDecorations" Value="Underline" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==== status -->
+
+    <!-- The status line of an update card; its colour follows UpdateViewModel.Severity:
+         failed and past-deadline read terracotta, waiting/deferred read gold, installed reads olive. -->
+    <Style x:Key="StatusText" TargetType="TextBlock" BasedOn="{StaticResource BodyText}">
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding Severity}" Value="Attention">
+                <Setter Property="Foreground" Value="{DynamicResource BrandGoldTextBrush}" />
+            </DataTrigger>
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding Severity}" Value="Attention" />
+                    <Condition Binding="{Binding HasDeadline}" Value="True" />
+                </MultiDataTrigger.Conditions>
+                <Setter Property="Foreground" Value="{DynamicResource BrandTerracottaTextBrush}" />
+            </MultiDataTrigger>
+            <DataTrigger Binding="{Binding Severity}" Value="Error">
+                <Setter Property="Foreground" Value="{DynamicResource BrandTerracottaTextBrush}" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Severity}" Value="Success">
+                <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- "Required by … (mandatory)": always terracotta. -->
+    <Style x:Key="DeadlineText" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandTerracottaTextBrush}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <!-- Label / value row used by the Details footer and the About dialog. -->
+    <Style x:Key="DetailLabel" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandSubtleTextBrush}" />
+        <Setter Property="Margin" Value="0,0,16,0" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+    </Style>
+
+    <Style x:Key="DetailValue" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+        <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+    </Style>
+
+</ResourceDictionary>

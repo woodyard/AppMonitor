@@ -1,0 +1,212 @@
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Text;
+using System.Windows.Input;
+using System.Windows.Threading;
+using Arkimentum.AppMonitor.Models;
+using Arkimentum.AppMonitor.Tray.Infrastructure;
+using Arkimentum.AppMonitor.Tray.Resources;
+using Arkimentum.AppMonitor.Tray.Services;
+using Arkimentum.AppMonitor.UI;
+using Microsoft.Extensions.Logging;
+
+namespace Arkimentum.AppMonitor.Tray.ViewModels;
+
+/// <summary>The main window: the update list, the status line and the details footer.</summary>
+public sealed class MainViewModel : ObservableObject, IUpdateActions
+{
+    private const int MaxMonitoredAppsShown = 12;
+
+    private readonly ILogger<MainViewModel> _log;
+    private readonly AgentStateStore _store;
+    private readonly IpcClientService _ipc;
+    private readonly IWindowService _windows;
+    private readonly RelayCommand _checkNowCommand;
+    private readonly DispatcherTimer _clock;
+
+    public MainViewModel(ILogger<MainViewModel> log, AgentStateStore store, IpcClientService ipc, IWindowService windows)
+    {
+        _log = log;
+        _store = store;
+        _ipc = ipc;
+        _windows = windows;
+
+        _checkNowCommand = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.ScanInProgress);
+        OpenLogFolderCommand = new RelayCommand(() => _windows.OpenLogFolder());
+        AboutCommand = new RelayCommand(() => _windows.ShowAbout());
+
+        _store.Changed += Refresh;
+
+        // Relative times ("in 2 hours", "Deferred until …") stay honest without a message from the service.
+        _clock = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(30) };
+        _clock.Tick += (_, _) => Refresh();
+        _clock.Start();
+
+        Refresh();
+    }
+
+    public ObservableCollection<UpdateViewModel> Updates { get; } = [];
+
+    public ICommand CheckNowCommand => _checkNowCommand;
+
+    public ICommand OpenLogFolderCommand { get; }
+
+    public ICommand AboutCommand { get; }
+
+    public string Title => Strings.MainWindowTitle;
+
+    public string Subtitle => Strings.MainHeaderSubtitle;
+
+    // ---------------------------------------------------------------- status
+
+    public bool IsConnected => _store.IsConnected;
+
+    public bool ShowDisconnectedBanner => !_store.IsConnected;
+
+    public bool IsScanning => _store.ScanInProgress;
+
+    public string StatusLine
+    {
+        get
+        {
+            if (!_store.IsConnected) return Strings.StatusDisconnected;
+            if (_store.ScanInProgress) return Strings.Checking;
+
+            var parts = new List<string>(2);
+            parts.Add(_store.LastScanUtc is { } last
+                ? Strings.LastChecked(TimeFormat.Absolute(last))
+                : Strings.NeverChecked);
+            if (_store.NextScanUtc is { } next) parts.Add(Strings.NextCheck(TimeFormat.Absolute(next)));
+            return string.Join(Strings.StatusSeparator, parts);
+        }
+    }
+
+    public bool ShowEmptyState => Updates.Count == 0;
+
+    public string EmptySubtitle =>
+        _store.LastScanUtc is { } last ? Strings.EmptySubtitle(TimeFormat.Absolute(last)) : Strings.EmptySubtitleNoScan;
+
+    public string EmptyGlyph => Strings.EmptyGlyph;
+
+    // ---------------------------------------------------------------- details footer
+
+    public string ScanIntervalText => _store.Settings.ScanIntervalMinutes > 0
+        ? Strings.EveryDuration(TimeFormat.Duration(_store.Settings.ScanIntervalMinutes))
+        : Strings.DetailsNone;
+
+    public string NotificationIntervalText => _store.Settings.NotificationIntervalMinutes > 0
+        ? Strings.EveryDuration(TimeFormat.Duration(_store.Settings.NotificationIntervalMinutes))
+        : Strings.DetailsNone;
+
+    public string MonitoredAppsText
+    {
+        get
+        {
+            var apps = _store.Settings.MonitoredApps;
+            if (apps.Count == 0)
+                return _store.Settings.MonitoredAppCount > 0
+                    ? _store.Settings.MonitoredAppCount.ToString()
+                    : Strings.DetailsNone;
+
+            var shown = apps.Take(MaxMonitoredAppsShown).ToList();
+            var text = new StringBuilder(string.Join(", ", shown));
+            if (apps.Count > shown.Count) text.Append(", ").Append(Strings.AndMore(apps.Count - shown.Count));
+            return text.ToString();
+        }
+    }
+
+    public string SourcesText
+    {
+        get
+        {
+            var sources = new List<string>(2);
+            if (_store.Settings.WingetEnabled) sources.Add(Strings.BadgeWinget);
+            if (_store.Settings.WebSourcesEnabled) sources.Add(Strings.BadgeWeb);
+            return sources.Count == 0 ? Strings.DetailsNone : string.Join(", ", sources);
+        }
+    }
+
+    public string NotificationsText =>
+        _store.Settings.NotificationsEnabled ? Strings.DetailsEnabled : Strings.DetailsDisabled;
+
+    public string LogDirectory =>
+        string.IsNullOrWhiteSpace(_store.Settings.LogDirectory) ? AppInfo.LogDirectory : _store.Settings.LogDirectory;
+
+    public string ServiceVersion => string.IsNullOrWhiteSpace(_store.ServiceVersion) ? Strings.DetailsNone : _store.ServiceVersion!;
+
+    public string AgentVersion => AppInfo.Version;
+
+    // ---------------------------------------------------------------- lifetime
+
+    /// <summary>Called when the window becomes visible: ask the service for a fresh snapshot.</summary>
+    public void OnWindowShown()
+    {
+        _log.LogInformation("Main window shown");
+        _ = _ipc.RequestStateAsync();
+    }
+
+    private void CheckNow()
+    {
+        _log.LogInformation("User requested a scan");
+        _ = _ipc.RequestScanAsync();
+    }
+
+    /// <summary>Rebuilds the card list in place: cards are matched by <see cref="PendingUpdate.Key"/> so the UI stays stable.</summary>
+    private void Refresh()
+    {
+        var connected = _store.IsConnected;
+        var incoming = _store.Updates;
+        var byKey = Updates.ToDictionary(vm => vm.Key, StringComparer.Ordinal);
+
+        for (var index = 0; index < incoming.Count; index++)
+        {
+            var model = incoming[index];
+            var local = _store.GetLocalStatus(model.Key);
+            if (byKey.TryGetValue(model.Key, out var existing))
+            {
+                existing.Update(model, connected, local);
+                var current = Updates.IndexOf(existing);
+                if (current != index) Updates.Move(current, index);
+            }
+            else
+            {
+                Updates.Insert(index, new UpdateViewModel(model, this, connected, local));
+            }
+        }
+
+        for (var index = Updates.Count - 1; index >= incoming.Count; index--) Updates.RemoveAt(index);
+
+        _checkNowCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(
+            nameof(IsConnected), nameof(ShowDisconnectedBanner), nameof(IsScanning), nameof(StatusLine),
+            nameof(ShowEmptyState), nameof(EmptySubtitle), nameof(ScanIntervalText), nameof(NotificationIntervalText),
+            nameof(MonitoredAppsText), nameof(SourcesText), nameof(NotificationsText), nameof(LogDirectory),
+            nameof(ServiceVersion));
+    }
+
+    // ---------------------------------------------------------------- IUpdateActions
+
+    public void Install(PendingUpdate update)
+    {
+        _log.LogInformation("User chose Install now for {App} ({Key})", update.DisplayName, update.Key);
+        _ = _ipc.InstallNowAsync(update.Key);
+    }
+
+    public void Defer(PendingUpdate update, int minutes)
+    {
+        if (!update.CanDefer(DateTimeOffset.UtcNow))
+        {
+            _log.LogWarning("Ignoring a deferral for {Key}: it can no longer be deferred", update.Key);
+            return;
+        }
+        _log.LogInformation("User deferred {App} by {Minutes} minutes", update.DisplayName, minutes);
+        _ = _ipc.DeferAsync(update.Key, minutes);
+    }
+
+    public void Dismiss(PendingUpdate update)
+    {
+        _log.LogInformation("User chose Remind me later for {App}", update.DisplayName);
+        _ = _ipc.DismissAsync(update.Key);
+    }
+}

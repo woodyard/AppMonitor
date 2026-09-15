@@ -1,0 +1,59 @@
+<Window x:Class="Arkimentum.AppMonitor.Admin.Views.MessageWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{Binding Title}"
+        Width="460"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Icon="pack://application:,,,/Arkimentum.AppMonitor.UI;component/Assets/app.ico"
+        FontFamily="{StaticResource AppFontFamily}"
+        Foreground="{DynamicResource BrandInkBrush}"
+        Background="{DynamicResource BrandBackgroundBrush}">
+
+    <!-- The brand-styled stand-in for MessageBox: the console never shows a system dialog. -->
+    <StackPanel Margin="24,20,24,20">
+        <StackPanel Orientation="Horizontal">
+            <TextBlock FontSize="22"
+                       Margin="0,2,16,0"
+                       VerticalAlignment="Top"
+                       Text="{Binding Glyph}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock" BasedOn="{StaticResource SymbolGlyph}">
+                        <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource BrandGoldTextBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsCritical}" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource BrandTerracottaTextBrush}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+
+            <StackPanel>
+                <TextBlock Style="{StaticResource SubtitleText}" TextWrapping="Wrap" Text="{Binding Title}" />
+                <TextBlock Style="{StaticResource BodyText}" Margin="0,8,0,0" Text="{Binding Message}" />
+            </StackPanel>
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
+            <Button MinWidth="104"
+                    Padding="16,8"
+                    Margin="0,0,8,0"
+                    IsCancel="True"
+                    Content="{Binding CancelText}"
+                    Command="{Binding CancelCommand}"
+                    Visibility="{Binding HasCancel, Converter={StaticResource BoolToVisibility}}" />
+            <Button MinWidth="104"
+                    Padding="16,8"
+                    IsDefault="True"
+                    Style="{DynamicResource AccentButtonStyle}"
+                    Content="{Binding AcceptText}"
+                    Command="{Binding AcceptCommand}" />
+        </StackPanel>
+    </StackPanel>
+</Window>

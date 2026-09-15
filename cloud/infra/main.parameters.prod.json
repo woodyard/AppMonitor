@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "prod" },
+    "location": { "value": "westeurope" },
+    "apiClientId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "adminClientId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "operatorTenantId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "tenantIdMode": { "value": "organizations" },
+    "pollIntervalSeconds": { "value": 900 },
+    "sqlAdminObjectId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "sqlAdminLogin": { "value": "AppMonitor SQL Admins" },
+    "sqlAdminPrincipalType": { "value": "Group" },
+    "sqlMaxVCores": { "value": 2 },
+    "sqlMinVCores": { "value": "0.5" },
+    "sqlAutoPauseDelayMinutes": { "value": 120 },
+    "useFlexConsumption": { "value": true },
+    "maximumInstanceCount": { "value": 40 },
+    "logRetentionDays": { "value": 90 }
+  }
+}

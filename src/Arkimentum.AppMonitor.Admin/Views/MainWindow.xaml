@@ -1,0 +1,410 @@
+<Window x:Class="Arkimentum.AppMonitor.Admin.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:res="clr-namespace:Arkimentum.AppMonitor.Admin.Resources"
+        xmlns:ui="clr-namespace:Arkimentum.AppMonitor.UI;assembly=Arkimentum.AppMonitor.UI"
+        xmlns:vm="clr-namespace:Arkimentum.AppMonitor.Admin.ViewModels"
+        xmlns:views="clr-namespace:Arkimentum.AppMonitor.Admin.Views"
+        Title="{Binding Title}"
+        Width="1100"
+        Height="760"
+        MinWidth="960"
+        MinHeight="640"
+        WindowStartupLocation="CenterScreen"
+        Icon="pack://application:,,,/Arkimentum.AppMonitor.UI;component/Assets/app.ico"
+        FontFamily="{StaticResource AppFontFamily}"
+        Foreground="{DynamicResource BrandInkBrush}"
+        Background="{DynamicResource BrandBackgroundBrush}">
+
+    <Window.Resources>
+        <!-- One template per page view model: the ContentControl below is the whole navigation mechanism. -->
+        <DataTemplate DataType="{x:Type vm:OverviewViewModel}">
+            <views:OverviewPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SettingsPageViewModel}">
+            <views:SettingsPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:ApplicationsViewModel}">
+            <views:ApplicationsPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:ExportImportViewModel}">
+            <views:ExportImportPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:CloudConnectViewModel}">
+            <views:CloudConnectPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:OrganizationDevicesViewModel}">
+            <views:OrganizationDevicesPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:OrganizationActivityViewModel}">
+            <views:OrganizationActivityPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:OrganizationInventoryViewModel}">
+            <views:OrganizationInventoryPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:OrganizationSettingsViewModel}">
+            <views:OrganizationSettingsPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:OrganizationApplicationsViewModel}">
+            <views:OrganizationApplicationsPage />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:OrganizationEnrollmentViewModel}">
+            <views:OrganizationEnrollmentPage />
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="224" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ==== navigation rail -->
+        <Border Grid.Column="0"
+                Background="{DynamicResource BrandAccentSurfaceBrush}"
+                BorderBrush="{DynamicResource BrandBorderBrush}"
+                BorderThickness="0,0,1,0">
+            <Grid Margin="0,24,0,16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- the two brand bars, so the rail is anchored to the brand even though the wordmark sits right -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="24,0,24,24">
+                    <Border Style="{StaticResource BrandRule}" Width="28" Background="{DynamicResource BrandTerracottaBrush}" />
+                    <Border Style="{StaticResource BrandRule}" Width="28" Margin="4,0,0,0" Background="{DynamicResource BrandSkyBrush}" />
+                </StackPanel>
+
+                <ListBox Grid.Row="1"
+                         Style="{StaticResource NavigationRail}"
+                         ItemContainerStyle="{StaticResource NavigationItem}"
+                         ItemsSource="{Binding NavigationItems}"
+                         SelectedItem="{Binding SelectedItem, Mode=TwoWay}"
+                         AutomationProperties.Name="{x:Static res:Strings.ProductName}">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <!-- Group labels use the header template in NavigationItem's style, which replaces this
+                                 one wholesale; only real pages reach the glyph + label below. -->
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource SymbolGlyph}"
+                                           FontSize="16"
+                                           Width="20"
+                                           VerticalAlignment="Center"
+                                           Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                           Text="{Binding Glyph}" />
+                                <TextBlock Margin="12,0,0,0"
+                                           VerticalAlignment="Center"
+                                           Text="{Binding Title}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <StackPanel Grid.Row="2" Margin="22,16,16,0">
+                    <!-- ==== who is signed in to the cloud, and how to stop being -->
+                    <StackPanel Margin="0,0,0,12"
+                                Visibility="{Binding IsSignedIn, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource SymbolGlyph}"
+                                       FontSize="13"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource BrandSubtleTextBrush}"
+                                       Text="{x:Static res:Strings.GlyphPerson}" />
+                            <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                       Margin="8,0,0,0"
+                                       MaxWidth="150"
+                                       VerticalAlignment="Center"
+                                       TextWrapping="NoWrap"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding SignedInAccount}"
+                                       Text="{Binding SignedInAccount}" />
+                        </StackPanel>
+                        <Button Style="{StaticResource LinkButton}"
+                                Margin="21,4,0,0"
+                                Content="{x:Static res:Strings.ButtonSignOut}"
+                                ToolTip="{x:Static res:Strings.TipSignOut}"
+                                Command="{Binding SignOutCommand}" />
+                    </StackPanel>
+
+                    <Button HorizontalAlignment="Left"
+                            Padding="12,6"
+                            Command="{Binding AboutCommand}"
+                            ToolTip="{x:Static res:Strings.AboutTitle}"
+                            AutomationProperties.Name="{x:Static res:Strings.NavAbout}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource SymbolGlyph}"
+                                       FontSize="14"
+                                       VerticalAlignment="Center"
+                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                       Text="{x:Static res:Strings.GlyphAbout}" />
+                            <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" Text="{x:Static res:Strings.NavAbout}" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ==== content -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Margin="32,24,32,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <ui:BrandHeader Grid.Column="0"
+                                BrandName="{x:Static res:Strings.WordmarkBrand}"
+                                ProductName="{x:Static res:Strings.WordmarkProduct}"
+                                Subtitle="{Binding Subtitle}" />
+
+                <!-- ==== which configuration the current page edits: this machine, or an organization in the cloud.
+                     It is the one thing that must never be a guess, so it sits next to the wordmark. -->
+                <Border Grid.Column="1"
+                        VerticalAlignment="Center"
+                        Margin="24,0,0,0"
+                        ToolTip="{Binding ScopeTooltip}"
+                        AutomationProperties.Name="{Binding ScopeBadge}">
+                    <Border.Style>
+                        <Style TargetType="Border" BasedOn="{StaticResource ScopeBadge}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsOrganizationScope}" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource BrandSkySurfaceBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource SymbolGlyph}"
+                                   FontSize="12"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,6,0"
+                                   Text="{x:Static res:Strings.GlyphCloud}"
+                                   Foreground="{DynamicResource BrandSkyTextBrush}"
+                                   Visibility="{Binding IsOrganizationScope, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Text="{Binding ScopeBadge}">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource ScopeBadgeText}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsOrganizationScope}" Value="True">
+                                            <Setter Property="Foreground" Value="{DynamicResource BrandSkyTextBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- ==== the testing-mode banner never goes away while the user-config switch is active -->
+            <Border Grid.Row="1"
+                    Style="{StaticResource Banner}"
+                    Margin="32,0,32,16"
+                    Visibility="{Binding TestingMode, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Style="{StaticResource SymbolGlyph}"
+                               FontSize="16"
+                               Margin="0,1,12,0"
+                               VerticalAlignment="Top"
+                               Foreground="{DynamicResource BrandGoldTextBrush}"
+                               Text="{x:Static res:Strings.GlyphWarning}" />
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource BodyStrongText}"
+                                   Foreground="{DynamicResource BrandGoldTextBrush}"
+                                   Text="{Binding TestingModeBanner}" />
+                        <TextBlock Style="{StaticResource CaptionText}"
+                                   Margin="0,4,0,0"
+                                   MaxWidth="620"
+                                   HorizontalAlignment="Left"
+                                   Text="{Binding TestingModeDetail}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <ContentControl Grid.Row="2"
+                            Margin="32,0,32,0"
+                            Focusable="False"
+                            Content="{Binding CurrentPage}" />
+
+            <!-- ==== Apply / Discard footer, shared by the Settings and Applications pages -->
+            <Border Grid.Row="3"
+                    Background="{DynamicResource BrandCardBrush}"
+                    BorderBrush="{DynamicResource BrandBorderBrush}"
+                    BorderThickness="0,1,0,0"
+                    Padding="32,16"
+                    Visibility="{Binding ShowEditorFooter, Converter={StaticResource BoolToVisibility}}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,24,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center"
+                                    Background="{DynamicResource BrandTerracottaBrush}"
+                                    Visibility="{Binding Editor.IsDirty, Converter={StaticResource BoolToVisibility}}" />
+                            <TextBlock Style="{StaticResource CaptionText}"
+                                       Margin="8,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Text="{Binding Editor.DirtyText}" />
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource ErrorText}"
+                                   Margin="0,4,0,0"
+                                   Text="{Binding Editor.ProblemSummary}"
+                                   Visibility="{Binding Editor.HasProblems, Converter={StaticResource BoolToVisibility}}" />
+                        <ItemsControl Margin="0,2,0,0"
+                                      ItemsSource="{Binding Editor.Problems}"
+                                      Visibility="{Binding Editor.HasProblems, Converter={StaticResource BoolToVisibility}}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Style="{StaticResource TertiaryCaptionText}" Text="{Binding}" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <StackPanel Orientation="Horizontal"
+                                    Margin="0,4,0,0"
+                                    Visibility="{Binding HasSavedNotice, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Style="{StaticResource SymbolGlyph}"
+                                       FontSize="12"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource BrandPrimaryTextBrush}"
+                                       Text="{x:Static res:Strings.GlyphSuccess}" />
+                            <TextBlock Style="{StaticResource SuccessText}"
+                                       Margin="8,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Text="{Binding SavedNotice}" />
+                            <Button Style="{StaticResource LinkButton}"
+                                    Margin="12,0,0,0"
+                                    VerticalAlignment="Center"
+                                    Content="{Binding ScanNowText}"
+                                    Command="{Binding ScanNowCommand}" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button MinWidth="100"
+                                Padding="16,8"
+                                Margin="0,0,8,0"
+                                Content="{Binding DiscardText}"
+                                Command="{Binding DiscardCommand}" />
+                        <Button MinWidth="100"
+                                Padding="16,8"
+                                Style="{DynamicResource AccentButtonStyle}"
+                                Content="{Binding ApplyText}"
+                                Command="{Binding ApplyCommand}"
+                                IsDefault="True" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ==== Publish / Discard footer, shared by the two Organization editor pages.
+                 It occupies the same row as the local footer; exactly one of the two is ever visible. -->
+            <Border Grid.Row="3"
+                    Background="{DynamicResource BrandCardBrush}"
+                    BorderBrush="{DynamicResource BrandBorderBrush}"
+                    BorderThickness="0,1,0,0"
+                    Padding="32,16"
+                    DataContext="{Binding Organization}"
+                    Visibility="{Binding DataContext.ShowOrganizationFooter, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,24,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center"
+                                    Background="{DynamicResource BrandTerracottaBrush}"
+                                    Visibility="{Binding Editor.IsDirty, Converter={StaticResource BoolToVisibility}}" />
+                            <TextBlock Style="{StaticResource CaptionText}"
+                                       Margin="8,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Text="{Binding Editor.DirtyText}" />
+                            <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                       Margin="12,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Text="{Binding VersionText}" />
+                            <!-- Says where the pending document came from, so "Publish" after a restore is never a
+                                 surprise: it writes the restored settings as a NEW version over the current one. -->
+                            <Border Style="{StaticResource Badge}"
+                                    Margin="12,0,0,0"
+                                    Background="{DynamicResource BrandSkySurfaceBrush}"
+                                    Visibility="{Binding IsRestored, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Style="{StaticResource BadgeText}"
+                                           Foreground="{DynamicResource BrandSkyTextBrush}"
+                                           Text="{Binding RestoredBadge}" />
+                            </Border>
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource ErrorText}"
+                                   Margin="0,4,0,0"
+                                   Text="{Binding Editor.ProblemSummary}"
+                                   Visibility="{Binding Editor.HasProblems, Converter={StaticResource BoolToVisibility}}" />
+                        <ItemsControl Margin="0,2,0,0"
+                                      ItemsSource="{Binding Editor.Problems}"
+                                      Visibility="{Binding Editor.HasProblems, Converter={StaticResource BoolToVisibility}}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Style="{StaticResource TertiaryCaptionText}" Text="{Binding}" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <StackPanel Orientation="Horizontal"
+                                    Margin="0,4,0,0"
+                                    Visibility="{Binding HasNotice, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Style="{StaticResource SymbolGlyph}"
+                                       FontSize="12"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource BrandPrimaryTextBrush}"
+                                       Text="{x:Static res:Strings.GlyphSuccess}" />
+                            <TextBlock Style="{StaticResource SuccessText}"
+                                       Margin="8,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Text="{Binding Notice}" />
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource ErrorText}"
+                                   Margin="0,4,0,0"
+                                   MaxWidth="620"
+                                   HorizontalAlignment="Left"
+                                   Text="{Binding Error}"
+                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button MinWidth="100"
+                                Padding="16,8"
+                                Margin="0,0,8,0"
+                                Content="{x:Static res:Strings.ButtonReload}"
+                                Command="{Binding ReloadCommand}" />
+                        <Button MinWidth="100"
+                                Padding="16,8"
+                                Margin="0,0,8,0"
+                                Content="{x:Static res:Strings.ButtonDiscard}"
+                                Command="{Binding DiscardCommand}" />
+                        <Button MinWidth="100"
+                                Padding="16,8"
+                                Style="{DynamicResource AccentButtonStyle}"
+                                Content="{x:Static res:Strings.ButtonPublish}"
+                                ToolTip="{x:Static res:Strings.TipPublish}"
+                                Command="{Binding PublishCommand}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

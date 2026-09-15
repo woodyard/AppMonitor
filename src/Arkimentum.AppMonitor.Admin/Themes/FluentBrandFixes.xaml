@@ -1,0 +1,34 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Fluent check-state brushes.
+
+         The Fluent CheckBox and RadioButton templates do not go through AccentFillColorDefaultBrush; they carry
+         their own keys, so the brand palette's accent override never reaches them and a ticked box comes out
+         Windows blue on an otherwise olive page. Re-pointing the keys here keeps every ticked control on the
+         brand accent (olive in light, gold in dark).
+
+         App.xaml.cs merges this dictionary from code, last, after BrandTheme.Initialize(): WPF inserts its own
+         Fluent dictionary when ThemeMode is applied, and only a dictionary merged afterwards is guaranteed to win.
+         Each Color is a DynamicResource into the brand palette, so a light/dark flip repaints these too.
+
+         This belongs in Arkimentum.AppMonitor.UI's Brand.*.xaml eventually; see the admin console's report. -->
+
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="{DynamicResource BrandPrimaryFillColor}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPointerOver" Color="{DynamicResource BrandPrimaryColor}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPressed" Color="{DynamicResource BrandPrimaryFillColor}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="{DynamicResource BrandPrimaryFillColor}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeCheckedPointerOver" Color="{DynamicResource BrandPrimaryColor}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeCheckedPressed" Color="{DynamicResource BrandPrimaryFillColor}" />
+    <SolidColorBrush x:Key="CheckBoxCheckGlyphForeground" Color="{DynamicResource BrandBackgroundColor}" />
+    <SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundPressed" Color="{DynamicResource BrandBackgroundColor}" />
+
+    <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFill" Color="{DynamicResource BrandPrimaryFillColor}" />
+    <SolidColorBrush x:Key="RadioButtonCheckOuterEllipseCheckedFillPointerOver" Color="{DynamicResource BrandPrimaryColor}" />
+    <SolidColorBrush x:Key="RadioButtonCheckOuterEllipseCheckedFillPressed" Color="{DynamicResource BrandPrimaryFillColor}" />
+    <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStroke" Color="{DynamicResource BrandPrimaryFillColor}" />
+    <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStrokePointerOver" Color="{DynamicResource BrandPrimaryColor}" />
+    <SolidColorBrush x:Key="RadioButtonCheckOuterEllipseCheckedStrokePressed" Color="{DynamicResource BrandPrimaryFillColor}" />
+    <SolidColorBrush x:Key="RadioButtonCheckGlyphFill" Color="{DynamicResource BrandBackgroundColor}" />
+
+</ResourceDictionary>

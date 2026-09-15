@@ -39,7 +39,7 @@ flowchart LR
     ENTRA["Entra ID<br/>multi-tenant app registration"]
 
     SVC -- "Authorization: Device {id}:{key}" --> FUNC
-    CONSOLE -- "Bearer (AppMonitor.Admin)" --> FUNC
+    CONSOLE -- "Bearer (AppMonitor.Access scope + AppMonitor.Admin role)" --> FUNC
     OPS -- "Bearer (AppMonitor.GlobalAdmin)" --> FUNC
     CONSOLE -. "sign in" .-> ENTRA
     FUNC -. "validate JWT (OIDC metadata)" .-> ENTRA
@@ -115,7 +115,7 @@ hammer the endpoint cheaply.
 
 ### Administrator authentication
 
-The API is a **multi-tenant** Entra ID app registration exposing one delegated scope, `AppMonitor.Admin`, and two
+The API is a **multi-tenant** Entra ID app registration exposing one delegated scope, `AppMonitor.Access`, and two
 app roles:
 
 | App role | Who | What |
@@ -127,7 +127,7 @@ Tokens are validated with `Microsoft.IdentityModel` against the v2.0 OIDC metada
 pinned to the API application id, and a custom issuer validator that requires the issuer to be
 `https://login.microsoftonline.com/{tid}/v2.0` for the token's **own** `tid` claim - a multi-tenant API cannot
 pin a single issuer, and accepting any issuer would be the classic multi-tenant hole. The `scp` claim must
-contain `AppMonitor.Admin`.
+contain `AppMonitor.Access`.
 
 `AppMonitor.GlobalAdmin` is honoured **only** when `tid` equals the configured `OperatorTenantId`. A customer
 administrator who assigns themselves a role called `AppMonitor.GlobalAdmin` in their own tenant gains nothing;
@@ -483,8 +483,8 @@ blob for the report archive), and Monitoring Metrics Publisher on Application In
 - `signInAudience`: `AzureADMultipleOrgs` (multi-tenant)
 - Identifier URI: `api://{apiAppId}`
 - `api.requestedAccessTokenVersion`: `2`
-- Delegated scope `AppMonitor.Admin` (admin- and user-consentable)
-- App roles `AppMonitor.Admin` and `AppMonitor.GlobalAdmin`, both `User` and `Application` member types
+- Delegated scope `AppMonitor.Access` (admin- and user-consentable)
+- App roles `AppMonitor.Admin` and `AppMonitor.GlobalAdmin`, `User` member type only (the API requires the delegated scope, so app-only tokens are never accepted). The scope and the roles must not share a value: Graph rejects an application whose `oauth2PermissionScopes` and `appRoles` contain the same `value` (`DuplicateValue`), which is why the scope is `AppMonitor.Access` rather than `AppMonitor.Admin`.
 - Pre-authorised applications for the scope: the admin console client, and the Microsoft Azure CLI
   (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) so `New-Organization.ps1` and `Rotate-EnrollmentKey.ps1` can call the
   admin API with `az account get-access-token`. Pre-authorisation only removes the consent prompt - the caller
@@ -494,7 +494,7 @@ blob for the report archive), and Monitoring Metrics Publisher on Application In
 
 - `signInAudience`: `AzureADMultipleOrgs`
 - Public client (`isFallbackPublicClient: true`), redirect URI `http://localhost` (MSAL interactive)
-- Requires the `AppMonitor.Admin` scope on the API
+- Requires the `AppMonitor.Access` scope on the API
 
 The scope and app-role GUIDs are constants at the top of `Deploy-Cloud.ps1`. **Never change them** once a customer
 tenant has consented - a new id means a new consent.

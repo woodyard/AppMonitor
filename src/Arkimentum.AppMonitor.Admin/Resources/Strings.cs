@@ -162,6 +162,18 @@ public static class Strings
 
     public static string PolicyValueTooltip(string value) => $"Policy value: {value}\n{PolicyLockedTooltip}";
 
+    // The organization configuration from the cloud sits above the local preferences: a value it sets is read-only here.
+    public static string OrganizationLockedTooltip(string? organization) => string.IsNullOrWhiteSpace(organization)
+        ? "Managed by your organization — cannot be changed here."
+        : $"Managed by the organization {organization} — cannot be changed here.";
+
+    public static string OrganizationValueTooltip(string value, string? organization) =>
+        $"Organization value: {value}\n{OrganizationLockedTooltip(organization)}";
+
+    public static string OrganizationAppHint(string? organization) => string.IsNullOrWhiteSpace(organization)
+        ? "This application comes from the organization configuration and cannot be changed here. Edit it under Organization → Applications."
+        : $"This application comes from the configuration of {organization} and cannot be changed here. Edit it under Organization → Applications.";
+
     public static string DefaultHint(string value) => string.IsNullOrEmpty(value) ? "Default: (empty)" : $"Default: {value}";
 
     public static string InheritedHint(string value, string from) =>

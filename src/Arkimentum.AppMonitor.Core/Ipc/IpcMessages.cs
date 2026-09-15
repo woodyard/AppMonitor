@@ -136,6 +136,14 @@ public sealed class SettingsSummary
     public DateTimeOffset LoadedAtUtc { get; set; }
     /// <summary>Last prerequisite (winget) check result; null until the first check ran.</summary>
     public Prerequisites.PrerequisiteStatus? Prerequisites { get; set; }
+
+    // ---- organization (cloud) connection, so the tray can tell the user who manages the device ----
+    /// <summary>True when CloudServerUrl is configured, whether or not the device has enrolled yet.</summary>
+    public bool CloudConfigured { get; set; }
+    /// <summary>True once the device holds a device credential for the organization.</summary>
+    public bool CloudEnrolled { get; set; }
+    /// <summary>Display name of the organization, as the server reported it at enrollment or with the last configuration.</summary>
+    public string? OrganizationName { get; set; }
 }
 
 /// <summary>Ask the tray agent to show a notification (toast).</summary>

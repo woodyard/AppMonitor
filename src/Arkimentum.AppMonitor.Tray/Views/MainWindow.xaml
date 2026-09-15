@@ -36,13 +36,21 @@
                             ProductName="{x:Static res:Strings.WordmarkProduct}"
                             Subtitle="{Binding StatusLine}" />
 
-            <Button Grid.Column="1"
-                    VerticalAlignment="Bottom"
-                    MinWidth="112"
-                    Padding="16,8"
-                    Style="{DynamicResource AccentButtonStyle}"
-                    Content="{x:Static res:Strings.CheckNow}"
-                    Command="{Binding CheckNowCommand}" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                <!-- Queues every installable update at once; only shown while there is something to install. -->
+                <Button MinWidth="112"
+                        Margin="0,0,8,0"
+                        Padding="16,8"
+                        Style="{DynamicResource AccentButtonStyle}"
+                        Content="{Binding UpdateAllText}"
+                        Command="{Binding UpdateAllCommand}"
+                        Visibility="{Binding ShowUpdateAll, Converter={StaticResource BoolToVisibility}}" />
+                <Button MinWidth="112"
+                        Padding="16,8"
+                        Style="{DynamicResource AccentButtonStyle}"
+                        Content="{x:Static res:Strings.CheckNow}"
+                        Command="{Binding CheckNowCommand}" />
+            </StackPanel>
         </Grid>
 
         <!-- ==== disconnected banner -->
@@ -224,25 +232,29 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.DetailsScanInterval}" />
-                <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding ScanIntervalText}" />
+                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource DetailLabel}" Text="{x:Static res:Strings.DetailsOrganization}" />
+                <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource DetailValue}" Text="{Binding OrganizationText}" TextWrapping="Wrap" />
 
-                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsNotificationInterval}" />
-                <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding NotificationIntervalText}" />
+                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsScanInterval}" />
+                <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ScanIntervalText}" />
 
-                <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsSources}" />
-                <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding SourcesText}" />
+                <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsNotificationInterval}" />
+                <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding NotificationIntervalText}" />
 
-                <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsNotifications}" />
-                <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding NotificationsText}" />
+                <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsSources}" />
+                <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding SourcesText}" />
 
-                <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsMonitoredApps}" />
-                <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding MonitoredAppsText}" />
+                <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsNotifications}" />
+                <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding NotificationsText}" />
 
-                <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsLogFolder}" />
-                <StackPanel Grid.Row="5" Grid.Column="1" Margin="0,8,0,0">
+                <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsMonitoredApps}" />
+                <TextBlock Grid.Row="5" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding MonitoredAppsText}" />
+
+                <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsLogFolder}" />
+                <StackPanel Grid.Row="6" Grid.Column="1" Margin="0,8,0,0">
                     <TextBlock Style="{StaticResource DetailValue}" Text="{Binding LogDirectory}" TextWrapping="Wrap" />
                     <Button Style="{StaticResource LinkButton}"
                             Margin="0,4,0,0"
@@ -250,11 +262,11 @@
                             Command="{Binding OpenLogFolderCommand}" />
                 </StackPanel>
 
-                <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsServiceVersion}" />
-                <TextBlock Grid.Row="6" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ServiceVersion}" />
+                <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsServiceVersion}" />
+                <TextBlock Grid.Row="7" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding ServiceVersion}" />
 
-                <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsAgentVersion}" />
-                <TextBlock Grid.Row="7" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding AgentVersion}" />
+                <TextBlock Grid.Row="8" Grid.Column="0" Style="{StaticResource DetailLabel}" Margin="0,8,16,0" Text="{x:Static res:Strings.DetailsAgentVersion}" />
+                <TextBlock Grid.Row="8" Grid.Column="1" Style="{StaticResource DetailValue}" Margin="0,8,0,0" Text="{Binding AgentVersion}" />
             </Grid>
         </Expander>
     </Grid>

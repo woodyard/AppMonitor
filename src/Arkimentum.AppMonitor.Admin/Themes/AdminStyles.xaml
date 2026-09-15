@@ -451,7 +451,7 @@
                           Content="{x:Static res:Strings.Override}"
                           FontSize="12"
                           IsChecked="{Binding IsOverridden, Mode=TwoWay}"
-                          IsEnabled="{Binding IsLockedByPolicy, Converter={StaticResource InverseBool}}"
+                          IsEnabled="{Binding IsLocked, Converter={StaticResource InverseBool}}"
                           ToolTip="{x:Static res:Strings.TipOverride}"
                           AutomationProperties.Name="{Binding Title}" />
 
@@ -472,9 +472,9 @@
                                Visibility="{Binding IsEditorEnabled, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
                     <TextBlock Style="{StaticResource CaptionText}"
                                Foreground="{DynamicResource BrandGoldTextBrush}"
-                               Text="{x:Static res:Strings.PolicyLockedTooltip}"
-                               ToolTip="{Binding PolicyTooltip}"
-                               Visibility="{Binding IsLockedByPolicy, Converter={StaticResource BoolToVisibility}}" />
+                               Text="{Binding LockText}"
+                               ToolTip="{Binding LockTooltip}"
+                               Visibility="{Binding IsLocked, Converter={StaticResource BoolToVisibility}}" />
                     <TextBlock Style="{StaticResource ErrorText}"
                                Margin="0,4,0,0"
                                Text="{Binding Error}"

@@ -1,7 +1,10 @@
+using System.IO;
 using Arkimentum.AppMonitor.Admin.Infrastructure;
+using Arkimentum.AppMonitor.Cloud;
 using Arkimentum.AppMonitor.Configuration;
 using Arkimentum.AppMonitor.Models;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Win32;
 
 namespace Arkimentum.AppMonitor.Admin.Services;
@@ -42,6 +45,47 @@ public sealed class SettingsStoreService
         Store.Write(document, layer, mode);
         _log.LogInformation("Wrote {Global} global value(s) and {Apps} application(s) to {Key} ({Mode}).",
             document.Global.Count, document.Apps.Count, Store.FullPathFor(layer), mode);
+    }
+
+    private CloudConfigCache? _cloudCache;
+    private string? _cloudCacheDirectory;
+
+    /// <summary>
+    /// The organization configuration the service cached on this machine (<c>cloud-config.json</c> in the state
+    /// directory), reduced to what actually overrides the preference layer here - the same rule the agent applies.
+    /// An empty document when the machine is stand-alone, the organization layer is switched off, or the cache is
+    /// unreadable; the console then simply locks nothing.
+    /// </summary>
+    public (SettingsDocument Document, string? OrganizationName) ReadOrganizationLayer()
+    {
+        try
+        {
+            var directory = StateDirectory();
+            if (_cloudCache is null || !string.Equals(_cloudCacheDirectory, directory, StringComparison.OrdinalIgnoreCase))
+            {
+                _cloudCache = new CloudConfigCache(NullLogger<CloudConfigCache>.Instance, directory);
+                _cloudCacheDirectory = directory;
+            }
+            var cached = _cloudCache.Load();
+            var effective = OrganizationLayer.Effective(Store.Read(SettingsLayer.Policy), Store.Read(SettingsLayer.Preference), cached?.Settings);
+            return effective is null ? (new SettingsDocument(), null) : (effective, cached?.OrganizationName);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "The organization configuration layer could not be read; local values are shown as editable.");
+            return (new SettingsDocument(), null);
+        }
+    }
+
+    /// <summary>Where the service keeps its state; mirrors the service's own choice under --user-config.</summary>
+    private string StateDirectory()
+    {
+        string directory;
+        try { directory = new RegistryConfigurationReader(NullLogger<RegistryConfigurationReader>.Instance, null, _hive).Read().StateDirectory; }
+        catch { directory = AgentSettings.DefaultStateDirectory; }
+        if (UserConfig && directory == AgentSettings.DefaultStateDirectory)
+            directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Arkimentum", "AppMonitor");
+        return directory;
     }
 
     /// <summary>The merged, effective configuration (policy &gt; preference &gt; catalog &gt; default).</summary>

@@ -53,7 +53,7 @@ $base = $ServerUrl.TrimEnd('/')
 $tokenJson = & az account get-access-token --resource ("api://" + $ApiClientId) -o json 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw ("Could not get an access token for api://{0}:`n{1}`n" -f $ApiClientId, ($tokenJson -join "`n")) +
-          'Sign in with "az login --tenant <operator tenant>". The Azure CLI must be pre-authorised for the AppMonitor.Admin scope (Deploy-Cloud.ps1 does that).'
+          'Sign in with "az login --tenant <operator tenant>". The Azure CLI must be pre-authorised for the AppMonitor.Access scope (Deploy-Cloud.ps1 does that).'
 }
 $accessToken = ($tokenJson | ConvertFrom-Json).accessToken
 

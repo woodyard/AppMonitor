@@ -407,15 +407,32 @@ device is installed and connected in a single deployment:
 
 ```text
 Install command:
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-ArkimentumAppMonitor.ps1 -NoSampleApps -SkipPrerequisites -CloudServerUrl "https://appmonitor-contoso.azurewebsites.net" -CloudOrganizationId "3f2504e0-4f89-11d3-9a0c-0305e82c3301" -CloudEnrollmentKey "ek_live_replace_me" -LogFile "%ProgramData%\Arkimentum\AppMonitor\Logs\intune-install.log"
+%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-ArkimentumAppMonitor.ps1 -NoSampleApps -SkipPrerequisites -CloudServerUrl "https://appmonitor-contoso.azurewebsites.net" -CloudOrganizationId "3f2504e0-4f89-11d3-9a0c-0305e82c3301" -CloudEnrollmentKey "ek_live_replace_me" -LogFile "%ProgramData%\Arkimentum\AppMonitor\Logs\intune-install.log"
 
 Uninstall command:
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-ArkimentumAppMonitor.ps1 -RemoveConfiguration -RemoveData
+%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-ArkimentumAppMonitor.ps1 -RemoveConfiguration -RemoveData
 
 Install behaviour: System
-Detection rule:    File — %ProgramFiles%\Arkimentum\AppMonitor\Service\Arkimentum.AppMonitor.Service.exe
-                   (or Registry — HKLM\SOFTWARE\Arkimentum\AppMonitor, value CloudOrganizationId exists)
+Detection rule:    Custom script — deploy\Detect-ArkimentumAppMonitor.ps1 (file version >= the package version;
+                   "at least", never "equals": the agent updates itself, so devices run newer builds than the package)
+                   or File — %ProgramFiles%\Arkimentum\AppMonitor\Service\Arkimentum.AppMonitor.Service.exe,
+                   version greater than or equal to the package version, "32-bit app" = No
 ```
+
+The Intune Management Extension is a 32-bit process, so a bare `powershell.exe` starts the 32-bit host. Both
+scripts re-launch themselves in the 64-bit host when that happens (since 1.1.2; 1.1.1 and earlier refused to
+run and the install failed with "Run this script in 64-bit PowerShell"), and the `sysnative` path above starts
+the right host in the first place.
+
+Deploying the **1.1.1 package** through Intune needs two additions to the command above: the `sysnative` path,
+and `-SourceRoot .` at the end. Windows PowerShell 5.1 leaves `$PSScriptRoot` empty while it evaluates the
+parameter defaults of a script started with `-File`, so the 1.1.1 installer failed with "Cannot bind argument to
+parameter 'LiteralPath' because it is an empty string"; `-SourceRoot .` names the package folder explicitly
+(Intune runs the command inside it). From 1.1.2 the installer resolves its folder itself.
+
+The transcript written by `-LogFile` starts with the full command line, enrollment key included, and
+`%ProgramData%` logs are readable by every user of the device. Either leave `-LogFile` off once the rollout is
+proven, or provision the three cloud values through the ADMX policy instead of the command line.
 
 Use `-SkipPrerequisites` in an Intune install: the ESP has enough to do, and the service runs the
 prerequisite check itself shortly after it starts. Add `-NoAutoUpdate` if Intune should remain the only

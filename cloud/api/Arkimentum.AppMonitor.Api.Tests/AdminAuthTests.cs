@@ -249,7 +249,7 @@ public sealed class AdminAuthTests : IDisposable
             .Build());
 
         Assert.Equal("https://login.microsoftonline.com/organizations", options.Authority);
-        Assert.Equal("api://aaaaaaaa-0000-0000-0000-000000000001/AppMonitor.Admin", options.ScopeUri);
+        Assert.Equal("api://aaaaaaaa-0000-0000-0000-000000000001/AppMonitor.Access", options.ScopeUri);
         Assert.Equal("https://appmon-prod-api.azurewebsites.net", options.PublicServerUrl);
         Assert.Equal(1800, options.PollIntervalSeconds);
         Assert.Contains("api://aaaaaaaa-0000-0000-0000-000000000001", options.ValidAudiences);

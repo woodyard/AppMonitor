@@ -42,6 +42,8 @@ public sealed partial class ConfigurationEditor : ObservableObject
 
     private SettingsDocument _saved = new();
     private SettingsDocument _policy = new();
+    private SettingsDocument _organization = new();
+    private string? _organizationName;
     private string _savedJson = string.Empty;
     private bool _showAdvanced;
     private bool _isDirty;
@@ -110,6 +112,8 @@ public sealed partial class ConfigurationEditor : ObservableObject
     {
         _saved = _store.ReadSaved();
         _policy = _store.ReadPolicy();
+        _organization = _store.ReadOrganization();
+        _organizationName = _store.OrganizationName;
         _savedJson = Baseline(_saved);
         Build(_saved);
         Recompute();
@@ -124,6 +128,8 @@ public sealed partial class ConfigurationEditor : ObservableObject
     public void LoadPending(SettingsDocument document)
     {
         _policy = _store.ReadPolicy();
+        _organization = _store.ReadOrganization();
+        _organizationName = _store.OrganizationName;
         Build(document);
         Recompute();
         Reloaded?.Invoke();
@@ -139,7 +145,9 @@ public sealed partial class ConfigurationEditor : ObservableObject
                 .Select(def => new SettingRowViewModel(def,
                     values.Global.TryGetValue(def.Name, out var p) ? p : null,
                     _policy.Global.TryGetValue(def.Name, out var q) ? q : null,
-                    _store.OverriddenBadge))
+                    _store.OverriddenBadge,
+                    _organization.Global.TryGetValue(def.Name, out var o) ? o : null,
+                    _organizationName))
                 .ToList();
             foreach (var row in GlobalRows)
             {
@@ -151,11 +159,12 @@ public sealed partial class ConfigurationEditor : ObservableObject
 
             foreach (var app in Apps) app.Changed -= OnAppChanged;
             Apps.Clear();
-            var ids = values.Apps.Keys.Concat(_policy.Apps.Keys).Distinct(StringComparer.OrdinalIgnoreCase)
+            var ids = values.Apps.Keys.Concat(_policy.Apps.Keys).Concat(_organization.Apps.Keys).Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(id => id, StringComparer.CurrentCultureIgnoreCase);
             foreach (var id in ids) Apps.Add(CreateApp(id,
                 values.Apps.TryGetValue(id, out var pref) ? pref : new SortedDictionary<string, SettingValue>(StringComparer.OrdinalIgnoreCase),
-                _policy.Apps.TryGetValue(id, out var pol) ? pol : null));
+                _policy.Apps.TryGetValue(id, out var pol) ? pol : null,
+                _organization.Apps.TryGetValue(id, out var org) ? org : null));
 
             OnPropertyChanged(nameof(GlobalRows), nameof(GlobalGroups));
         }
@@ -205,7 +214,7 @@ public sealed partial class ConfigurationEditor : ObservableObject
         }
         foreach (var app in Apps)
         {
-            if (app.IsPolicyOnly) continue;
+            if (!app.IsEditable) continue;   // policy-only and organization-only apps are never written locally
             document.Apps[app.AppId] = app.ToValues();
         }
         return document;
@@ -307,9 +316,10 @@ public sealed partial class ConfigurationEditor : ObservableObject
     }
 
     private AppEditorViewModel CreateApp(string appId, IReadOnlyDictionary<string, SettingValue> preference,
-        IReadOnlyDictionary<string, SettingValue>? policy)
+        IReadOnlyDictionary<string, SettingValue>? policy, IReadOnlyDictionary<string, SettingValue>? organization = null)
     {
-        var app = new AppEditorViewModel(appId, preference, policy, _catalog.Find(appId), GlobalValue, _tester, _store.OverriddenBadge)
+        var app = new AppEditorViewModel(appId, preference, policy, _catalog.Find(appId), GlobalValue, _tester, _store.OverriddenBadge,
+            organization, _organizationName)
         {
             ShowAdvanced = _showAdvanced,
         };

@@ -256,6 +256,7 @@ Write-Step 'Copying deployment scripts and documentation'
 $payloadFiles = @(
     (Join-Path $DeployDir 'Install-ArkimentumAppMonitor.ps1'),
     (Join-Path $DeployDir 'Uninstall-ArkimentumAppMonitor.ps1'),
+    (Join-Path $DeployDir 'Detect-ArkimentumAppMonitor.ps1'),
     (Join-Path $DeployDir 'Set-SampleConfiguration.ps1'),
     (Join-Path $DeployDir 'Sample-Configuration.reg'),
     (Join-Path $RepoRoot  'README.md')

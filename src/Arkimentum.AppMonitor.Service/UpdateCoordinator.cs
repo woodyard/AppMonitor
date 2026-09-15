@@ -799,6 +799,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     private StateMessage BuildState(PipeClientConnection conn)
     {
         var s = _settings.Current;
+        var cloud = CloudStatusSource?.Invoke();
         return new StateMessage
         {
             // Installed updates are kept internally (post-install grace, retention) but are no longer shown to users or admins.
@@ -820,6 +821,9 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 MonitoredApps = s.Apps.Where(a => a.Enabled).Select(a => a.DisplayName).OrderBy(x => x).ToList(),
                 LoadedAtUtc = s.LoadedAtUtc,
                 Prerequisites = _prerequisiteStatus?.Clone(),
+                CloudConfigured = !string.IsNullOrWhiteSpace(s.CloudServerUrl),
+                CloudEnrolled = cloud?.DeviceId is not null,
+                OrganizationName = string.IsNullOrWhiteSpace(cloud?.OrganizationName) ? null : cloud!.OrganizationName,
             },
         };
     }
@@ -864,6 +868,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     public void EnsureTrayAgents() => _trayLauncher.EnsureRunning(_settings.Current);
 
     public Prerequisites.PrerequisiteStatus? PrerequisiteStatus => _prerequisiteStatus;
+
+    /// <summary>
+    /// Supplies the current cloud status for the state snapshot sent to tray agents. Set by the cloud sync service,
+    /// which depends on this coordinator (so the coordinator cannot depend on it). Null when the service is not
+    /// running with cloud support, e.g. in the CLI modes.
+    /// </summary>
+    public Func<Arkimentum.AppMonitor.Cloud.CloudStatus?>? CloudStatusSource { get; set; }
 
     /// <summary>LastAction values <see cref="Prerequisites.PrerequisiteManager.EnsureAsync"/> sets when it did NOT repair anything.</summary>
     private static readonly HashSet<string> SkippedRepairActions = new(StringComparer.Ordinal)

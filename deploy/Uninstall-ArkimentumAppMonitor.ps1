@@ -56,6 +56,26 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# Re-launch in the native 64-bit host when started as a 32-bit process (Intune Management Extension, RMM agents):
+# there HKLM\SOFTWARE is redirected to WOW6432Node and the configuration keys below would be missed.
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    $nativeHost = Join-Path $env:WINDIR 'SysNative\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $nativeHost) {
+        $forwarded = @()
+        foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+            if ($entry.Value -is [System.Management.Automation.SwitchParameter]) {
+                if ($entry.Value.IsPresent) { $forwarded += ('-{0}' -f $entry.Key) }
+            }
+            else {
+                $forwarded += ('-{0}' -f $entry.Key)
+                $forwarded += [string]$entry.Value
+            }
+        }
+        & $nativeHost -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @forwarded
+        exit $LASTEXITCODE
+    }
+}
+
 $ServiceName     = 'ArkimentumAppMonitor'
 $EventLogSource  = 'Arkimentum AppMonitor'
 $RunValueName    = 'ArkimentumAppMonitorTray'

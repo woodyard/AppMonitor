@@ -21,7 +21,7 @@ public sealed class ServerOptions
     public IReadOnlyList<string> ValidAudiences { get; init; } = [];
 
     /// <summary>Scope the admin console must present.</summary>
-    public string RequiredScope { get; init; } = "AppMonitor.Admin";
+    public string RequiredScope { get; init; } = "AppMonitor.Access";
 
     /// <summary>Arkimentum's own tenant. AppMonitor.GlobalAdmin is only honoured for tokens issued by this tenant.</summary>
     public string OperatorTenantId { get; init; } = string.Empty;

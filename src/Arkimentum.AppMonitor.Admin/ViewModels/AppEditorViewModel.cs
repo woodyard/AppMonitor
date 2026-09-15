@@ -31,6 +31,7 @@ public sealed class AppEditorViewModel : ObservableObject
     private readonly RelayCommand _testCommand;
 
     private AppPolicy? _catalogEntry;
+    private readonly string? _organizationName;
     private bool _showAdvanced;
     private bool _isTesting;
     private string? _detectionInstalled;
@@ -45,10 +46,14 @@ public sealed class AppEditorViewModel : ObservableObject
         AppPolicy? catalogEntry,
         Func<string, string> globalValue,
         IDetectionTester? tester,
-        string? overriddenBadge = null)
+        string? overriddenBadge = null,
+        IReadOnlyDictionary<string, SettingValue>? organization = null,
+        string? organizationName = null)
     {
         AppId = appId;
         IsPolicyOnly = policy is not null && preference.Count == 0;
+        IsOrganizationOnly = policy is null && organization is not null && preference.Count == 0;
+        _organizationName = organizationName;
         _catalogEntry = catalogEntry;
         _globalValue = globalValue;
         _tester = tester;
@@ -57,7 +62,9 @@ public sealed class AppEditorViewModel : ObservableObject
             .Select(def => new SettingRowViewModel(def,
                 preference.TryGetValue(def.Name, out var p) ? p : null,
                 policy is not null && policy.TryGetValue(def.Name, out var q) ? q : null,
-                overriddenBadge))
+                overriddenBadge,
+                organization is not null && organization.TryGetValue(def.Name, out var o) ? o : null,
+                organizationName))
             .ToList();
 
         Groups = Rows
@@ -80,7 +87,18 @@ public sealed class AppEditorViewModel : ObservableObject
     /// <summary>The application exists only in the policy layer: shown, badged and read-only.</summary>
     public bool IsPolicyOnly { get; }
 
-    public bool IsEditable => !IsPolicyOnly;
+    /// <summary>The application exists only in the organization configuration: shown, badged and read-only.</summary>
+    public bool IsOrganizationOnly { get; }
+
+    public bool IsEditable => !IsPolicyOnly && !IsOrganizationOnly;
+
+    public bool IsReadOnly => !IsEditable;
+
+    /// <summary>Badge text for a read-only application: which layer owns it.</summary>
+    public string ReadOnlyBadge => IsPolicyOnly ? Strings.BadgePolicy : Strings.BadgeOrganization;
+
+    /// <summary>Why the application cannot be edited here, and where to edit it instead.</summary>
+    public string ReadOnlyHint => IsPolicyOnly ? Strings.PolicyAppHint : Strings.OrganizationAppHint(_organizationName);
 
     public IReadOnlyList<SettingRowViewModel> Rows { get; }
 
@@ -241,7 +259,7 @@ public sealed class AppEditorViewModel : ObservableObject
     private string EffectiveText(string name, string? fallback)
     {
         var row = Row(name);
-        if (row.IsLockedByPolicy) return row.Format(row.Policy);
+        if (row.IsLocked) return row.Format(row.LockValue);
         if (row.IsOverridden && !string.IsNullOrWhiteSpace(row.TextValue)) return row.TextValue.Trim();
         return fallback ?? string.Empty;
     }
@@ -359,7 +377,7 @@ public sealed class AppEditorViewModel : ObservableObject
         bool Flag(string name, bool fallback)
         {
             var row = Row(name);
-            return row.IsLockedByPolicy ? row.Policy!.AsBool() ?? fallback : row.IsOverridden ? row.BoolValue : fallback;
+            return row.IsLocked ? row.LockValue!.AsBool() ?? fallback : row.IsOverridden ? row.BoolValue : fallback;
         }
 
         var policy = new AppPolicy

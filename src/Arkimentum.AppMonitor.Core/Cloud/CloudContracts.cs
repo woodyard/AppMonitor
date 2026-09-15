@@ -207,7 +207,7 @@ public sealed class AuthConfigResponse
     public required string ClientId { get; set; }
     /// <summary>Authority, e.g. https://login.microsoftonline.com/organizations (multi-tenant) or a tenant id.</summary>
     public required string Authority { get; set; }
-    /// <summary>Scope to request, e.g. api://{api-app-id}/AppMonitor.Admin.</summary>
+    /// <summary>Scope to request, e.g. api://{api-app-id}/AppMonitor.Access.</summary>
     public required string Scope { get; set; }
     public string? ApiVersion { get; set; } = CloudRoutes.ApiVersion;
 }

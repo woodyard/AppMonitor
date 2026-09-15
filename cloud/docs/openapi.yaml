@@ -16,7 +16,7 @@ info:
 
     Two authentication schemes:
       * `deviceAuth` - `Authorization: Device {deviceId}:{deviceKey}`, issued by `POST /device/enroll`.
-      * `bearerAuth` - an Entra ID access token for `api://{api-app-id}/AppMonitor.Admin` carrying the
+      * `bearerAuth` - an Entra ID access token for `api://{api-app-id}/AppMonitor.Access` carrying the
         `AppMonitor.Admin` or `AppMonitor.GlobalAdmin` app role.
   contact:
     name: Arkimentum
@@ -651,7 +651,7 @@ components:
           authorizationUrl: https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize
           tokenUrl: https://login.microsoftonline.com/organizations/oauth2/v2.0/token
           scopes:
-            api://{api-app-id}/AppMonitor.Admin: Manage AppMonitor
+            api://{api-app-id}/AppMonitor.Access: Manage AppMonitor
 
   parameters:
     OrganizationId:
@@ -1002,7 +1002,7 @@ components:
           example: https://login.microsoftonline.com/organizations
         scope:
           type: string
-          example: api://00000000-0000-0000-0000-000000000000/AppMonitor.Admin
+          example: api://00000000-0000-0000-0000-000000000000/AppMonitor.Access
         apiVersion: { type: string, nullable: true, example: v1 }
 
     AdminMeResponse:

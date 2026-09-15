@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Net;
+using System.Windows.Threading;
 using Arkimentum.AppMonitor.Admin.Infrastructure;
 using Arkimentum.AppMonitor.Cloud;
 using Arkimentum.AppMonitor.Configuration;
@@ -26,21 +27,33 @@ public sealed class CloudSession : IDisposable
     private readonly ICloudClientFactory _clients;
     private readonly IAuthenticator _authenticator;
     private readonly AdminPreferences _preferences;
+    private readonly Dispatcher _dispatcher;
 
     private CloudClient? _client;
     private string? _clientUrl;
     private AuthToken? _token;
 
-    public CloudSession(ILogger<CloudSession> log, ICloudClientFactory clients, IAuthenticator authenticator, AdminPreferences preferences)
+    public CloudSession(ILogger<CloudSession> log, ICloudClientFactory clients, IAuthenticator authenticator, AdminPreferences preferences, Dispatcher dispatcher)
     {
         _log = log;
         _clients = clients;
         _authenticator = authenticator;
         _preferences = preferences;
+        _dispatcher = dispatcher;
     }
 
-    /// <summary>Raised whenever the connection state, the account or the selected organization changes.</summary>
+    /// <summary>
+    /// Raised whenever the connection state, the account or the selected organization changes. Always raised on
+    /// the UI thread: the view models answer it by refilling bound collections, which WPF only allows there, and
+    /// the async methods below complete on thread-pool threads.
+    /// </summary>
     public event Action? Changed;
+
+    private void RaiseChanged()
+    {
+        if (_dispatcher.CheckAccess()) Changed?.Invoke();
+        else _dispatcher.BeginInvoke(() => Changed?.Invoke());
+    }
 
     public string? ServerUrl { get; private set; }
 
@@ -80,7 +93,7 @@ public sealed class CloudSession : IDisposable
             _log.LogInformation("Cloud GET {Url} -> 200; clientId={ClientId} authority={Authority} scope={Scope}",
                 Absolute(CloudRoutes.AuthConfig), AuthConfig.ClientId, AuthConfig.Authority, AuthConfig.Scope);
             _preferences.Remember(normalised);
-            Changed?.Invoke();
+            RaiseChanged();
             return AuthConfig;
         }
         catch (CloudException ex)
@@ -104,7 +117,7 @@ public sealed class CloudSession : IDisposable
             Me.UserPrincipalName, Me.TenantId, Me.Organizations.Count);
 
         if (Me.Organizations.Count == 1) SelectOrganization(Me.Organizations[0]);
-        else Changed?.Invoke();
+        else RaiseChanged();
         return Me;
     }
 
@@ -114,7 +127,7 @@ public sealed class CloudSession : IDisposable
         Organization = organization;
         if (organization is not null)
             _log.LogInformation("Organization selected: {Name} ({Id}).", organization.Name, organization.OrganizationId);
-        Changed?.Invoke();
+        RaiseChanged();
     }
 
     public async Task SignOutAsync(CancellationToken ct)
@@ -122,7 +135,7 @@ public sealed class CloudSession : IDisposable
         _log.LogInformation("Signing out of {Url}.", ServerUrl);
         await _authenticator.SignOutAsync(AuthConfig, ct).ConfigureAwait(false);
         ResetSession();
-        Changed?.Invoke();
+        RaiseChanged();
     }
 
     private void ResetSession()

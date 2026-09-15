@@ -101,7 +101,7 @@ public sealed class EntraAdminTokenValidator : IAdminTokenValidator
         var principal = FromClaims(result.ClaimsIdentity);
         if (principal is null) return AdminTokenResult.Fail("The access token has no tenant claim.");
 
-        // Both the scope and at least one app role must be present: the console asks for AppMonitor.Admin,
+        // Both the scope and at least one app role must be present: the console asks for the AppMonitor.Access scope,
         // and the directory administrator decides who is allowed to use it.
         if (!HasRequiredScope(result.ClaimsIdentity))
             return AdminTokenResult.Fail($"The access token is missing the '{_options.RequiredScope}' scope.");

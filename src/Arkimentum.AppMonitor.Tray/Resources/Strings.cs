@@ -36,6 +36,9 @@ public static class Strings
     public const string MainWindowTitle = ProductName;
     public const string MainHeaderSubtitle = "Keeps your applications up to date";
     public const string CheckNow = "Check now";
+    public const string UpdateAll = "Update all";
+    /// <summary>"Update all (3)" - the count is the number of updates the button will queue.</summary>
+    public static string UpdateAllCount(int count) => count > 0 ? $"{UpdateAll} ({count})" : UpdateAll;
     public const string Checking = "Checking…";
     public const string StatusDisconnected = "Service not connected";
     public const string DisconnectedBanner = "Waiting for the Arkimentum AppMonitor service…";
@@ -81,6 +84,9 @@ public static class Strings
 
     // ---------------------------------------------------------------- details expander
     public const string DetailsHeader = "Details";
+    public const string DetailsOrganization = "Organization";
+    public const string OrganizationStandalone = "None — this device is managed locally";
+    public const string OrganizationEnrolling = "Connecting to the organization…";
     public const string DetailsScanInterval = "Scan interval";
     public const string DetailsNotificationInterval = "Notification interval";
     public const string DetailsMonitoredApps = "Monitored applications";

@@ -49,6 +49,15 @@ public sealed class AgentStateStore : IHostedService
     /// <summary>Updates that are not finished yet — what the tray badge counts.</summary>
     public int ActiveUpdateCount => _updates.Count(u => u.State != UpdateState.Installed);
 
+    /// <summary>
+    /// Updates a user can start right now — the same rule as a card's Install button: not already queued, running or
+    /// finished, and not being driven by this agent at the moment. "Update all" sends one install request per entry.
+    /// </summary>
+    public IReadOnlyList<PendingUpdate> InstallableUpdates =>
+        _updates.Where(u => u.State is not (UpdateState.Scheduled or UpdateState.Installing or UpdateState.Installed) &&
+                            GetLocalStatus(u.Key) is null)
+                .ToList();
+
     /// <summary>True when something needs the user now: a mandatory update past its deadline or a forced close pending.</summary>
     public bool NeedsAttention
     {

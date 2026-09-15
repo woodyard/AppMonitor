@@ -127,6 +127,21 @@ public sealed class IpcClientService : IHostedService
 
     public Task<bool> InstallNowAsync(string updateKey) => SendAsync(new InstallNowMessage { UpdateKey = updateKey });
 
+    /// <summary>
+    /// Queues several updates at once ("Update all"): one install request per key, in order. The service marks each
+    /// as scheduled and runs the installs one after another - it serialises installs itself, so sending them back to
+    /// back is safe. Returns the number of requests the pipe accepted.
+    /// </summary>
+    public async Task<int> InstallAllAsync(IEnumerable<string> updateKeys)
+    {
+        var sent = 0;
+        foreach (var key in updateKeys)
+        {
+            if (await InstallNowAsync(key).ConfigureAwait(false)) sent++;
+        }
+        return sent;
+    }
+
     public Task<bool> DeferAsync(string updateKey, int minutes) =>
         SendAsync(new DeferMessage { UpdateKey = updateKey, Minutes = minutes });
 

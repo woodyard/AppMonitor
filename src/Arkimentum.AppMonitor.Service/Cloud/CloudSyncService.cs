@@ -84,6 +84,7 @@ public sealed class CloudSyncService : BackgroundService
         _statusFile = new CloudStatusFile(logger, options.StateDirectory);
         _status = _statusFile.Load() ?? new CloudStatus();
         _updater.CloudManifestResolver = GetCloudReleaseAsync;
+        _coordinator.CloudStatusSource = () => _status;
     }
 
     public string StatusFilePath => _statusFile.FilePath;
@@ -235,6 +236,8 @@ public sealed class CloudSyncService : BackgroundService
                 s.EnrolledUtc = _credential.EnrolledUtc;
                 s.LastError = null;
             });
+            // The tray shows the organization; tell connected agents straight away rather than at the next scan.
+            await _coordinator.BroadcastStateAsync(ct).ConfigureAwait(false);
             return true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -293,6 +296,7 @@ public sealed class CloudSyncService : BackgroundService
                     s.LastConfigUtc = DateTimeOffset.UtcNow;
                     s.LastError = null;
                 });
+                await _coordinator.BroadcastStateAsync(ct).ConfigureAwait(false);
                 if (config.PollIntervalSeconds > 0)
                 {
                     var server = TimeSpan.FromSeconds(config.PollIntervalSeconds);

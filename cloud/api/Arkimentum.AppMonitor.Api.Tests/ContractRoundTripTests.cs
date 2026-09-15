@@ -219,7 +219,7 @@ public sealed class ContractRoundTripTests
     {
         ClientId = "bbbbbbbb-0000-0000-0000-000000000002",
         Authority = "https://login.microsoftonline.com/organizations",
-        Scope = "api://aaaaaaaa-0000-0000-0000-000000000001/AppMonitor.Admin",
+        Scope = "api://aaaaaaaa-0000-0000-0000-000000000001/AppMonitor.Access",
         ApiVersion = "v1",
     });
 

@@ -184,6 +184,32 @@ $ProgressPreference = 'SilentlyContinue'
 # which is left at High; no cmdlet below is High-impact, so nothing prompts.
 $ConfirmPreference = 'High'
 
+# --------------------------------------------------------------------------------- 64-bit host
+
+# The Intune Management Extension, many RMM agents and some scheduled tasks start "powershell.exe" as a 32-bit
+# process. There HKLM\SOFTWARE is redirected to WOW6432Node, where the agent never looks, and the service binary
+# is x64. Re-launch this script in the native 64-bit host with the same parameters and hand its exit code back,
+# so a plain "powershell.exe -File Install-ArkimentumAppMonitor.ps1 ..." install command works from anywhere.
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    $nativeHost = Join-Path $env:WINDIR 'SysNative\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $nativeHost) {
+        # -File passes arguments literally (no quoting syntax is interpreted), so values go through as they are and
+        # switches are forwarded only when they were given.
+        $forwarded = @()
+        foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+            if ($entry.Value -is [System.Management.Automation.SwitchParameter]) {
+                if ($entry.Value.IsPresent) { $forwarded += ('-{0}' -f $entry.Key) }
+            }
+            else {
+                $forwarded += ('-{0}' -f $entry.Key)
+                $forwarded += [string]$entry.Value
+            }
+        }
+        & $nativeHost -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @forwarded
+        exit $LASTEXITCODE
+    }
+}
+
 # --------------------------------------------------------------------------------- transcript
 
 $script:TranscriptStarted = $false
@@ -366,6 +392,16 @@ if ($cloudGiven.Count -gt 0 -and $cloudGiven.Count -lt 3) {
                     "Group Policy or from the admin console).") -f ($cloudGiven -join ', '))
 }
 
+# -SourceRoot defaults to the script's own folder, but the default cannot be trusted: under Windows PowerShell 5.1,
+# when a script with comment-based help or a [CmdletBinding()] attribute is started with "powershell.exe -File",
+# $PSScriptRoot is still empty while the parameter defaults are evaluated (it is populated once the body runs).
+# That is exactly how Intune and most RMM agents start this script, so resolve the folder here instead.
+if ([string]::IsNullOrWhiteSpace($SourceRoot)) { $SourceRoot = $PSScriptRoot }
+if ([string]::IsNullOrWhiteSpace($SourceRoot) -and $PSCommandPath) { $SourceRoot = Split-Path -Parent $PSCommandPath }
+if ([string]::IsNullOrWhiteSpace($SourceRoot) -and $MyInvocation.MyCommand.Path) { $SourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
+    throw 'Could not determine where the release package is. Pass -SourceRoot <folder that contains Service\, Tray\ and Admin\>.'
+}
 $SourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $serviceSource = Join-Path $SourceRoot 'Service'
 $traySource    = Join-Path $SourceRoot 'Tray'

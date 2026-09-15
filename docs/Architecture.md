@@ -310,7 +310,7 @@ session id from the pipe handle, so one user cannot act on another user's update
 
 | `$type` | Class | Payload | Meaning |
 | --- | --- | --- | --- |
-| `state` | `StateMessage` | `Updates`, `LastScanUtc`, `NextScanUtc`, `ScanInProgress`, `ServiceVersion`, `Settings` (`SettingsSummary`) | Snapshot of the updates relevant to that session: machine-wide updates plus that user's own. |
+| `state` | `StateMessage` | `Updates`, `LastScanUtc`, `NextScanUtc`, `ScanInProgress`, `ServiceVersion`, `Settings` (`SettingsSummary`, including `CloudConfigured`, `CloudEnrolled` and `OrganizationName` so the tray can show which organization manages the device) | Snapshot of the updates relevant to that session: machine-wide updates plus that user's own. |
 | `notify` | `NotifyMessage` | `Kind` (`NotificationKind`), `Title`, `Body`, `Update` | Show a toast. |
 | `promptClose` | `PromptCloseMessage` | `Update` | Blocking processes are running; ask the user to close them (with the forced-close countdown when one applies). |
 | `runUserInstall` | `RunUserInstallMessage` | `Update`, `TimeoutMinutes` | Install this update in the user's session. |

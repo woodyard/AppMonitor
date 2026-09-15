@@ -23,6 +23,7 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     private readonly IpcClientService _ipc;
     private readonly IWindowService _windows;
     private readonly RelayCommand _checkNowCommand;
+    private readonly RelayCommand _updateAllCommand;
     private readonly DispatcherTimer _clock;
 
     public MainViewModel(ILogger<MainViewModel> log, AgentStateStore store, IpcClientService ipc, IWindowService windows)
@@ -33,6 +34,7 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         _windows = windows;
 
         _checkNowCommand = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.ScanInProgress);
+        _updateAllCommand = new RelayCommand(UpdateAll, () => _store.IsConnected && _store.InstallableUpdates.Count > 0);
         OpenLogFolderCommand = new RelayCommand(() => _windows.OpenLogFolder());
         AboutCommand = new RelayCommand(() => _windows.ShowAbout());
 
@@ -49,6 +51,13 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     public ObservableCollection<UpdateViewModel> Updates { get; } = [];
 
     public ICommand CheckNowCommand => _checkNowCommand;
+
+    /// <summary>Queues every update the user could start by hand; the button is only shown while there are some.</summary>
+    public ICommand UpdateAllCommand => _updateAllCommand;
+
+    public bool ShowUpdateAll => _store.IsConnected && _store.InstallableUpdates.Count > 0;
+
+    public string UpdateAllText => Strings.UpdateAllCount(_store.InstallableUpdates.Count);
 
     public ICommand OpenLogFolderCommand { get; }
 
@@ -135,6 +144,22 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
 
     public string ServiceVersion => string.IsNullOrWhiteSpace(_store.ServiceVersion) ? Strings.DetailsNone : _store.ServiceVersion!;
 
+    /// <summary>
+    /// Who manages this device: the organization's name once enrolled, "connecting" while the cloud connection is
+    /// configured but the device has not enrolled yet, otherwise stand-alone. A 1.1.1 service sends none of the
+    /// organization fields, which reads as stand-alone.
+    /// </summary>
+    public string OrganizationText
+    {
+        get
+        {
+            var settings = _store.Settings;
+            if (!string.IsNullOrWhiteSpace(settings.OrganizationName)) return settings.OrganizationName!;
+            if (settings.CloudConfigured) return Strings.OrganizationEnrolling;
+            return Strings.OrganizationStandalone;
+        }
+    }
+
     public string AgentVersion => AppInfo.Version;
 
     // ---------------------------------------------------------------- lifetime
@@ -150,6 +175,20 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     {
         _log.LogInformation("User requested a scan");
         _ = _ipc.RequestScanAsync();
+    }
+
+    /// <summary>
+    /// "Update all": one install request per installable update, the same as pressing Install now on each card.
+    /// The service queues them and runs the installs one after another; cards move to "scheduled" as the requests
+    /// land, so the button disappears by itself.
+    /// </summary>
+    private void UpdateAll()
+    {
+        var updates = _store.InstallableUpdates;
+        if (updates.Count == 0) return;
+        _log.LogInformation("User chose Update all: {Count} update(s): {Apps}", updates.Count,
+            string.Join(", ", updates.Select(u => u.DisplayName)));
+        _ = _ipc.InstallAllAsync(updates.Select(u => u.Key).ToList());
     }
 
     /// <summary>Rebuilds the card list in place: cards are matched by <see cref="PendingUpdate.Key"/> so the UI stays stable.</summary>
@@ -178,11 +217,13 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         for (var index = Updates.Count - 1; index >= incoming.Count; index--) Updates.RemoveAt(index);
 
         _checkNowCommand.RaiseCanExecuteChanged();
+        _updateAllCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(
+            nameof(ShowUpdateAll), nameof(UpdateAllText),
             nameof(IsConnected), nameof(ShowDisconnectedBanner), nameof(IsScanning), nameof(StatusLine),
             nameof(ShowEmptyState), nameof(EmptySubtitle), nameof(ScanIntervalText), nameof(NotificationIntervalText),
             nameof(MonitoredAppsText), nameof(SourcesText), nameof(NotificationsText), nameof(LogDirectory),
-            nameof(ServiceVersion));
+            nameof(ServiceVersion), nameof(OrganizationText));
     }
 
     // ---------------------------------------------------------------- IUpdateActions

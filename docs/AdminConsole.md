@@ -233,6 +233,7 @@ Three states per value:
 | **Default** | No override. The built-in default applies (it is shown next to the field). | The value does not exist in the preference key. |
 | **Override** | You ticked *Override* and set a value. | The value exists under `HKLM\SOFTWARE\Arkimentum\AppMonitor`. |
 | **Locked** | Managed by Group Policy / Intune: shown greyed out with "Managed by Group Policy / Intune" and the policy value. | The value exists under `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor`. |
+| **Locked (organization)** | The organization configuration from the cloud sets this value, so it overrides whatever is written locally: shown greyed out with "Managed by the organization …" and the organization's value. A policy value still wins over it. Applications that exist only in the organization configuration are listed read-only with an *Organization* badge. | The value is in the service's cached `cloud-config.json` (state directory) and `CloudConfigEnabled` is not turned off. Edit it under *Organization → Settings / Applications* instead. |
 
 - Clearing *Override* **deletes** the value from the preference key - it does not write the default.
   This keeps the key small and makes "what did the administrator actually decide?" answerable.

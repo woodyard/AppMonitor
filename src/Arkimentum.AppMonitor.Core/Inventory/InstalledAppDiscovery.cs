@@ -130,7 +130,7 @@ public sealed class InstalledAppDiscovery
         return list;
     }
 
-    private static DiscoveredApp Build(string name, string? version, string? publisher, WingetRow? row, InstallContext context, string origin,
+    internal static DiscoveredApp Build(string name, string? version, string? publisher, WingetRow? row, InstallContext context, string origin,
         IReadOnlyList<AppPolicy> configured, IReadOnlyList<AppPolicy> catalog)
     {
         var wingetId = row?.Id;
@@ -142,6 +142,16 @@ public sealed class InstalledAppDiscovery
 
         var catalogEntry = catalog.FirstOrDefault(c => MatchesPolicy(c, probe, wingetId));
         var configuredEntry = configured.FirstOrDefault(c => MatchesPolicy(c, probe, wingetId));
+
+        // No winget row, but a policy recognised the install by its detection rules: take the package id from there.
+        // This is the normal case for per-user installs (VS Code user setup, Firefox per user, ...) when the inventory
+        // runs as SYSTEM - the registry scan sees every user hive, but "winget list --scope user" only lists the
+        // packages of the account that runs it, so those rows never get a winget id of their own.
+        if (wingetId is null && !truncated)
+        {
+            wingetId = WingetIdFromPolicy(configuredEntry) ?? WingetIdFromPolicy(catalogEntry);
+            if (wingetId is not null) origin += "+catalog";
+        }
 
         return new DiscoveredApp
         {
@@ -165,6 +175,14 @@ public sealed class InstalledAppDiscovery
             WingetProvider.SplitIds(policy.WingetId).Any(id => id.Equals(wingetId, StringComparison.OrdinalIgnoreCase)))
             return true;
         return InstalledAppScanner.Match(policy, [app]).Count > 0;
+    }
+
+    /// <summary>The first winget id of a policy (ids may list ";"-separated alternatives), or null when it has none.</summary>
+    internal static string? WingetIdFromPolicy(AppPolicy? policy)
+    {
+        if (policy is null || string.IsNullOrWhiteSpace(policy.WingetId)) return null;
+        var first = WingetProvider.SplitIds(policy.WingetId).FirstOrDefault(id => !string.IsNullOrWhiteSpace(id));
+        return string.IsNullOrWhiteSpace(first) ? null : first.Trim();
     }
 
     /// <summary>True for winget's placeholder ids of packages that no source knows (MSIX\… and ARP\… entries).</summary>

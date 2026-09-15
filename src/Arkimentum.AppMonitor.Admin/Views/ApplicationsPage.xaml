@@ -114,8 +114,8 @@
                                                    Text="{Binding DisplayName}" />
                                         <Border Grid.Column="1"
                                                 Style="{StaticResource PolicyBadge}"
-                                                Visibility="{Binding IsPolicyOnly, Converter={StaticResource BoolToVisibility}}">
-                                            <TextBlock Style="{StaticResource PolicyBadgeText}" Text="{x:Static res:Strings.BadgePolicy}" />
+                                                Visibility="{Binding IsReadOnly, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock Style="{StaticResource PolicyBadgeText}" Text="{Binding ReadOnlyBadge}" />
                                         </Border>
                                     </Grid>
                                     <TextBlock Style="{StaticResource TertiaryCaptionText}"
@@ -164,16 +164,16 @@
                                     <Border Style="{StaticResource PolicyBadge}"
                                             Margin="12,4,0,0"
                                             VerticalAlignment="Center"
-                                            Visibility="{Binding IsPolicyOnly, Converter={StaticResource BoolToVisibility}}">
-                                        <TextBlock Style="{StaticResource PolicyBadgeText}" Text="{x:Static res:Strings.BadgePolicy}" />
+                                            Visibility="{Binding IsReadOnly, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Style="{StaticResource PolicyBadgeText}" Text="{Binding ReadOnlyBadge}" />
                                     </Border>
                                 </StackPanel>
                                 <TextBlock Style="{StaticResource TertiaryCaptionText}" Margin="0,4,0,0" Text="{Binding AppId}" />
                                 <TextBlock Style="{StaticResource CaptionText}"
                                            Margin="0,8,0,0"
                                            Foreground="{DynamicResource BrandGoldTextBrush}"
-                                           Text="{x:Static res:Strings.PolicyAppHint}"
-                                           Visibility="{Binding IsPolicyOnly, Converter={StaticResource BoolToVisibility}}" />
+                                           Text="{Binding ReadOnlyHint}"
+                                           Visibility="{Binding IsReadOnly, Converter={StaticResource BoolToVisibility}}" />
 
                                 <!-- ==== test detection -->
                                 <StackPanel Margin="0,16,0,0">

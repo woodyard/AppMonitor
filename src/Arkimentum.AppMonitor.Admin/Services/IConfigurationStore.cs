@@ -27,6 +27,16 @@ public interface IConfigurationStore
     /// </summary>
     SettingsDocument ReadPolicy();
 
+    /// <summary>
+    /// The organization configuration that applies on this machine, between the policy layer and the document
+    /// edited here (see <see cref="OrganizationLayer"/>). A value it carries is read-only in the editor, exactly
+    /// like a policy value; a policy value still wins over it. Empty for the organization document itself.
+    /// </summary>
+    SettingsDocument ReadOrganization();
+
+    /// <summary>Display name of that organization, for the "managed by" hints; null when none applies.</summary>
+    string? OrganizationName { get; }
+
     /// <summary>Persists the document so the next <c>ReadSaved</c> returns it.</summary>
     void Write(SettingsDocument document);
 }
@@ -43,6 +53,10 @@ public sealed class RegistryConfigurationStore : IConfigurationStore
     public SettingsDocument ReadSaved() => _store.Read(SettingsLayer.Preference);
 
     public SettingsDocument ReadPolicy() => _store.Read(SettingsLayer.Policy);
+
+    public SettingsDocument ReadOrganization() => _store.ReadOrganizationLayer().Document;
+
+    public string? OrganizationName => _store.ReadOrganizationLayer().OrganizationName;
 
     public void Write(SettingsDocument document) =>
         _store.Write(document, SettingsLayer.Preference, SettingsWriteMode.Replace);
@@ -74,6 +88,10 @@ public sealed class OrganizationConfigurationStore : IConfigurationStore
     public SettingsDocument ReadSaved() => _saved;
 
     public SettingsDocument ReadPolicy() => Empty;
+
+    public SettingsDocument ReadOrganization() => Empty;
+
+    public string? OrganizationName => null;
 
     public void Write(SettingsDocument document) => _saved = document;
 

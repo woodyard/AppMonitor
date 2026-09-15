@@ -19,7 +19,10 @@
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.1.0" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Http.AspNetCore" Version="2.1.1" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="2.51.0" />
-    <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="3.1.2" />
+    <!-- Must stay on the 2.x line: Microsoft.Azure.Functions.Worker.ApplicationInsights builds on the classic SDK
+         (ITelemetryInitializer etc.), and the OpenTelemetry-based 3.x SDK removes those types - the worker then dies at
+         startup with TypeLoadException in ConfigureFunctionsApplicationInsights(). -->
+    <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="2.23.0" />
 
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.12" />
     <!-- Local development only (SqlProvider=Sqlite in local.settings.json) so the API can be run with

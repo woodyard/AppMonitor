@@ -9,9 +9,10 @@ namespace Arkimentum.AppMonitor.Admin.ViewModels;
 /// <summary>
 /// One editable registry value, generated from a <see cref="SettingDefinition"/> — never hand-written per setting.
 ///
-/// The row carries three layers: the policy value (locks the editor), the preference value (what this console
-/// writes) and the inherited value shown as a hint when <see cref="IsOverridden"/> is off — the built-in default
-/// for global settings, the catalog entry or the global <c>Default*</c> value for per-app settings.
+/// The row carries four layers: the policy value and the organization value (either locks the editor; policy wins
+/// when both exist), the preference value (what this console writes) and the inherited value shown as a hint when
+/// <see cref="IsOverridden"/> is off — the built-in default for global settings, the catalog entry or the global
+/// <c>Default*</c> value for per-app settings.
 /// </summary>
 public sealed class SettingRowViewModel : ObservableObject
 {
@@ -25,16 +26,23 @@ public sealed class SettingRowViewModel : ObservableObject
     private string _inheritedLabel = Strings.InheritedFromBuiltIn;
     private SettingValue? _savedPreference;
     private readonly string _overriddenBadge;
+    private readonly string? _organizationName;
 
     /// <param name="overriddenBadge">
     /// What the badge says when the row is overridden: "Preference" for this machine's registry, "Organization" for
     /// the document that lives in the cloud. The row itself has no idea which document it belongs to.
     /// </param>
+    /// <param name="organization">
+    /// The value the organization configuration sets for this row on this machine, if any. It sits above the
+    /// preference layer, so it locks the editor the way a policy value does - unless a policy value exists too.
+    /// </param>
     public SettingRowViewModel(SettingDefinition definition, SettingValue? preference, SettingValue? policy,
-        string? overriddenBadge = null)
+        string? overriddenBadge = null, SettingValue? organization = null, string? organizationName = null)
     {
         Definition = definition;
         Policy = policy;
+        Organization = organization;
+        _organizationName = organizationName;
         _overriddenBadge = string.IsNullOrEmpty(overriddenBadge) ? Strings.BadgePreference : overriddenBadge;
         Load(preference);
     }
@@ -42,6 +50,8 @@ public sealed class SettingRowViewModel : ObservableObject
     public SettingDefinition Definition { get; }
 
     public SettingValue? Policy { get; }
+
+    public SettingValue? Organization { get; }
 
     public string Name => Definition.Name;
 
@@ -68,7 +78,7 @@ public sealed class SettingRowViewModel : ObservableObject
         get => _isOverridden;
         set
         {
-            if (IsLockedByPolicy || !SetProperty(ref _isOverridden, value)) return;
+            if (IsLocked || !SetProperty(ref _isOverridden, value)) return;
             // Clearing the override puts the inherited value back on screen, greyed out, as the hint it now is.
             if (!value) ShowInherited();
             OnPropertyChanged(nameof(IsEditorEnabled), nameof(SourceBadge));
@@ -101,13 +111,30 @@ public sealed class SettingRowViewModel : ObservableObject
 
     public bool IsLockedByPolicy => Policy is not null;
 
-    public bool IsEditorEnabled => IsOverridden && !IsLockedByPolicy;
+    /// <summary>Locked by the organization configuration; a policy value takes precedence and reports as policy.</summary>
+    public bool IsLockedByOrganization => Policy is null && Organization is not null;
+
+    /// <summary>Read-only here, whichever layer above the preferences owns the value.</summary>
+    public bool IsLocked => Policy is not null || Organization is not null;
+
+    /// <summary>The value the agent actually uses when the row is locked.</summary>
+    public SettingValue? LockValue => Policy ?? Organization;
+
+    public bool IsEditorEnabled => IsOverridden && !IsLocked;
 
     public string SourceBadge => IsLockedByPolicy ? Strings.BadgePolicy
+        : IsLockedByOrganization ? Strings.BadgeOrganization
         : IsOverridden ? _overriddenBadge
         : Strings.BadgeDefault;
 
-    public string? PolicyTooltip => IsLockedByPolicy ? Strings.PolicyValueTooltip(Format(Policy)) : null;
+    /// <summary>The one-line "managed by …" caption under a locked editor.</summary>
+    public string LockText => IsLockedByPolicy ? Strings.PolicyLockedTooltip
+        : IsLockedByOrganization ? Strings.OrganizationLockedTooltip(_organizationName)
+        : string.Empty;
+
+    public string? LockTooltip => IsLockedByPolicy ? Strings.PolicyValueTooltip(Format(Policy))
+        : IsLockedByOrganization ? Strings.OrganizationValueTooltip(Format(Organization), _organizationName)
+        : null;
 
     /// <summary>Set by the owner when another row (typically Source) changes which fields apply.</summary>
     public bool IsVisible
@@ -151,7 +178,7 @@ public sealed class SettingRowViewModel : ObservableObject
         _inheritedText = text ?? string.Empty;
         _inheritedLabel = label;
         OnPropertyChanged(nameof(HintText), nameof(PlaceholderText), nameof(InheritedBoolValue));
-        if (!IsOverridden && !IsLockedByPolicy) ShowInherited();
+        if (!IsOverridden && !IsLocked) ShowInherited();
     }
 
     /// <summary>Puts the inherited value into the (disabled) editor so it reads as the placeholder it is.</summary>
@@ -189,7 +216,7 @@ public sealed class SettingRowViewModel : ObservableObject
     {
         _savedPreference = preference;
         _isOverridden = preference is not null;
-        var source = Policy ?? preference;
+        var source = LockValue ?? preference;
         _boolValue = source?.AsBool() ?? AsBool(Definition.Default);
         _textValue = source is null ? DefaultText() : ToText(source);
         Revalidate();
@@ -198,10 +225,11 @@ public sealed class SettingRowViewModel : ObservableObject
 
     /// <summary>
     /// The value to store, or null when the row is not overridden.
-    /// A policy-locked row passes its saved preference value through untouched: the policy layer is read-only here,
-    /// and silently deleting the preference value underneath it would be a surprise.
+    /// A locked row passes its saved preference value through untouched: the policy and organization layers are
+    /// read-only here, and silently deleting the preference value underneath them would be a surprise - it comes
+    /// back into effect the moment the lock goes away.
     /// </summary>
-    public SettingValue? ToValue() => IsLockedByPolicy ? _savedPreference : IsOverridden ? Build() : null;
+    public SettingValue? ToValue() => IsLocked ? _savedPreference : IsOverridden ? Build() : null;
 
     private SettingValue Build() => Definition.Kind switch
     {
@@ -257,7 +285,7 @@ public sealed class SettingRowViewModel : ObservableObject
 
     private void Revalidate()
     {
-        Error = !IsOverridden || IsLockedByPolicy ? null : Validate();
+        Error = !IsOverridden || IsLocked ? null : Validate();
         OnPropertyChanged(nameof(HasError));
     }
 

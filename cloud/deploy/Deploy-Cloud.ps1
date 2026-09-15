@@ -10,7 +10,7 @@
       1. Checks the prerequisites (az CLI, .NET SDK) and selects the subscription.
       2. Creates the resource group.
       3. Creates or updates two Entra ID app registrations in the operator tenant:
-           - the API: multi-tenant, identifierUri api://{appId}, delegated scope AppMonitor.Admin,
+           - the API: multi-tenant, identifierUri api://{appId}, delegated scope AppMonitor.Access,
              app roles AppMonitor.Admin and AppMonitor.GlobalAdmin, access token version 2;
            - the admin console: multi-tenant public client, redirect http://localhost, pre-authorised for the scope.
          The Azure CLI is pre-authorised for the same scope so New-Organization.ps1 and Rotate-EnrollmentKey.ps1
@@ -99,10 +99,10 @@ $RoleAdminId      = 'b2e1d3f5-9c4e-4a8b-8d3f-6e7c8b9d0f12'
 $RoleGlobalAdminId= 'c3d2e4a6-0d5f-4b9c-9e4a-7f8d9c0e1a23'
 $AzureCliClientId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'   # well-known Microsoft Azure CLI client
 
-$RepoRoot   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # ...\cloud
-$ApiProject = Join-Path $RepoRoot 'api\Arkimentum.AppMonitor.Api\Arkimentum.AppMonitor.Api.csproj'
-$BicepFile  = Join-Path $RepoRoot 'infra\main.bicep'
-$OutputRoot = Join-Path $RepoRoot ('..\artifacts\cloud\' + $Environment)
+$CloudRoot  = Split-Path -Parent $PSScriptRoot                                              # <repo>\cloud
+$ApiProject = Join-Path $CloudRoot 'api\Arkimentum.AppMonitor.Api\Arkimentum.AppMonitor.Api.csproj'
+$BicepFile  = Join-Path $CloudRoot 'infra\main.bicep'
+$OutputRoot = Join-Path (Split-Path -Parent $CloudRoot) ('artifacts\cloud\' + $Environment)   # <repo>\artifacts\cloud\{env}
 
 # ---------------------------------------------------------------------------------------------------- helpers
 
@@ -119,7 +119,13 @@ function Invoke-Az {
     <# Runs az and returns the parsed JSON. Throws with the raw output when az fails. #>
     param([Parameter(Mandatory = $true)][string[]] $Arguments, [switch] $AllowFailure)
 
-    $raw = & az @Arguments 2>&1
+    # Windows PowerShell 5.1 turns anything a native command writes to stderr into a terminating error when the
+    # stream is merged and $ErrorActionPreference is Stop - and az writes its WARNING lines to stderr. Relax it
+    # for the call itself; the exit code decides success.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $raw = & az @Arguments 2>&1 }
+    finally { $ErrorActionPreference = $previousPreference }
     $exit = $LASTEXITCODE
     if ($exit -ne 0) {
         if ($AllowFailure) { return $null }
@@ -237,7 +243,9 @@ $apiClientId   = $apiApp.appId
 $adminClientId = $adminApp.appId
 
 if (-not $SkipAppRegistrations) {
-    Write-Detail 'Patching the API application (scope, app roles, token version, pre-authorised clients)'
+    # Two PATCH calls, not one: Graph validates api.preAuthorizedApplications against the scopes the application
+    # already has, so the scope must be stored before anything may be pre-authorised for it.
+    Write-Detail 'Patching the API application (scope, app roles, token version)'
     Invoke-Graph -Method PATCH -Uri ("https://graph.microsoft.com/v1.0/applications/{0}" -f $apiApp.id) -Body @{
         signInAudience = 'AzureADMultipleOrgs'
         identifierUris = @("api://$apiClientId")
@@ -246,7 +254,7 @@ if (-not $SkipAppRegistrations) {
             oauth2PermissionScopes = @(
                 @{
                     id    = $ScopeId
-                    value = 'AppMonitor.Admin'
+                    value = 'AppMonitor.Access'
                     type  = 'User'
                     isEnabled = $true
                     adminConsentDisplayName = 'Manage Arkimentum AppMonitor'
@@ -255,10 +263,6 @@ if (-not $SkipAppRegistrations) {
                     userConsentDescription  = 'Allows you to manage your organization''s AppMonitor configuration, devices and inventory.'
                 }
             )
-            preAuthorizedApplications = @(
-                @{ appId = $adminClientId;   delegatedPermissionIds = @($ScopeId) }
-                @{ appId = $AzureCliClientId; delegatedPermissionIds = @($ScopeId) }
-            )
         }
         appRoles = @(
             @{
@@ -266,7 +270,7 @@ if (-not $SkipAppRegistrations) {
                 value = 'AppMonitor.Admin'
                 displayName = 'AppMonitor Administrator'
                 description = 'May manage the AppMonitor organization mapped to the caller''s Entra tenant.'
-                allowedMemberTypes = @('User', 'Application')
+                allowedMemberTypes = @('User')
                 isEnabled = $true
             }
             @{
@@ -274,11 +278,21 @@ if (-not $SkipAppRegistrations) {
                 value = 'AppMonitor.GlobalAdmin'
                 displayName = 'AppMonitor Global Administrator'
                 description = 'Arkimentum staff: may manage every organization. Only honoured for tokens from the operator tenant.'
-                allowedMemberTypes = @('User', 'Application')
+                allowedMemberTypes = @('User')
                 isEnabled = $true
             }
         )
         web = @{ redirectUris = @() }
+    } | Out-Null
+
+    Write-Detail 'Pre-authorising the admin console and the Azure CLI for the AppMonitor.Access scope'
+    Invoke-Graph -Method PATCH -Uri ("https://graph.microsoft.com/v1.0/applications/{0}" -f $apiApp.id) -Body @{
+        api = @{
+            preAuthorizedApplications = @(
+                @{ appId = $adminClientId;   delegatedPermissionIds = @($ScopeId) }
+                @{ appId = $AzureCliClientId; delegatedPermissionIds = @($ScopeId) }
+            )
+        }
     } | Out-Null
 
     Write-Detail 'Patching the admin console application (public client)'
@@ -470,7 +484,23 @@ else {
     & dotnet publish $ApiProject -c Release -o $publishDir --nologo
     if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 
-    Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zipPath -Force
+    # Not Compress-Archive, and not ZipFile.CreateFromDirectory either: under Windows PowerShell 5.1 both write
+    # backslashes into the entry names (powershell.exe runs the .NET Framework in its pre-4.6.1 compatibility
+    # mode). The Linux Functions host then sees flat files instead of directories and rejects the package with
+    # "Cannot find required .azurefunctions directory at root level". Naming every entry explicitly with forward
+    # slashes behaves the same on every runtime.
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $publishRoot = (Resolve-Path $publishDir).Path.TrimEnd('\') + '\'
+    $archive = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in Get-ChildItem -Path $publishDir -Recurse -File -Force) {
+            $entryName = $file.FullName.Substring($publishRoot.Length).Replace('\', '/')
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive, $file.FullName, $entryName, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+        }
+    }
+    finally { $archive.Dispose() }
     Write-Detail ("Package: {0}" -f $zipPath)
 
     $deployed = Invoke-Az -Arguments @('functionapp', 'deployment', 'source', 'config-zip',
@@ -488,7 +518,7 @@ else {
 function Get-AdminToken([string] $ApiAppId) {
     $token = Invoke-Az -Arguments @('account', 'get-access-token', '--resource', ("api://" + $ApiAppId), '-o', 'json') -AllowFailure
     if ($null -eq $token) {
-        throw ("Could not get a token for api://{0}. The Azure CLI must be pre-authorised for the AppMonitor.Admin " +
+        throw ("Could not get a token for api://{0}. The Azure CLI must be pre-authorised for the AppMonitor.Access " +
                "scope (this script does that) and you may need to sign out and in again: az logout; az login --tenant {1}" -f $ApiAppId, $OperatorTenantId)
     }
     return $token.accessToken
@@ -545,7 +575,7 @@ Write-Host ("  Resource group       : {0}" -f $ResourceGroup)
 Write-Host ("  Server URL           : {0}" -f $serverUrl)
 Write-Host ("  API app id           : {0}" -f $apiClientId)
 Write-Host ("  Admin console app id : {0}" -f $adminClientId)
-Write-Host ("  Admin scope          : api://{0}/AppMonitor.Admin" -f $apiClientId)
+Write-Host ("  Admin scope          : api://{0}/AppMonitor.Access" -f $apiClientId)
 Write-Host ''
 Write-Host '  Admin consent URL for a customer tenant (send this to the customer''s Global Administrator):' -ForegroundColor Yellow
 Write-Host ("    https://login.microsoftonline.com/common/adminconsent?client_id={0}" -f $apiClientId)

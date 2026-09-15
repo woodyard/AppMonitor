@@ -36,6 +36,7 @@ public sealed class TrayIconService : IHostedService
 
     private TaskbarIcon? _icon;
     private MenuItem? _checkNowItem;
+    private MenuItem? _updateAllItem;
     private IconVariant? _currentVariant;
     private ImageSource? _normal;
     private ImageSource? _updates;
@@ -112,6 +113,14 @@ public sealed class TrayIconService : IHostedService
             Command = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.ScanInProgress),
         };
         menu.Items.Add(_checkNowItem);
+
+        // Same action as the window's "Update all" button, reachable without opening the window.
+        _updateAllItem = new MenuItem
+        {
+            Header = Strings.UpdateAll,
+            Command = new RelayCommand(UpdateAll, () => _store.IsConnected && _store.InstallableUpdates.Count > 0),
+        };
+        menu.Items.Add(_updateAllItem);
         menu.Items.Add(new Separator());
         menu.Items.Add(new MenuItem
         {
@@ -173,6 +182,19 @@ public sealed class TrayIconService : IHostedService
         if (!string.Equals(_icon.ToolTipText, tooltip, StringComparison.Ordinal)) _icon.ToolTipText = tooltip;
 
         (_checkNowItem?.Command as RelayCommand)?.RaiseCanExecuteChanged();
+        if (_updateAllItem is not null)
+        {
+            _updateAllItem.Header = Strings.UpdateAllCount(_store.IsConnected ? _store.InstallableUpdates.Count : 0);
+            (_updateAllItem.Command as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    private void UpdateAll()
+    {
+        var updates = _store.InstallableUpdates;
+        if (updates.Count == 0) return;
+        _log.LogInformation("User chose Update all from the tray menu: {Count} update(s)", updates.Count);
+        _ = _ipc.InstallAllAsync(updates.Select(u => u.Key).ToList());
     }
 
     /// <summary>Picks the frame of the .ico that matches the notification area at the current system DPI.</summary>

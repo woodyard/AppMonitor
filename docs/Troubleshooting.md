@@ -550,7 +550,8 @@ still runs queued commands, it just sends nothing about itself.
 ### A queued command never runs
 
 Commands are collected by the device, not pushed to it: expect up to one `CloudSyncIntervalMinutes`,
-and nothing at all while the device is offline. The console shows a command as pending until the device
+and nothing at all while the device is offline. **Check now** in the tray pulls the configuration and
+its commands immediately, so it is the quickest way to make a device act on what was just published. The console shows a command as pending until the device
 acknowledges it in its next report.
 
 ### The device is offline for a long time

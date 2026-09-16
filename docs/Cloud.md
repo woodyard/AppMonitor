@@ -180,7 +180,8 @@ Reporting is skipped entirely when `CloudReportingEnabled = 0`; configuration st
 
 Commands are **queued**, not pushed. An administrator clicks a button in the console, the server adds a
 command to the device's queue, and the device finds it in the `commands[]` array of its next
-configuration response - so the latency is at most one `CloudSyncIntervalMinutes`.
+configuration response - so the latency is at most one `CloudSyncIntervalMinutes`. A user who presses **Check now**
+in the tray shortens that: the agent pulls the configuration (commands included) before that scan.
 
 | Command | `DeviceCommandKind` | What the agent does |
 | --- | --- | --- |
@@ -542,8 +543,8 @@ The installer wrote `LogLevel = Information` on every device. An administrator p
 | Preference | `Information` |
 
 Effective: **Debug**, source `Cloud`. Nothing was deployed to any device; on their next sync (at most
-`CloudSyncIntervalMinutes`) they cache the new configuration and pick it up at the following policy
-tick. Unpublishing it puts every device back on `Information` just as quickly - the preference was never
+`CloudSyncIntervalMinutes`, or right away when someone presses **Check now** in the tray) they cache the new
+configuration and pick it up at the following policy tick. Unpublishing it puts every device back on `Information` just as quickly - the preference was never
 overwritten, only out-ranked.
 
 ### Worked example 3 - the connection values are never cloud-supplied

@@ -41,7 +41,7 @@
             </Grid.ColumnDefinitions>
 
             <Grid Grid.Column="0">
-                <TextBox Text="{Binding Filter, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                <TextBox Text="{Binding Filter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="{x:Static res:Strings.InventoryFilterPlaceholder}"
                          AutomationProperties.Name="{x:Static res:Strings.InventoryFilterPlaceholder}" />
                 <TextBlock Style="{StaticResource TertiaryCaptionText}"

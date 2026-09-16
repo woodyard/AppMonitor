@@ -197,6 +197,23 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         _scanRequested = false;
         try
         {
+            if (reason == "requested" && ConfigRefresh is { } refresh)
+            {
+                try
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(20));
+                    await refresh(timeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning("Refreshing the organization configuration before the requested scan timed out; scanning with the cached configuration");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Refreshing the organization configuration before the requested scan failed; scanning with the cached configuration");
+                }
+            }
             var settings = _settings.Reload();
             var now = DateTimeOffset.UtcNow;
             _logger.LogInformation("Scan started ({Reason}); {Count} configured app(s)", reason, settings.Apps.Count);
@@ -1016,6 +1033,14 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// running with cloud support, e.g. in the CLI modes.
     /// </summary>
     public Func<Arkimentum.AppMonitor.Cloud.CloudStatus?>? CloudStatusSource { get; set; }
+
+    /// <summary>
+    /// Pulls the organization configuration before a scan a user asked for, so "Check now" in the tray sees what an
+    /// administrator has just published instead of waiting for the next sync. Set by the cloud sync service for the
+    /// same reason as <see cref="CloudStatusSource"/>; null without cloud support. A failure is logged and the scan
+    /// proceeds with the cached configuration.
+    /// </summary>
+    public Func<CancellationToken, Task>? ConfigRefresh { get; set; }
 
     // =====================================================================================================================
     // Agent self-update on request (tray "Check for updates"/"Update now", admin console "Update agent")

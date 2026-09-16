@@ -129,7 +129,7 @@ public sealed partial class OrganizationInventoryViewModel : ObservableObject
         get => _filter;
         set
         {
-            if (SetProperty(ref _filter, value ?? string.Empty)) Reload();
+            if (SetProperty(ref _filter, value ?? string.Empty)) RefreshList();
         }
     }
 
@@ -138,7 +138,7 @@ public sealed partial class OrganizationInventoryViewModel : ObservableObject
         get => _onlyUnmonitored;
         set
         {
-            if (SetProperty(ref _onlyUnmonitored, value)) Reload();
+            if (SetProperty(ref _onlyUnmonitored, value)) RefreshList();
         }
     }
 
@@ -199,11 +199,13 @@ public sealed partial class OrganizationInventoryViewModel : ObservableObject
         Error = null;
         try
         {
-            var items = await _session.GetInventoryAsync(_filter, _onlyUnmonitored, CancellationToken.None).ConfigureAwait(true);
+            // The whole inventory is fetched once and narrowed here, so typing in the filter box works keystroke by
+            // keystroke without a round trip; the server-side search and unmonitored switches are deliberately unused.
+            var items = await _session.GetInventoryAsync(null, false, CancellationToken.None).ConfigureAwait(true);
             _all.Clear();
             _all.AddRange(items
-                .OrderByDescending(i => i.DeviceCount)
-                .ThenBy(i => i.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .OrderBy(i => i.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(i => i.WingetId, StringComparer.OrdinalIgnoreCase)
                 .Select(i => new InventoryRowViewModel(i, OnSelectionChanged)));
             _loadedOrganization = id;
             _log.LogInformation("Organization inventory: {Count} application(s) (filter '{Filter}', onlyUnmonitored={Only}).",
@@ -226,8 +228,21 @@ public sealed partial class OrganizationInventoryViewModel : ObservableObject
     private void RefreshList()
     {
         Items.Clear();
-        foreach (var item in _all) Items.Add(item);
+        foreach (var item in _all)
+        {
+            if (_onlyUnmonitored && item.IsMonitored) continue;
+            if (Matches(item.Item, _filter)) Items.Add(item);
+        }
         OnPropertyChanged(nameof(HasItems), nameof(SelectedCount), nameof(SelectedText));
+    }
+
+    /// <summary>The same fields the server searches, so a filter typed here finds what its search would find.</summary>
+    private static bool Matches(OrganizationInventoryItem item, string filter)
+    {
+        var needle = filter.Trim();
+        if (needle.Length == 0) return true;
+        return Has(item.DisplayName) || Has(item.WingetId) || Has(item.Publisher) || Has(item.CatalogAppId);
+        bool Has(string? value) => value is not null && value.Contains(needle, StringComparison.CurrentCultureIgnoreCase);
     }
 
     // ---------------------------------------------------------------- adding

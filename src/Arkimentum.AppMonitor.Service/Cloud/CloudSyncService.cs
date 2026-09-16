@@ -44,6 +44,8 @@ public sealed class CloudSyncService : BackgroundService
     private readonly CloudSyncOptions _options;
     private readonly CloudStatusFile _statusFile;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    /// <summary>Serializes the loop's poll with the on-demand pull a requested scan makes (<see cref="RefreshConfigAsync"/>).</summary>
+    private readonly SemaphoreSlim _pollLock = new(1, 1);
 
     private CloudClient? _client;
     private string? _clientUrl;
@@ -88,6 +90,7 @@ public sealed class CloudSyncService : BackgroundService
         // The updater depends on the coordinator, so the coordinator gets it from here - the one place that holds
         // both - and only then can a tray agent or the admin console ask the agent to update itself.
         _coordinator.SelfUpdater = _updater;
+        _coordinator.ConfigRefresh = RefreshConfigAsync;
     }
 
     public string StatusFilePath => _statusFile.FilePath;
@@ -124,6 +127,31 @@ public sealed class CloudSyncService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// The on-demand configuration pull behind the tray's "Check now": the coordinator calls it before a requested
+    /// scan so the scan sees what an administrator has just published. It is the loop's own poll, run early; it is
+    /// skipped while the loop is polling at that very moment, while the service is backing off after a failure, and
+    /// when the device is not enrolled.
+    /// </summary>
+    private async Task RefreshConfigAsync(CancellationToken ct)
+    {
+        var settings = _settings.Current;
+        if (_options.CliOnly || !settings.CloudConfigured || !settings.CloudConfigEnabled) return;
+        if (DateTimeOffset.UtcNow < _retryAfterUtc)
+        {
+            _logger.LogDebug("Not pulling the organization configuration on request: backing off until {Until}", _retryAfterUtc);
+            return;
+        }
+        if (!await _pollLock.WaitAsync(0, ct).ConfigureAwait(false)) return;
+        try
+        {
+            if (!await EnsureEnrolledAsync(settings, ct).ConfigureAwait(false)) return;
+            _logger.LogInformation("Pulling the organization configuration on request, ahead of the scan");
+            await PollConfigAsync(settings, ct).ConfigureAwait(false);
+        }
+        finally { _pollLock.Release(); }
+    }
+
     private void OnScanCompleted() => _reportRequested = true;
     private void OnInstallCompleted(PendingUpdate update, bool success) => _reportRequested = true;
 
@@ -135,12 +163,17 @@ public sealed class CloudSyncService : BackgroundService
         if (settings.CloudConfigured)
         {
             _loggedDisabled = false;
-            if (now >= _retryAfterUtc && await EnsureEnrolledAsync(settings, ct).ConfigureAwait(false))
+            await _pollLock.WaitAsync(ct).ConfigureAwait(false);
+            try
             {
-                if (settings.CloudConfigEnabled && now >= _nextConfigUtc) await PollConfigAsync(settings, ct).ConfigureAwait(false);
-                if (settings.CloudReportingEnabled && (_reportRequested || DateTimeOffset.UtcNow >= _nextReportUtc))
-                    await SendReportAsync(settings, "scheduled", ct).ConfigureAwait(false);
+                if (now >= _retryAfterUtc && await EnsureEnrolledAsync(settings, ct).ConfigureAwait(false))
+                {
+                    if (settings.CloudConfigEnabled && now >= _nextConfigUtc) await PollConfigAsync(settings, ct).ConfigureAwait(false);
+                    if (settings.CloudReportingEnabled && (_reportRequested || DateTimeOffset.UtcNow >= _nextReportUtc))
+                        await SendReportAsync(settings, "scheduled", ct).ConfigureAwait(false);
+                }
             }
+            finally { _pollLock.Release(); }
         }
         else if (!_loggedDisabled)
         {

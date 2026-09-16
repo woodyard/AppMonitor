@@ -19,6 +19,7 @@ namespace Arkimentum.AppMonitor.Ipc;
 [JsonDerivedType(typeof(UserInstallProgressMessage), "userInstallProgress")]
 [JsonDerivedType(typeof(UserInstallResultMessage), "userInstallResult")]
 [JsonDerivedType(typeof(UserScanResultMessage), "userScanResult")]
+[JsonDerivedType(typeof(UserPackageListResultMessage), "userPackageListResult")]
 [JsonDerivedType(typeof(ProcessesClosedMessage), "processesClosed")]
 [JsonDerivedType(typeof(RepairPrerequisitesMessage), "repairPrerequisites")]
 [JsonDerivedType(typeof(UpdateAgentMessage), "updateAgent")]
@@ -28,6 +29,7 @@ namespace Arkimentum.AppMonitor.Ipc;
 [JsonDerivedType(typeof(PromptCloseMessage), "promptClose")]
 [JsonDerivedType(typeof(RunUserInstallMessage), "runUserInstall")]
 [JsonDerivedType(typeof(RunUserScanMessage), "runUserScan")]
+[JsonDerivedType(typeof(RunUserPackageListMessage), "runUserPackageList")]
 [JsonDerivedType(typeof(CloseProcessesMessage), "closeProcesses")]
 [JsonDerivedType(typeof(AckMessage), "ack")]
 public abstract class IpcMessage
@@ -102,6 +104,33 @@ public sealed class UserScanResultMessage : IpcMessage
 {
     public string? ScanId { get; set; }
     public List<UpdateCheckResult> Results { get; set; } = [];
+}
+
+/// <summary>
+/// One row of the tray agent's <c>winget list --scope user</c> table. It mirrors <c>WingetRow</c> instead of reusing
+/// it, because the wire contract must stay stable even if the parser's record gains members, and because a JSON
+/// payload needs settable properties rather than a positional record.
+/// </summary>
+public sealed class UserPackageRow
+{
+    public string Name { get; set; } = string.Empty;
+    public string Id { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string Available { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
+    /// <summary>True when winget printed a shortened (…) cell; such rows cannot be used as package ids.</summary>
+    public bool IsTruncated { get; set; }
+}
+
+/// <summary>
+/// Tray agent reports the packages <c>winget list --scope user</c> knows about in its own session (added after 1.1.8).
+/// <see cref="Rows"/> is empty and <see cref="Error"/> set when winget is missing or failed.
+/// </summary>
+public sealed class UserPackageListResultMessage : IpcMessage
+{
+    public string ListId { get; set; } = string.Empty;
+    public List<UserPackageRow> Rows { get; set; } = [];
+    public string? Error { get; set; }
 }
 
 /// <summary>Tray agent reports the outcome of a <see cref="CloseProcessesMessage"/>.</summary>
@@ -248,6 +277,20 @@ public sealed class RunUserScanMessage : IpcMessage
     public string? ProxyUrl { get; set; }
     public string? WingetGlobalArgs { get; set; }
     public bool WingetIncludeUnknown { get; set; }
+}
+
+/// <summary>
+/// Ask the tray agent to list the packages winget knows about in its own session (added after 1.1.8). The service runs
+/// as LocalSystem, so its own <c>winget list --scope user</c> only ever sees SYSTEM's packages; the per-user installs
+/// of real users are visible only to the agent running in that user's session. An older tray does not know the
+/// discriminator, logs the line as a bad message and never answers, so the caller must rely on its timeout.
+/// </summary>
+public sealed class RunUserPackageListMessage : IpcMessage
+{
+    public string ListId { get; set; } = Guid.NewGuid().ToString("N");
+
+    /// <summary>Explicit winget.exe path from the configuration, when one is set; null lets the agent locate winget itself.</summary>
+    public string? WingetPath { get; set; }
 }
 
 /// <summary>

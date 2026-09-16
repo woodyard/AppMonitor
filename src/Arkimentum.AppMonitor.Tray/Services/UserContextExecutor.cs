@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using Arkimentum.AppMonitor.Install;
 using Arkimentum.AppMonitor.Inventory;
 using Arkimentum.AppMonitor.Ipc;
 using Arkimentum.AppMonitor.Models;
@@ -21,6 +22,8 @@ public sealed class UserContextExecutor : IHostedService
 {
     private static readonly TimeSpan CloseWait = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ProgressInterval = TimeSpan.FromSeconds(2);
+    /// <summary>winget can take a while on a cold source cache; the service gives up long before this.</summary>
+    private static readonly TimeSpan PackageListTimeout = TimeSpan.FromMinutes(3);
 
     private readonly ILogger<UserContextExecutor> _log;
     private readonly ILoggerFactory _loggerFactory;
@@ -68,6 +71,9 @@ public sealed class UserContextExecutor : IHostedService
                 break;
             case RunUserScanMessage scan:
                 EnqueueScan(scan);
+                break;
+            case RunUserPackageListMessage list:
+                _ = RunPackageListAsync(list);
                 break;
             case AckMessage ack:
                 _log.LogDebug("Ack for {InReplyTo}: ok={Ok} {Message}", ack.InReplyTo, ack.Ok, ack.Message);
@@ -263,6 +269,68 @@ public sealed class UserContextExecutor : IHostedService
         }
 
         await _ipc.SendAsync(new UserScanResultMessage { ScanId = message.ScanId, Results = results })
+            .ConfigureAwait(true);
+    }
+
+    // ---------------------------------------------------------------- user-scope package list
+
+    /// <summary>
+    /// Answers a <see cref="RunUserPackageListMessage"/> with the packages winget knows about in this session. The
+    /// service cannot produce this list itself: as LocalSystem its own "winget list --scope user" enumerates SYSTEM's
+    /// packages, so per-user installs (GitHub Desktop, Bicep CLI, ...) would show up in the inventory without a
+    /// package id. Failures are reported, never thrown: the service treats a missing answer as "no rows".
+    /// </summary>
+    private async Task RunPackageListAsync(RunUserPackageListMessage message)
+    {
+        var rows = new List<UserPackageRow>();
+        string? error = null;
+        try
+        {
+            var winget = WingetLocator.Find(_log, isSystem: false, string.IsNullOrWhiteSpace(message.WingetPath) ? null : message.WingetPath);
+            if (winget is null)
+            {
+                error = "winget.exe was not found in this user's session";
+                _log.LogWarning("User-scope package list {ListId}: {Error}", message.ListId, error);
+            }
+            else
+            {
+                var run = await Task.Run(() => ProcessRunner.RunAsync(_log, winget,
+                    "list --scope user --accept-source-agreements --disable-interactivity",
+                    PackageListTimeout, ct: _cts.Token), _cts.Token).ConfigureAwait(true);
+                if (run.ExitCode != 0 && !WingetOutputParser.IsNotInstalledOutput(run.CombinedOutput))
+                {
+                    error = $"winget list --scope user exited with {run.ExitCode}: {run.LastLines(2)}";
+                    _log.LogWarning("User-scope package list {ListId}: {Error}", message.ListId, error);
+                }
+                else
+                {
+                    rows = WingetOutputParser.ParseListOutput(run.StandardOutput)
+                        .Where(r => !string.IsNullOrWhiteSpace(r.Id))
+                        .Select(r => new UserPackageRow
+                        {
+                            Name = r.Name,
+                            Id = r.Id,
+                            Version = r.Version,
+                            Available = r.Available,
+                            Source = r.Source,
+                            IsTruncated = r.IsTruncated,
+                        })
+                        .ToList();
+                    _log.LogInformation("User-scope package list {ListId}: {Count} package(s)", message.ListId, rows.Count);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            _log.LogError(ex, "User-scope package list {ListId} failed", message.ListId);
+        }
+
+        await _ipc.SendAsync(new UserPackageListResultMessage { ListId = message.ListId, Rows = rows, Error = error })
             .ConfigureAwait(true);
     }
 

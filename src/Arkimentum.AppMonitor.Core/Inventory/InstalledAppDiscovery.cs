@@ -55,8 +55,16 @@ public sealed class InstalledAppDiscovery
     /// <param name="catalog">Catalog entries used to recognise known products.</param>
     /// <param name="wingetPath">Optional explicit winget.exe path.</param>
     /// <param name="includeWinget">Run winget list (slower, a few seconds) to obtain package ids and available versions.</param>
+    /// <param name="userPackagesBySid">
+    /// Optional: <c>winget list --scope user</c> as each logged-on user's own tray agent reported it, keyed by user
+    /// SID. The service runs as LocalSystem, whose user-scope listing only contains SYSTEM's own packages, so without
+    /// this a per-user install (GitHub Desktop, Bicep CLI, ...) has no winget row to match and keeps a null package id.
+    /// Null or empty keeps the pre-1.1.9 behaviour, which is what the admin console's Discover dialog and the command
+    /// line use: they already run as the interactive user.
+    /// </param>
     public async Task<IReadOnlyList<DiscoveredApp>> DiscoverAsync(IReadOnlyList<AppPolicy> configured, IReadOnlyList<AppPolicy> catalog,
-        string? wingetPath, bool includeWinget, IProgress<string>? progress, CancellationToken ct)
+        string? wingetPath, bool includeWinget, IProgress<string>? progress, CancellationToken ct,
+        IReadOnlyDictionary<string, IReadOnlyList<WingetRow>>? userPackagesBySid = null)
     {
         progress?.Report("Reading installed applications from the registry…");
         var inventory = _scanner.Scan(includeMachine: true, includeUsers: true);
@@ -90,17 +98,90 @@ public sealed class InstalledAppDiscovery
             }
         }
 
+        if (userPackagesBySid is { Count: > 0 })
+        {
+            _logger.LogInformation("Discovery: {Rows} user-scope package row(s) reported by the tray agents of {Users} user(s)",
+                userPackagesBySid.Sum(kv => kv.Value.Count), userPackagesBySid.Count);
+        }
+
         progress?.Report("Matching against the catalog and the current configuration…");
+        var list = Combine(inventory, wingetRows, userPackagesBySid, configured, catalog);
+        _logger.LogInformation("Discovery: {Total} application(s), {QuickAdd} can be added directly, {Configured} already monitored",
+            list.Count, list.Count(r => r.CanQuickAdd), list.Count(r => r.IsConfigured));
+        return list;
+    }
+
+    /// <summary>
+    /// Merges the registry inventory, the winget rows this process could produce itself and the per-user rows the tray
+    /// agents reported into the final list. Split out of <see cref="DiscoverAsync"/> so the matching rules can be
+    /// tested without a registry or a winget on the machine.
+    /// </summary>
+    internal static List<DiscoveredApp> Combine(
+        IReadOnlyList<InstalledApp> inventory,
+        IReadOnlyList<(WingetRow Row, InstallContext Context)> wingetRows,
+        IReadOnlyDictionary<string, IReadOnlyList<WingetRow>>? userPackagesBySid,
+        IReadOnlyList<AppPolicy> configured,
+        IReadOnlyList<AppPolicy> catalog)
+    {
         var result = new List<DiscoveredApp>();
         var usedRows = new HashSet<WingetRow>();
+
+        // Per-user rows, one list per SID. Consumption is tracked by position rather than by value, because WingetRow
+        // is a record: two users with the same package would otherwise mark each other's row as already used.
+        var trayRows = new Dictionary<string, List<WingetRow>>(StringComparer.OrdinalIgnoreCase);
+        var trayUsed = new Dictionary<string, bool[]>(StringComparer.OrdinalIgnoreCase);
+        if (userPackagesBySid is not null)
+        {
+            foreach (var (sid, rows) in userPackagesBySid)
+            {
+                if (string.IsNullOrWhiteSpace(sid)) continue;
+                var owned = rows.Where(r => !string.IsNullOrWhiteSpace(r.Id)).ToList();
+                trayRows[sid] = owned;
+                trayUsed[sid] = new bool[owned.Count];
+            }
+        }
 
         // Registry entries first (they carry publisher + reliable context); attach the winget row with the same name.
         foreach (var app in inventory.OrderBy(i => i.DisplayName, StringComparer.OrdinalIgnoreCase))
         {
-            var match = wingetRows.FirstOrDefault(w => !usedRows.Contains(w.Row) && NamesMatch(w.Row.Name, app.DisplayName)
-                                                       && (w.Context == app.Context || w.Context == InstallContext.Auto));
-            if (match.Row is not null) usedRows.Add(match.Row);
-            result.Add(Build(app.DisplayName, app.DisplayVersion, app.Publisher, match.Row, app.Context, match.Row is null ? "registry" : "winget+registry", configured, catalog));
+            WingetRow? row = null;
+
+            // A per-user install is matched against its own user's rows first: those come from that user's session and
+            // are the only ones that can be trusted to describe this entry.
+            if (app.Context == InstallContext.User && app.UserSid is not null && trayRows.TryGetValue(app.UserSid, out var mine))
+            {
+                var used = trayUsed[app.UserSid];
+                for (var i = 0; i < mine.Count; i++)
+                {
+                    if (used[i] || !NamesMatch(mine[i].Name, app.DisplayName)) continue;
+                    used[i] = true;
+                    row = mine[i];
+                    break;
+                }
+            }
+
+            if (row is null)
+            {
+                var match = wingetRows.FirstOrDefault(w => !usedRows.Contains(w.Row) && NamesMatch(w.Row.Name, app.DisplayName)
+                                                           && (w.Context == app.Context || w.Context == InstallContext.Auto));
+                if (match.Row is not null) { usedRows.Add(match.Row); row = match.Row; }
+            }
+
+            result.Add(Build(app.DisplayName, app.DisplayVersion, app.Publisher, row, app.Context, row is null ? "registry" : "winget+registry", configured, catalog));
+        }
+
+        // Tray rows nothing in the registry claimed: MSIX/Store packages and other per-user installs without an
+        // Uninstall key, exactly like the winget-only rows below but always in user context.
+        foreach (var (sid, rows) in trayRows)
+        {
+            var used = trayUsed[sid];
+            for (var i = 0; i < rows.Count; i++)
+            {
+                if (used[i]) continue;
+                var row = rows[i];
+                if (row.Source.Length == 0 && string.IsNullOrWhiteSpace(row.Available) && result.Any(r => NamesMatch(r.DisplayName, row.Name))) continue;
+                result.Add(Build(row.Name, row.Version, null, row, InstallContext.User, "winget", configured, catalog));
+            }
         }
 
         // winget-only rows (MSIX/Store packages and other installs without an Uninstall key).
@@ -114,7 +195,7 @@ public sealed class InstalledAppDiscovery
             result.Add(Build(row.Name, row.Version, null, row, context, "winget", configured, catalog));
         }
 
-        var list = result
+        return result
             .GroupBy(r => (Name: r.DisplayName.ToLowerInvariant(), r.Context, r.WingetId))
             .Select(g => g.First())
             // Most relevant first: known catalog products, then apps with a pending update, then anything else winget can
@@ -125,9 +206,6 @@ public sealed class InstalledAppDiscovery
             .ThenByDescending(r => r.CanQuickAdd)
             .ThenBy(r => r.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        _logger.LogInformation("Discovery: {Total} application(s), {QuickAdd} can be added directly, {Configured} already monitored",
-            list.Count, list.Count(r => r.CanQuickAdd), list.Count(r => r.IsConfigured));
-        return list;
     }
 
     internal static DiscoveredApp Build(string name, string? version, string? publisher, WingetRow? row, InstallContext context, string origin,

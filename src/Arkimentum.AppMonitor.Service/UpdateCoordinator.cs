@@ -32,6 +32,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _policyLock = new(1, 1);
     private readonly SemaphoreSlim _installLock = new(1, 1);
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<UserScanResultMessage> Tcs, string ConnectionId)> _pendingUserScans = new();
+    private readonly ConcurrentDictionary<string, (TaskCompletionSource<UserPackageListResultMessage> Tcs, string ConnectionId)> _pendingUserPackageLists = new();
+    /// <summary>
+    /// Last successful "winget list --scope user" per user SID, as reported by that user's tray agent. It is kept
+    /// across collections so an inventory taken while a tray is busy (or briefly disconnected) still carries the
+    /// per-user package ids instead of silently losing them.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, IReadOnlyList<UserPackageRow>> _userPackageLists = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<InstallResult> Tcs, string ConnectionId)> _pendingUserInstalls = new();
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<ProcessesClosedMessage> Tcs, string ConnectionId)> _pendingCloses = new();
     private readonly HashSet<string> _installsInFlight = new(StringComparer.OrdinalIgnoreCase);
@@ -366,6 +373,63 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         await BroadcastStateAsync(ct).ConfigureAwait(false);
         await EvaluatePoliciesAsync(ct).ConfigureAwait(false);
         RaiseScanCompleted();
+    }
+
+    /// <summary>
+    /// Asks every connected tray agent for the packages <c>winget list --scope user</c> knows about in its session and
+    /// returns them keyed by user SID. The service runs as LocalSystem, so it cannot produce this itself: its own
+    /// user-scope listing only contains SYSTEM's packages, which is why per-user installs such as GitHub Desktop used
+    /// to reach the inventory without a package id.
+    /// <para>
+    /// Answers that do not arrive within <paramref name="timeout"/> are simply absent: a tray that is busy, an agent
+    /// that is older than this message (it logs the unknown discriminator and never replies) or one that disconnects
+    /// midway must never hold up a report. The last successful listing of each user is cached and still returned in
+    /// that case, so a transient miss does not make the package ids disappear from the next inventory.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, IReadOnlyList<UserPackageRow>>> CollectUserPackageListsAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        var wingetPath = _settings.Current.WingetPath;
+        var sids = _pipe.Clients.Where(c => c.IsTray && c.UserSid is not null)
+            .Select(c => c.UserSid!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var tasks = sids.Select(async sid =>
+        {
+            var client = ClientFor(sid);
+            if (client is null) return;
+            var msg = new RunUserPackageListMessage { WingetPath = string.IsNullOrWhiteSpace(wingetPath) ? null : wingetPath };
+            var tcs = new TaskCompletionSource<UserPackageListResultMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingUserPackageLists[msg.ListId] = (tcs, client.ConnectionId);
+            try
+            {
+                if (!await _pipe.SendAsync(client, msg, ct).ConfigureAwait(false)) return;
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                deadline.CancelAfter(timeout);
+                var reply = await tcs.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
+                if (reply.Error is not null)
+                {
+                    _logger.LogInformation("{Client} could not list its user-scope packages: {Error}", client, reply.Error);
+                    return;
+                }
+                _userPackageLists[sid] = reply.Rows;
+                _logger.LogInformation("{Client} reported {Count} user-scope package(s)", client, reply.Rows.Count);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogInformation("{Client} did not report its user-scope packages within {Seconds:F0}s (a busy or older agent); continuing without it",
+                    client, timeout.TotalSeconds);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Collecting the user-scope package list from {Client} failed", client);
+            }
+            finally { _pendingUserPackageLists.TryRemove(msg.ListId, out _); }
+        }).ToList();
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+        return _userPackageLists.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -799,6 +863,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     {
         foreach (var kv in _pendingUserScans.Where(kv => kv.Value.ConnectionId == conn.ConnectionId))
             kv.Value.Tcs.TrySetResult(new UserScanResultMessage { ScanId = kv.Key, Results = [] });
+        foreach (var kv in _pendingUserPackageLists.Where(kv => kv.Value.ConnectionId == conn.ConnectionId))
+            kv.Value.Tcs.TrySetResult(new UserPackageListResultMessage { ListId = kv.Key, Error = "The tray agent disconnected" });
         foreach (var kv in _pendingUserInstalls.Where(kv => kv.Value.ConnectionId == conn.ConnectionId))
             kv.Value.Tcs.TrySetResult(InstallResult.Fail("The tray agent disconnected during the install"));
         foreach (var kv in _pendingCloses.Where(kv => kv.Value.ConnectionId == conn.ConnectionId))
@@ -885,6 +951,11 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             case UserScanResultMessage m:
                 if (m.ScanId is not null && _pendingUserScans.TryGetValue(m.ScanId, out var scan) && scan.ConnectionId == conn.ConnectionId) scan.Tcs.TrySetResult(m);
                 else _logger.LogWarning("Unexpected scan result {ScanId} from {Client}", m.ScanId, conn);
+                break;
+
+            case UserPackageListResultMessage m:
+                if (!string.IsNullOrEmpty(m.ListId) && _pendingUserPackageLists.TryGetValue(m.ListId, out var packages) && packages.ConnectionId == conn.ConnectionId) packages.Tcs.TrySetResult(m);
+                else _logger.LogDebug("Ignoring a late or unexpected user package list {ListId} from {Client}", m.ListId, conn);
                 break;
 
             case ProcessesClosedMessage m:

@@ -113,6 +113,21 @@ sequenceDiagram
 - A failure for one application never fails the scan: it is recorded as an error result for that
   application.
 
+### Per-user winget packages in the inventory
+
+The same session-0 boundary applies to the installed-app inventory the service reports to the cloud.
+The registry scan sees every loaded user hive and tags each entry with `Context=User` and the owning
+SID, but `winget list --scope user` run by LocalSystem only enumerates SYSTEM's own packages, so a
+per-user install (GitHub Desktop, Bicep CLI, ...) used to arrive without a package id. Before each
+inventory the service therefore sends `runUserPackageList` to every connected tray agent; each agent
+runs `winget list --scope user` in its own session and answers with `userPackageListResult`.
+Discovery matches a per-user registry entry against its own user's rows first and only then against
+the rows the service produced itself, and a row nothing in the registry claims becomes a
+`winget`-origin entry in user context. The service waits about 45 seconds, caches the last successful
+listing per SID and carries on without the missing ones - a busy tray, an agent older than the
+message (it never answers) or a user with no tray running simply falls back to the catalog for the
+package id, which is the behaviour that existed before.
+
 ### Service command line
 
 The service executable doubles as its own diagnostic tool (`asInvoker`, so it starts without a UAC
@@ -372,6 +387,7 @@ session id from the pipe handle, so one user cannot act on another user's update
 | `userInstallProgress` | `UserInstallProgressMessage` | `UpdateKey`, `Status` | Progress text from a user-context install. |
 | `userInstallResult` | `UserInstallResultMessage` | `UpdateKey`, `Result` (`InstallResult`) | Outcome of a user-context install. |
 | `userScanResult` | `UserScanResultMessage` | `ScanId`, `Results` (`UpdateCheckResult[]`) | Outcome of a user-context scan. |
+| `userPackageListResult` | `UserPackageListResultMessage` | `ListId`, `Rows` (`UserPackageRow[]`: `Name`, `Id`, `Version`, `Available`, `Source`, `IsTruncated`), `Error` (optional) | The packages `winget list --scope user` knows about in that user's session. `Rows` is empty and `Error` set when winget is missing or failed. |
 | `processesClosed` | `ProcessesClosedMessage` | `UpdateKey`, `StillRunning`, `Declined` | Result of a close request. |
 | `repairPrerequisites` | `RepairPrerequisitesMessage` | - | Admin console only: check and repair winget now. |
 | `updateAgent` | `UpdateAgentMessage` | `CheckOnly` | Check the release feed for a newer agent and, unless `CheckOnly`, install it. Tray and admin console. Refused when `AgentAutoUpdate` is off, while an application install runs, or while another agent update runs; the answer is the `ack` text. |
@@ -385,6 +401,7 @@ session id from the pipe handle, so one user cannot act on another user's update
 | `promptClose` | `PromptCloseMessage` | `Update` (including the optional `BlockingDetails`: pid, session, owner and elevation per running instance) | Blocking processes are running; ask the user to close them (with the forced-close countdown when one applies). |
 | `runUserInstall` | `RunUserInstallMessage` | `Update`, `TimeoutMinutes` | Install this update in the user's session. |
 | `runUserScan` | `RunUserScanMessage` | `ScanId`, `Apps`, `WingetEnabled`, `WebSourcesEnabled`, `ProxyUrl`, `WingetGlobalArgs`, `WingetIncludeUnknown` | Check these applications in user context. |
+| `runUserPackageList` | `RunUserPackageListMessage` | `ListId`, `WingetPath` (optional) | Run `winget list --scope user` in the user's session and answer with `userPackageListResult`. An older tray does not know the discriminator, logs the line as a bad message and never answers; the service falls back to its timeout. |
 | `closeProcesses` | `CloseProcessesMessage` | `UpdateKey`, `ProcessNames`, `Force`, `GracefulWaitSeconds` | Close (or with `Force`, kill) those processes in the user's session. |
 | `ack` | `AckMessage` | `InReplyTo`, `Ok`, `Message` | Acknowledgement / error text. |
 

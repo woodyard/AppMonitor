@@ -2,6 +2,7 @@ using Arkimentum.AppMonitor.Cloud;
 using Arkimentum.AppMonitor.Configuration;
 using Arkimentum.AppMonitor.Inventory;
 using Arkimentum.AppMonitor.Models;
+using Arkimentum.AppMonitor.Providers;
 using Arkimentum.AppMonitor.Service.Update;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -28,6 +29,8 @@ public sealed class CloudSyncOptions
 public sealed class CloudSyncService : BackgroundService
 {
     private static readonly TimeSpan LoopInterval = TimeSpan.FromSeconds(15);
+    /// <summary>How long a report waits for the tray agents to report their user-scope winget packages.</summary>
+    private static readonly TimeSpan UserPackageListTimeout = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan MinBackoff = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromHours(1);
     private static readonly TimeSpan MinServerPollInterval = TimeSpan.FromSeconds(60);
@@ -507,9 +510,37 @@ public sealed class CloudSyncService : BackgroundService
         if (_discovered.Count > 0 && _discoveryStamp == stamp) return _discovered;
         var discovery = new InstalledAppDiscovery(_loggerFactory.CreateLogger<InstalledAppDiscovery>(), _scanner);
         IReadOnlyList<AppPolicy> catalog = settings.UseCatalog ? _catalog.GetCatalog(settings.CatalogPath) : Array.Empty<AppPolicy>();
-        _discovered = await discovery.DiscoverAsync(settings.Apps, catalog, settings.WingetPath, settings.WingetEnabled, null, ct).ConfigureAwait(false);
+        var userPackages = settings.WingetEnabled ? await CollectUserPackagesAsync(ct).ConfigureAwait(false) : null;
+        _discovered = await discovery.DiscoverAsync(settings.Apps, catalog, settings.WingetPath, settings.WingetEnabled, null, ct, userPackages).ConfigureAwait(false);
         _discoveryStamp = stamp;
         return _discovered;
+    }
+
+    /// <summary>
+    /// Asks the tray agents for their user-scope winget packages so per-user installs reach the inventory with a
+    /// package id. The wait is deliberately short: the report must go out even when a tray is busy, is older than the
+    /// message or is not running at all, in which case that user's per-user installs simply have no winget row (the
+    /// catalog can still supply an id) exactly as before.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<WingetRow>>?> CollectUserPackagesAsync(CancellationToken ct)
+    {
+        try
+        {
+            var lists = await _coordinator.CollectUserPackageListsAsync(UserPackageListTimeout, ct).ConfigureAwait(false);
+            if (lists.Count == 0) return null;
+            return lists.ToDictionary(
+                kv => kv.Key,
+                kv => (IReadOnlyList<WingetRow>)kv.Value
+                    .Select(r => new WingetRow(r.Name ?? string.Empty, r.Id ?? string.Empty, r.Version ?? string.Empty, r.Available ?? string.Empty, r.Source ?? string.Empty))
+                    .ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Collecting the user-scope package lists failed; the inventory falls back to the catalog for per-user installs");
+            return null;
+        }
     }
 
     // =================================================================================================================

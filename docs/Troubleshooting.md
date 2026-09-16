@@ -222,6 +222,15 @@ Common causes:
 - For an application whose registry version is unreliable, point `DetectFilePath` at the installed
   executable and let the file version decide.
 
+### The organization Inventory says "no winget package" for a per-user install
+
+The winget ids of per-user installs come from the tray agent: the service runs as LocalSystem and its
+own `winget list --scope user` only sees SYSTEM's packages, so before each inventory it asks every
+connected tray agent for that user's listing (`runUserPackageList`, about 45 seconds). A user who has
+no tray agent running, or one from a version that predates the message, therefore shows "no winget
+package" for their per-user installs unless the catalog (or a configured application) already knows
+the product and supplies the id. The service log says how many user-scope rows each agent reported.
+
 ## A web source stopped working
 
 Vendor pages change. Check the two moving parts by hand:

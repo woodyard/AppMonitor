@@ -25,6 +25,14 @@ public interface IUpdateActions
     void Defer(PendingUpdate update, int minutes);
 
     void Dismiss(PendingUpdate update);
+
+    /// <summary>
+    /// Reopens the "Close apps to update" dialog for an update that is waiting for the user. The dialog is a local
+    /// window, so this never needs the service: the tray already holds the update with its blocking detail. Without
+    /// it a user who closed the dialog was stuck with a card saying "Waiting for you to close: pwsh" and no way back
+    /// until the service prompted again, which in Quiet mode is one notification interval away.
+    /// </summary>
+    void ShowCloseApps(PendingUpdate update);
 }
 
 /// <summary>One update card.</summary>
@@ -33,6 +41,7 @@ public sealed class UpdateViewModel : ObservableObject
     private readonly IUpdateActions _actions;
     private readonly RelayCommand _installCommand;
     private readonly RelayCommand _dismissCommand;
+    private readonly RelayCommand _closeAppsCommand;
 
     private PendingUpdate _update;
     private string? _localStatus;
@@ -47,6 +56,9 @@ public sealed class UpdateViewModel : ObservableObject
 
         _installCommand = new RelayCommand(() => _actions.Install(_update), () => IsInstallEnabled);
         _dismissCommand = new RelayCommand(() => _actions.Dismiss(_update), () => _isConnected);
+        // Purely local: the dialog is reopened from the update the tray already holds, so it works even when the
+        // service is momentarily unreachable.
+        _closeAppsCommand = new RelayCommand(() => _actions.ShowCloseApps(_update));
         DeferralOptions = [];
         RebuildDeferralOptions();
     }
@@ -58,6 +70,9 @@ public sealed class UpdateViewModel : ObservableObject
     public ICommand InstallCommand => _installCommand;
 
     public ICommand DismissCommand => _dismissCommand;
+
+    /// <summary>Reopens the close-apps dialog for this update; shown only while it is waiting for the user.</summary>
+    public ICommand CloseAppsCommand => _closeAppsCommand;
 
     public ObservableCollection<DeferOptionViewModel> DeferralOptions { get; }
 
@@ -85,7 +100,11 @@ public sealed class UpdateViewModel : ObservableObject
                 UpdateState.Deferred => Strings.StateDeferred(
                     _update.DeferredUntilUtc is { } until ? TimeFormat.Absolute(until) : Strings.DetailsNone),
                 UpdateState.Scheduled => Strings.StateScheduled,
-                UpdateState.WaitingForClose => Strings.StateWaitingForClose(BlockingProcessText),
+                // The card is the only place left explaining this once the dialog is gone, so it also says how to
+                // get the dialog back - the user may have dismissed it with the window's X.
+                UpdateState.WaitingForClose => ShowCloseApps
+                    ? Strings.StateWaitingForCloseWithHint(BlockingProcessText)
+                    : Strings.StateWaitingForClose(BlockingProcessText),
                 UpdateState.Installing => Strings.StateInstalling,
                 UpdateState.Installed => Strings.StateInstalled(
                     _update.InstalledAtUtc is { } at ? TimeFormat.Absolute(at) : string.Empty).TrimEnd(),
@@ -119,6 +138,12 @@ public sealed class UpdateViewModel : ObservableObject
 
     public bool IsInstallEnabled => ShowInstall && _isConnected && _update.State != UpdateState.Scheduled;
 
+    /// <summary>
+    /// "Close apps and update" on the card: only while the service is actually waiting for this update's blocking
+    /// applications to close, and not while this agent is driving the install itself.
+    /// </summary>
+    public bool ShowCloseApps => _update.State == UpdateState.WaitingForClose && _localStatus is null;
+
     public bool ShowDefer => DeferralOptions.Count > 0;
 
     public bool ShowNoMoreDeferrals =>
@@ -135,7 +160,7 @@ public sealed class UpdateViewModel : ObservableObject
         _update.State is UpdateState.Available or UpdateState.Deferred or UpdateState.WaitingForClose or UpdateState.Failed &&
         _localStatus is null;
 
-    public bool ShowAnyAction => ShowInstall || ShowDefer || ShowRemindMeLater || ShowNoMoreDeferrals;
+    public bool ShowAnyAction => ShowInstall || ShowCloseApps || ShowDefer || ShowRemindMeLater || ShowNoMoreDeferrals;
 
     // ---------------------------------------------------------------- refresh
 
@@ -167,7 +192,7 @@ public sealed class UpdateViewModel : ObservableObject
         OnPropertyChanged(
             nameof(DisplayName), nameof(VersionText), nameof(SourceBadge), nameof(ContextBadge),
             nameof(StatusText), nameof(Severity), nameof(DeadlineText), nameof(HasDeadline),
-            nameof(ShowInstall), nameof(IsInstallEnabled), nameof(ShowDefer), nameof(ShowNoMoreDeferrals),
-            nameof(DeferralsUsedText), nameof(ShowRemindMeLater), nameof(ShowAnyAction));
+            nameof(ShowInstall), nameof(IsInstallEnabled), nameof(ShowCloseApps), nameof(ShowDefer),
+            nameof(ShowNoMoreDeferrals), nameof(DeferralsUsedText), nameof(ShowRemindMeLater), nameof(ShowAnyAction));
     }
 }

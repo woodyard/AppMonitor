@@ -17,7 +17,7 @@ namespace Arkimentum.AppMonitor.Tray.Services;
 /// Owns the "Close apps to update X" dialogs — at most one per update key — and performs the session-bound
 /// process closing the service asks for.
 /// </summary>
-public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions
+public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions, ICloseAppsLauncher
 {
     private static readonly TimeSpan GracefulWait = TimeSpan.FromSeconds(30);
 
@@ -50,7 +50,8 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions
     {
         _ipc.MessageReceived -= OnMessage;
         _cts.Cancel();
-        foreach (var window in _dialogs.Values.ToList()) window.Close();
+        // The agent is going away, not the user declining: close without sending an answer.
+        foreach (var window in _dialogs.Values.ToList()) window.CloseFromApp();
         _dialogs.Clear();
         _cts.Dispose();
         return Task.CompletedTask;
@@ -72,32 +73,65 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions
         }
     }
 
-    /// <summary>Opens the dialog for an update, or refreshes the one already open for it.</summary>
+    /// <summary>
+    /// Opens the dialog for an update, or refreshes the one already open for it. Called from the service's
+    /// <see cref="PromptCloseMessage"/> and from the update card's "Close apps and update" button, which is how a
+    /// user who dismissed the dialog gets it back without waiting for the next prompt.
+    ///
+    /// Everything here is wrapped: a throw while the view model is built or the window is created lands in the
+    /// agent's <c>DispatcherUnhandledException</c> handler, which logs one line and marks it handled - and the user
+    /// is left looking at a blank window. Logging the update key and the blocking detail at the point of failure is
+    /// what turns that into something anyone can act on.
+    /// </summary>
     public void ShowFor(PendingUpdate update)
     {
+        if (update is null) { _log.LogWarning("Ignoring a request to show the close-apps dialog for a null update"); return; }
+
         if (_dialogs.TryGetValue(update.Key, out var existing))
         {
             _log.LogInformation("Refreshing the close-apps dialog for {App}", update.DisplayName);
-            existing.ViewModel.Apply(update);
-            existing.Activate();
+            if (!TryApply(existing, update)) return;
+            try { existing.Activate(); } catch (Exception ex) { _log.LogDebug(ex, "Activating the close-apps dialog for {Key} failed", update.Key); }
             return;
         }
 
         _log.LogInformation("Showing the close-apps dialog for {App} (blocking: {Processes})",
-            update.DisplayName, string.Join(", ", update.BlockingProcesses));
+            update.DisplayName, Describe(update));
 
-        var viewModel = new CloseAppsViewModel(update, this);
-        // Deliberately not owned by the main window: WPF hides owned windows with their owner, and this dialog
-        // must survive the user closing the main window while a forced close is counting down.
-        var window = new CloseAppsWindow(viewModel);
+        CloseAppsViewModel viewModel;
+        CloseAppsWindow window;
+        try
+        {
+            viewModel = new CloseAppsViewModel(update, this);
+            // Deliberately not owned by the main window: WPF hides owned windows with their owner, and this dialog
+            // must survive the user closing the main window while a forced close is counting down.
+            window = new CloseAppsWindow(viewModel);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Could not build the close-apps dialog for {Key} ({App}); blocking detail: {Detail}",
+                update.Key, update.DisplayName, Describe(update));
+            return;
+        }
+
         window.Closed += (_, _) =>
         {
             _dialogs.Remove(update.Key);
             viewModel.Dispose();
         };
         _dialogs[update.Key] = window;
-        window.Show();
-        window.Activate();
+        try
+        {
+            window.Show();
+            window.Activate();
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Could not show the close-apps dialog for {Key} ({App}); blocking detail: {Detail}",
+                update.Key, update.DisplayName, Describe(update));
+            _dialogs.Remove(update.Key);
+            try { window.CloseFromApp(); } catch { /* the window is already broken; nothing else to do */ }
+        }
     }
 
     /// <summary>Closes dialogs whose update has moved on (installed, or gone from the service's snapshot).</summary>
@@ -109,13 +143,45 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions
             if (update is null or { State: UpdateState.Installing or UpdateState.Installed })
             {
                 _log.LogInformation("Closing the close-apps dialog for {Key}: the update moved on", key);
-                _dialogs[key].Close();
+                // The update moved on by itself; the user did not decline, so send nothing.
+                _dialogs[key].CloseFromApp();
             }
             else
             {
-                _dialogs[key].ViewModel.Apply(update);
+                TryApply(_dialogs[key], update);
             }
         }
+    }
+
+    /// <summary>
+    /// Pushes a newer snapshot into an open dialog. A state message can arrive between <c>Show()</c> and the window's
+    /// first layout pass, so a throw in here used to be exactly what left the dialog drawn but empty.
+    /// </summary>
+    private bool TryApply(CloseAppsWindow window, PendingUpdate update)
+    {
+        try
+        {
+            window.ViewModel.Apply(update);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Applying the update to the close-apps dialog for {Key} ({App}) failed; blocking detail: {Detail}",
+                update.Key, update.DisplayName, Describe(update));
+            return false;
+        }
+    }
+
+    /// <summary>What the service said is blocking this update, for a failure log line. Never throws.</summary>
+    private static string Describe(PendingUpdate update)
+    {
+        try
+        {
+            var names = string.Join(", ", BlockingProcessSummary.NamesFor(update));
+            var detail = update.BlockingDetails is { Count: > 0 } d ? BlockingProcessInfo.Describe(d) : "none";
+            return $"{(names.Length == 0 ? "none" : names)} [{detail}]";
+        }
+        catch (Exception ex) { return $"unreadable ({ex.GetType().Name})"; }
     }
 
     // ---------------------------------------------------------------- service-driven closing
@@ -156,11 +222,19 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions
 
         if (_dialogs.TryGetValue(message.UpdateKey, out dialog))
         {
-            dialog.ViewModel.IsBusy = false;
-            dialog.ViewModel.StatusMessage = stillRunning.Count == 0
-                ? Strings.CloseAppsAllClosed
-                : Strings.CloseAppsStillRunning(Friendly(stillRunning));
-            if (stillRunning.Count > 0) dialog.ViewModel.SetProcesses(stillRunning.ToList());
+            try
+            {
+                dialog.ViewModel.IsBusy = false;
+                dialog.ViewModel.StatusMessage = stillRunning.Count == 0
+                    ? Strings.CloseAppsAllClosed
+                    : Strings.CloseAppsStillRunning(Friendly(stillRunning));
+                if (stillRunning.Count > 0) dialog.ViewModel.SetProcesses(stillRunning.ToList());
+            }
+            catch (Exception ex)
+            {
+                // Never let a display problem swallow the ProcessesClosedMessage below: the service is waiting for it.
+                _log.LogError(ex, "Updating the close-apps dialog for {Key} after the close attempt failed", message.UpdateKey);
+            }
         }
 
         await _ipc.SendAsync(new ProcessesClosedMessage

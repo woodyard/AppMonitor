@@ -97,6 +97,15 @@ public static class Strings
 
     public static string StateDeferred(string until) => $"Deferred until {until}";
     public static string StateWaitingForClose(string processes) => $"Waiting for you to close: {processes}";
+
+    /// <summary>
+    /// The same status with the way out: the close-apps dialog can be closed (or dismissed with its X) and the card
+    /// is then the only thing left saying what is wrong. Appended whenever the card offers to reopen the dialog.
+    /// </summary>
+    public const string StateWaitingForCloseReopenHint = "Choose “Close apps and update” to open the dialog again.";
+
+    public static string StateWaitingForCloseWithHint(string processes) =>
+        $"{StateWaitingForClose(processes)} {StateWaitingForCloseReopenHint}";
     public static string StateInstalled(string when) => $"Installed {when}";
     public static string StateFailed(string? error) =>
         string.IsNullOrWhiteSpace(error) ? "Failed" : $"Failed: {error}";
@@ -123,6 +132,19 @@ public static class Strings
 
     public static string EveryDuration(string duration) => $"Every {duration}";
     public static string AndMore(int count) => $"and {count} more";
+
+    /// <summary>
+    /// The second line under "Monitored applications": the configuration is fleet-wide, so the panel says how much of
+    /// it is about this device. Only shown when the two numbers differ.
+    /// </summary>
+    public static string MonitoredAppsScope(int applicable, int configured) =>
+        $"{applicable} of {configured} monitored applications apply to this device";
+
+    /// <summary>Shown instead of the list when the configuration covers nothing that is installed here.</summary>
+    public static string MonitoredAppsNoneApply(int configured) =>
+        configured == 1
+            ? "The 1 monitored application is not installed on this device"
+            : $"None of the {configured} monitored applications are installed on this device";
 
     // ---------------------------------------------------------------- the agent's own update
     /// <summary>The two buttons next to the agent version, in the details footer and in the About dialog.</summary>

@@ -184,8 +184,24 @@ public sealed class SettingsSummary
     public bool NotificationsEnabled { get; set; }
     public string LogDirectory { get; set; } = string.Empty;
     public string LogLevel { get; set; } = string.Empty;
+    /// <summary>
+    /// How many of the configured applications apply to the receiving session: machine-wide installs for everyone,
+    /// per-user installs only for that connection's user. Always the length of <see cref="MonitoredApps"/>.
+    /// </summary>
     public int MonitoredAppCount { get; set; }
+
+    /// <summary>
+    /// The applications found installed for the receiving session, by display name. Before the first scan has
+    /// produced any result the service falls back to every enabled application, so the panel is never empty.
+    /// </summary>
     public List<string> MonitoredApps { get; set; } = [];
+
+    /// <summary>
+    /// Optional (added after 1.1.4): every enabled application in the configuration, whether or not it is installed
+    /// here, so a client can say "3 of 12 monitored applications apply to this device". 0 from an older service -
+    /// the client then treats <see cref="MonitoredAppCount"/> as the whole story, which is what it used to be.
+    /// </summary>
+    public int ConfiguredAppCount { get; set; }
     public DateTimeOffset LoadedAtUtc { get; set; }
     /// <summary>Last prerequisite (winget) check result; null until the first check ran.</summary>
     public Prerequisites.PrerequisiteStatus? Prerequisites { get; set; }

@@ -294,11 +294,70 @@ If the dialog still reappears:
 - Check the **tray version**: an agent older than 1.2 does not send `CloseBlockingProcesses`, so the
   service keeps the old prompt-and-wait behaviour. Update the agent on that device.
 - If the install fails instead with `Could not close pwsh (pid …, session …, …)`, the process
-  resisted termination even as SYSTEM (a protected process, or one stuck in a kernel wait). End it by
-  hand or reboot; the update is retried after the next scan.
+  resisted termination even as SYSTEM. Since 1.2 the line says **why** and **which** executable it was:
+
+  ```text
+  Could not close pwsh (pid 9, session 0, NT AUTHORITY\SYSTEM, elevated, C:\Program Files\PowerShell\7\pwsh.exe): Win32Exception: Access is denied (Win32 error 5 / 0x00000005)
+  ```
+
+  The Win32 code is the part to act on (5 = access denied, typically a protected process; 6 = the
+  handle went away). The path tells you whose `pwsh` it is - a scheduled task, an RMM agent, or the
+  user's own shell. End it by hand or reboot; the update is retried after the next scan.
+- If the line instead reads `pwsh (pid 4711, …, C:\rmm\pwsh.exe): restarted (pid 4711) started again`,
+  the kill worked and something restarted the process immediately. The install fails on purpose rather
+  than running into files that are still held: find what respawns it (a service, a scheduled task, an
+  RMM agent - the path names it), stop that, and let the next scan retry.
 - The service only closes processes for a user request that is less than an hour old, or when
   `ForceCloseAtDeadline = 1` and the grace period has run out. Anything else keeps asking the user,
   by design.
+
+## An update is stuck on "Waiting for you to close"
+
+A card that sits on `Waiting for you to close: pwsh` and never moves used to mean the close-apps dialog
+had been dismissed with the window's **X**: the service never heard an answer, the update stayed in
+`WaitingForClose`, and in `Quiet` mode nothing prompted again until the next notification interval.
+
+Since 1.2:
+
+- Closing the dialog with **X** is treated as **Not now**, so the service knows the user declined.
+- The card itself carries a **Close apps and update** button while an update is waiting, and its status
+  says so. Pressing it reopens the dialog locally - no waiting for the service to prompt again.
+
+If a card is still stuck, check the tray log (`%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\`):
+
+```powershell
+Select-String -Path "$env:LOCALAPPDATA\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Tray_*.log" `
+  -Pattern 'close-apps dialog'
+```
+
+`Could not build the close-apps dialog for …` or `Applying the update to the close-apps dialog … failed`
+is the agent telling you the dialog itself threw; the line carries the update key and the full blocking
+detail, and the exception follows it. That is also what a **blank white dialog** used to look like with
+nothing in the log at all: the tray's `DispatcherUnhandledException` handler marks such exceptions
+handled, so a half-built window simply stayed on screen. Restarting the tray agent (sign out and in, or
+kill `Arkimentum.AppMonitor.Tray.exe` - the service starts it again) clears the window; the log line is
+what to report.
+
+## The tray lists applications that are not installed here
+
+`Details → Monitored applications` shows the applications the **last check found on this device**, not
+the whole configuration: machine-wide installs for everyone, per-user installs only for the signed-in
+user. When the configuration covers more than that, a second line says so - "3 of 12 monitored
+applications apply to this device".
+
+If the list still looks wrong:
+
+- **Everything is listed.** No scan has produced results yet (fresh install, or `state.json` was
+  deleted), so the agent falls back to showing every enabled application. Press **Check now** and look
+  again.
+- **Something installed is missing.** The check for it failed, so the previous answer stands. Look for
+  `Check failed for <app>` in the service log.
+- **A per-user application is missing.** Per-user installs are only checked for users whose tray agent
+  is connected; sign in, let the tray connect and run a scan.
+- **The agent or the service is older than 1.2.** An older service sends the whole enabled set, and an
+  older tray ignores the new count - in both cases the panel reads exactly as it did before.
+- The **admin console** deliberately keeps showing the full configured count: it is a view of the
+  policy, not of one device.
 
 ## Configuration changes have no effect
 

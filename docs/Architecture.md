@@ -281,7 +281,9 @@ Rules encoded in the model (`PendingUpdate`):
 | Failure | `FailureCount` and `LastError` are kept; the update reappears in the next scan and is retried. |
 
 Pending state is persisted to `state.json` so deferrals, deadlines and deferral counts survive a
-service restart or reboot.
+service restart or reboot. The same file also holds `AppPresence` - what the last check concluded about
+each configured application on this device - which is what "Monitored applications" in the tray is built
+from; see [Monitored applications are per session](#monitored-applications-are-per-session).
 
 ### Closing blocking applications
 
@@ -308,8 +310,16 @@ The flow when the user presses **Close apps and update**:
    update - logs each one as `Terminated pwsh (pid 4242, session 3, H-SURFACELAP5\bob, elevated)`,
    records a `ForcedClose` event for the cloud report, and installs.
 5. If something cannot be terminated at all, the install **fails** with a message naming the process,
-   its session and its owner. It never prompts again for the same thing: that is what used to make the
-   dialog reappear forever for an elevated or cross-session `pwsh`.
+   its session, its owner, **the executable behind it and why the kill failed** - the exception type,
+   its message and, for a `Win32Exception`, the Win32 error code:
+   `Could not close pwsh (pid 9, session 0, NT AUTHORITY\SYSTEM, elevated, C:\Program Files\PowerShell\7\pwsh.exe): Win32Exception: Access is denied (Win32 error 5 / 0x00000005); PowerShell 7 was not updated.`
+   It never prompts again for the same thing: that is what used to make the dialog reappear forever for
+   an elevated or cross-session `pwsh`.
+6. After the settle wait the service looks again, in the same scope. A process with the same name but a
+   **new pid** means something restarted it - a service, a scheduled task, an RMM agent - and the install
+   fails with `pwsh (pid 4711, …, C:\rmm\pwsh.exe): restarted (pid 4711) started again` rather than
+   proceeding into files that are still held. The executable path is there so an owner can see whose
+   `pwsh` it actually is.
 
 `MayServiceForceClose` is the single decision point and only two things satisfy it: a user request
 that is less than `PolicyEngine.ForceCloseRequestWindow` (one hour) old, or deadline enforcement with
@@ -319,8 +329,19 @@ request, and it is cleared when the install finishes or fails.
 `PendingUpdate.BlockingDetails` carries what the service could read about each running instance - pid,
 session, owner, elevation - so the tray dialog can mark the ones it cannot close itself
 ("pwsh — elevated", "pwsh — another session (H-SURFACELAP5\bob)") and explain that the service will
-close those. Both fields are optional and additive: an older tray or an older service simply does not
-see them.
+close those. `BlockingProcessInfo` also has an optional `ExecutablePath` and `Reason`, filled in only
+for processes that survived or restarted a forced close. All of these are optional and additive: an
+older tray or an older service simply does not see them.
+
+The dialog is not the only way out. Closing it with the window's **X** is treated exactly like
+**Not now** (`CloseAppsCoordinator.NotNow`), so the service learns the user declined instead of leaving
+the update parked in `WaitingForClose` - in `Quiet` mode nothing would prompt again until the next
+notification interval. A close driven by the agent itself (a button that already answered, or the
+coordinator pruning a dialog whose update moved on) goes through `CloseAppsWindow.CloseFromApp` and
+sends nothing; the view model refuses to answer twice in any case. While an update is waiting, its card
+in the main window offers **Close apps and update**, which reopens the dialog locally through
+`ICloseAppsLauncher.ShowFor` - no round trip to the service, because the tray already holds the update
+and its blocking detail.
 
 ## IPC
 
@@ -354,7 +375,7 @@ session id from the pipe handle, so one user cannot act on another user's update
 
 | `$type` | Class | Payload | Meaning |
 | --- | --- | --- | --- |
-| `state` | `StateMessage` | `Updates`, `LastScanUtc`, `NextScanUtc`, `ScanInProgress`, `ServiceVersion`, `Settings` (`SettingsSummary`, including `CloudConfigured`, `CloudEnrolled` and `OrganizationName` so the tray can show which organization manages the device), `AgentUpdate` (optional `AgentUpdateStatus`: `RunningVersion`, `LatestVersion`, `UpdateAvailable`, `InProgress`, `LastCheckUtc`, `LastError`, `Enabled`; null from a service that predates client-initiated self-update) | Snapshot of the updates relevant to that session: machine-wide updates plus that user's own. |
+| `state` | `StateMessage` | `Updates`, `LastScanUtc`, `NextScanUtc`, `ScanInProgress`, `ServiceVersion`, `Settings` (`SettingsSummary`, including `CloudConfigured`, `CloudEnrolled` and `OrganizationName` so the tray can show which organization manages the device; `MonitoredApps`/`MonitoredAppCount`, which are **per session** - see below - and the optional `ConfiguredAppCount`, the whole enabled set, 0 from a service older than 1.2), `AgentUpdate` (optional `AgentUpdateStatus`: `RunningVersion`, `LatestVersion`, `UpdateAvailable`, `InProgress`, `LastCheckUtc`, `LastError`, `Enabled`; null from a service that predates client-initiated self-update) | Snapshot of the updates relevant to that session: machine-wide updates plus that user's own. |
 | `notify` | `NotifyMessage` | `Kind` (`NotificationKind`), `Title`, `Body`, `Update` | Show a toast. |
 | `promptClose` | `PromptCloseMessage` | `Update` (including the optional `BlockingDetails`: pid, session, owner and elevation per running instance) | Blocking processes are running; ask the user to close them (with the forced-close countdown when one applies). |
 | `runUserInstall` | `RunUserInstallMessage` | `Update`, `TimeoutMinutes` | Install this update in the user's session. |
@@ -363,6 +384,25 @@ session id from the pipe handle, so one user cannot act on another user's update
 | `ack` | `AckMessage` | `InReplyTo`, `Ok`, `Message` | Acknowledgement / error text. |
 
 Every message carries a `MessageId` and `SentUtc`.
+
+### Monitored applications are per session
+
+`SettingsSummary.MonitoredApps` is not the configuration - it is the part of the configuration that applies to the
+device and the user receiving the snapshot. The service remembers, per configured application and context, what the
+last completed check concluded (`ServiceState.AppPresence` in `state.json`: app id, context, user SID, installed,
+installed version, when). `BuildState` then lists the enabled applications that were found installed for that
+connection: **machine-wide installs for every user, per-user installs only for that connection's own SID**.
+`MonitoredAppCount` is the length of that list; `ConfiguredAppCount` is the whole enabled set, so the tray can say
+"3 of 12 monitored applications apply to this device".
+
+Three rules keep it honest:
+
+- Before the first scan has produced any result, and after a check that failed, the previous answer stands - and with
+  no answers at all the service falls back to listing everything enabled, so the panel is never mysteriously empty.
+- Entries for applications that are no longer configured (or no longer enabled) are dropped at the end of every scan.
+- An **admin** client gets the full enabled list instead: the console is looking at the policy, not at one device.
+  An older service sends every enabled application and no `ConfiguredAppCount`, which every client reads as
+  "all of them apply" - exactly the pre-1.2 behaviour.
 
 ### Client kinds
 

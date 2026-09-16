@@ -314,6 +314,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             try
             {
                 summary = PolicyEngine.Merge(_state.Updates, outcomes, checkedKeys, now);
+                RecordPresence(apps, outcomes, now);
                 _state.LastScanUtc = now;
                 _state.NextScanUtc = now + settings.ScanInterval;
                 _state.LastScanSummary = $"{summary.Added} new, {summary.Updated} updated, {summary.Resolved} resolved, {summary.Removed} removed";
@@ -346,6 +347,43 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         await BroadcastStateAsync(ct).ConfigureAwait(false);
         await EvaluatePoliciesAsync(ct).ConfigureAwait(false);
         RaiseScanCompleted();
+    }
+
+    /// <summary>
+    /// Remembers, per configured application and context, whether this scan found it installed here. That is what the
+    /// tray's "Monitored applications" list is built from: the configuration is fleet-wide, the list a user sees must
+    /// be about their device. Entries for applications that are no longer configured (or no longer enabled) are
+    /// dropped, and a failed check leaves the previous answer alone - a winget hiccup is not evidence of a removal.
+    /// Called under <see cref="_policyLock"/>; the caller saves the state. The map is rebuilt and then swapped in
+    /// rather than edited in place, because <see cref="BuildState"/> enumerates it from a pipe thread without the
+    /// lock - a reader always sees one complete snapshot or the previous one, never a dictionary mid-edit.
+    /// </summary>
+    private void RecordPresence(IReadOnlyList<AppPolicy> enabledApps, IReadOnlyList<ScanOutcome> outcomes, DateTimeOffset now)
+    {
+        var next = new Dictionary<string, AppPresence>(_state.AppPresence, StringComparer.OrdinalIgnoreCase);
+        foreach (var o in outcomes)
+        {
+            if (o.Result.Error is not null) continue;
+            var key = AppPresence.MakeKey(o.Policy.AppId, o.Context, o.UserSid);
+            next[key] = new AppPresence
+            {
+                AppId = o.Policy.AppId,
+                DisplayName = string.IsNullOrWhiteSpace(o.Policy.DisplayName) ? o.Policy.AppId : o.Policy.DisplayName,
+                Context = o.Context,
+                UserSid = o.Context == InstallContext.User ? o.UserSid : null,
+                Installed = o.Result.IsInstalled,
+                InstalledVersion = o.Result.InstalledVersion,
+                CheckedUtc = now,
+            };
+        }
+
+        var configured = enabledApps.Select(a => a.AppId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var stale in next.Where(kv => !configured.Contains(kv.Value.AppId)).Select(kv => kv.Key).ToList())
+            next.Remove(stale);
+
+        _state.AppPresence = next;
+        _logger.LogDebug("Application presence: {Installed} of {Known} checked entries are installed on this device",
+            next.Values.Count(p => p.Installed), next.Count);
     }
 
     private static void AddUserApp(Dictionary<string, List<AppPolicy>> map, string sid, AppPolicy app)
@@ -488,13 +526,14 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// <summary>
     /// Terminates every remaining blocking process of <paramref name="u"/> (in <paramref name="sessionId"/>, or in
     /// every session when that is null), logging each one with pid, session and owner. Returns false - having already
-    /// failed the update with a message naming what survived - when something could not be ended, because prompting
-    /// the user again for a process no one in their session can close is the loop this exists to break.
+    /// failed the update with a message naming what survived, why, and from which executable - when something could
+    /// not be ended or came straight back, because prompting the user again for a process no one in their session can
+    /// close is the loop this exists to break.
     /// </summary>
     private async Task<bool> TerminateBlockingAsync(PendingUpdate u, int? sessionId, CancellationToken ct)
     {
         var outcome = await ProcessHelper.KillAsync(u.ProcessNames, sessionId, TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
-        if (outcome.Killed.Count == 0 && outcome.Survivors.Count == 0) return true;
+        if (outcome.Killed.Count == 0 && outcome.Cleared) return true;
 
         foreach (var p in outcome.Killed)
             _logger.LogWarning("Terminated {Process} to install {App}", p.Describe(), u.DisplayName);
@@ -502,9 +541,16 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             RecordEvent(ReportedEventKind.ForcedClose, u.AppId,
                 $"Terminated {BlockingProcessInfo.Describe(outcome.Killed)} to install {u.DisplayName} {u.AvailableVersion}");
 
-        if (outcome.Survivors.Count == 0) return true;
+        if (outcome.Cleared) return true;
 
-        var message = $"Could not close {BlockingProcessInfo.Describe(outcome.Survivors)}; {u.DisplayName} was not updated.";
+        // Each survivor carries the exception (with the Win32 code) that refused the kill and, where readable, the
+        // executable behind it; a restarted one names the new pid. Both go into the log, the report and the failure.
+        foreach (var p in outcome.Survivors)
+            _logger.LogError("Could not close {Process} to install {App}", p.Describe(), u.DisplayName);
+        foreach (var p in outcome.Restarted)
+            _logger.LogError("{Process} started again while {App} was being installed", p.Describe(), u.DisplayName);
+
+        var message = ProcessHelper.DescribeFailure(outcome, u.DisplayName);
         _logger.LogError("{App}: {Message}", u.DisplayName, message);
         var at = DateTimeOffset.UtcNow;
         await MutateAsync(u.Key, x => PolicyEngine.MarkFailed(x, message, at), ct).ConfigureAwait(false);
@@ -866,6 +912,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     {
         var s = _settings.Current;
         var cloud = CloudStatusSource?.Invoke();
+        var enabled = s.Apps.Where(a => a.Enabled).ToList();
+        // The configuration is fleet-wide; the tray's list is about the device in front of this user - machine-wide
+        // installs count for everyone, per-user installs only for the user on the other end of this connection. The
+        // admin console is the opposite: it is looking at the policy, so it gets everything that is enabled.
+        var monitored = conn.Kind == IpcClientKind.Admin
+            ? MonitoredAppFilter.All(enabled)
+            : MonitoredAppFilter.Relevant(enabled, _state.AppPresence.Values, conn.UserSid);
         return new StateMessage
         {
             // Installed updates are kept internally (post-install grace, retention) but are no longer shown to users or admins.
@@ -884,8 +937,9 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 NotificationsEnabled = s.NotificationsEnabled,
                 LogDirectory = s.LogDirectory,
                 LogLevel = s.LogLevel,
-                MonitoredAppCount = s.Apps.Count(a => a.Enabled),
-                MonitoredApps = s.Apps.Where(a => a.Enabled).Select(a => a.DisplayName).OrderBy(x => x).ToList(),
+                MonitoredAppCount = monitored.Count,
+                MonitoredApps = monitored,
+                ConfiguredAppCount = enabled.Count,
                 LoadedAtUtc = s.LoadedAtUtc,
                 Prerequisites = _prerequisiteStatus?.Clone(),
                 CloudConfigured = !string.IsNullOrWhiteSpace(s.CloudServerUrl),

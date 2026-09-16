@@ -22,17 +22,19 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     private readonly AgentStateStore _store;
     private readonly IpcClientService _ipc;
     private readonly IWindowService _windows;
+    private readonly ICloseAppsLauncher _closeApps;
     private readonly RelayCommand _checkNowCommand;
     private readonly RelayCommand _updateAllCommand;
     private readonly DispatcherTimer _clock;
 
     public MainViewModel(ILogger<MainViewModel> log, AgentStateStore store, IpcClientService ipc, IWindowService windows,
-        AgentUpdateViewModel agentUpdate)
+        ICloseAppsLauncher closeApps, AgentUpdateViewModel agentUpdate)
     {
         _log = log;
         _store = store;
         _ipc = ipc;
         _windows = windows;
+        _closeApps = closeApps;
         AgentUpdate = agentUpdate;
 
         _checkNowCommand = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.ScanInProgress);
@@ -169,19 +171,26 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         ? Strings.EveryDuration(TimeFormat.Duration(_store.Settings.NotificationIntervalMinutes))
         : Strings.DetailsNone;
 
+    /// <summary>
+    /// The applications the service found on this device, and - when the configuration covers more than that - a line
+    /// saying how much of it applies here. A service older than 1.2 sends the whole enabled set and no
+    /// <c>ConfiguredAppCount</c>, which reads as "all of them apply" and shows exactly what it used to.
+    /// </summary>
     public string MonitoredAppsText
     {
         get
         {
-            var apps = _store.Settings.MonitoredApps;
+            var settings = _store.Settings;
+            var apps = settings.MonitoredApps;
+            var configured = settings.ConfiguredAppCount > 0 ? settings.ConfiguredAppCount : settings.MonitoredAppCount;
+
             if (apps.Count == 0)
-                return _store.Settings.MonitoredAppCount > 0
-                    ? _store.Settings.MonitoredAppCount.ToString()
-                    : Strings.DetailsNone;
+                return configured > 0 ? Strings.MonitoredAppsNoneApply(configured) : Strings.DetailsNone;
 
             var shown = apps.Take(MaxMonitoredAppsShown).ToList();
             var text = new StringBuilder(string.Join(", ", shown));
             if (apps.Count > shown.Count) text.Append(", ").Append(Strings.AndMore(apps.Count - shown.Count));
+            if (configured > apps.Count) text.Append('\n').Append(Strings.MonitoredAppsScope(apps.Count, configured));
             return text.ToString();
         }
     }
@@ -312,5 +321,17 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     {
         _log.LogInformation("User chose Remind me later for {App}", update.DisplayName);
         _ = _ipc.DismissAsync(update.Key);
+    }
+
+    /// <summary>
+    /// Brings the close-apps dialog back for an update that is waiting for the user. Nothing goes over the pipe:
+    /// the tray holds the update with its blocking detail, and the coordinator opens (or re-activates) the window.
+    /// </summary>
+    public void ShowCloseApps(PendingUpdate update)
+    {
+        _log.LogInformation("User reopened the close-apps dialog for {App} (blocking: {Processes})",
+            update.DisplayName, string.Join(", ", BlockingProcessSummary.NamesFor(update)));
+        // Prefer the service's latest snapshot: the card may be a tick behind on what is still running.
+        _closeApps.ShowFor(_store.Find(update.Key) ?? update);
     }
 }

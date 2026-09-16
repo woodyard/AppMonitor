@@ -115,6 +115,9 @@ public partial class App : Application
         services.AddSingleton<AgentStateStore>();
         services.AddSingleton<IWindowService, WindowService>();
         services.AddSingleton<CloseAppsCoordinator>();
+        // The update card reopens the close-apps dialog through this narrow interface, so MainViewModel depends on
+        // an ability rather than on the coordinator (which, through IWindowService, reaches MainViewModel again).
+        services.AddSingleton<ICloseAppsLauncher>(sp => sp.GetRequiredService<CloseAppsCoordinator>());
         services.AddSingleton<NotificationService>();
         services.AddSingleton<UserContextExecutor>();
         services.AddSingleton<TrayIconService>();

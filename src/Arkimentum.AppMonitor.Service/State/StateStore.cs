@@ -11,6 +11,14 @@ public sealed class ServiceState
     public DateTimeOffset? LastScanUtc { get; set; }
     public DateTimeOffset? NextScanUtc { get; set; }
     public string? LastScanSummary { get; set; }
+
+    /// <summary>
+    /// What the last check found for every configured application, keyed like <see cref="PendingUpdate.Key"/>
+    /// (app, context and - for per-user installs - the user's SID). Added after 1.1.4 and additive: a state file
+    /// written by an older service simply has none, and the first scan fills it in. It is what lets the tray list
+    /// only the applications that actually exist on this device instead of the whole configuration.
+    /// </summary>
+    public Dictionary<string, AppPresence> AppPresence { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>Persists <see cref="ServiceState"/> as JSON (atomic replace) so deadlines and deferrals survive restarts.</summary>
@@ -39,9 +47,11 @@ public sealed class StateStore
             var json = File.ReadAllText(path);
             var state = JsonSerializer.Deserialize<ServiceState>(json, Json) ?? new ServiceState();
             state.Updates = new Dictionary<string, PendingUpdate>(state.Updates, StringComparer.OrdinalIgnoreCase);
+            state.AppPresence = new Dictionary<string, AppPresence>(state.AppPresence, StringComparer.OrdinalIgnoreCase);
             // An install that was in flight when the service stopped cannot be trusted.
             foreach (var u in state.Updates.Values.Where(u => u.State == UpdateState.Installing)) u.State = UpdateState.Available;
-            _logger.LogInformation("Loaded state from {Path}: {Count} tracked update(s)", path, state.Updates.Count);
+            _logger.LogInformation("Loaded state from {Path}: {Count} tracked update(s), {Presence} known application(s)",
+                path, state.Updates.Count, state.AppPresence.Count);
             return state;
         }
         catch (Exception ex)

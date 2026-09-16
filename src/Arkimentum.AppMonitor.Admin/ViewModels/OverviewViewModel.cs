@@ -177,8 +177,14 @@ public sealed class OverviewViewModel : ObservableObject
 
     public string NextScanText => TimeFormat.Absolute(_ipc.LastState?.NextScanUtc);
 
+    /// <summary>
+    /// The whole configured set, not just what is installed here: this is the administrator's view of the policy.
+    /// The service's <c>MonitoredAppCount</c> counts only the applications that apply to the connected user's device
+    /// (that is what the tray shows), so the console reads <c>ConfiguredAppCount</c> - falling back to the old
+    /// meaning of <c>MonitoredAppCount</c> when the service predates it.
+    /// </summary>
     public string MonitoredAppsText => _ipc.LastState is { } state
-        ? state.Settings.MonitoredAppCount.ToString()
+        ? (state.Settings.ConfiguredAppCount > 0 ? state.Settings.ConfiguredAppCount : state.Settings.MonitoredAppCount).ToString()
         : _effective.Apps.Count.ToString();
 
     public string ReportedServiceVersion => _ipc.LastState?.ServiceVersion ?? Strings.None;

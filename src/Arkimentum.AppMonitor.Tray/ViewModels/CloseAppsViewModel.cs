@@ -4,7 +4,6 @@ using System.Linq;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Arkimentum.AppMonitor.Models;
-using Arkimentum.AppMonitor.Native;
 using Arkimentum.AppMonitor.Tray.Infrastructure;
 using Arkimentum.AppMonitor.Tray.Resources;
 using Arkimentum.AppMonitor.UI;
@@ -20,19 +19,19 @@ public sealed class BlockingProcessViewModel
     /// the service is older than 1.2 or could not read anything. Instances that run elevated or in another session
     /// are the ones this agent cannot close itself, and the dialog has to say so or the user retries forever.
     /// </param>
-    public BlockingProcessViewModel(string processName, IEnumerable<BlockingProcessInfo>? details = null)
+    public BlockingProcessViewModel(string processName, IEnumerable<BlockingProcessInfo?>? details = null)
     {
-        ProcessName = processName;
-        FriendlyName = ProcessDisplay.Friendly(processName);
-        ShowProcessName = !string.Equals(FriendlyName, processName, StringComparison.OrdinalIgnoreCase);
+        ProcessName = processName ?? string.Empty;
+        FriendlyName = ProcessDisplay.Friendly(ProcessName);
+        ShowProcessName = !string.Equals(FriendlyName, ProcessName, StringComparison.OrdinalIgnoreCase);
 
-        var mine = (details ?? [])
-            .Where(d => string.Equals(ProcessHelper.Normalize(d.ProcessName), ProcessHelper.Normalize(processName), StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        IsElevated = mine.Any(d => d.Elevated == true);
-        var otherSession = mine.Where(d => d.SessionId >= 0 && d.SessionId != AppInfo.SessionId).ToList();
-        IsInAnotherSession = otherSession.Count > 0;
-        OtherSessionUser = otherSession.Select(d => d.UserName).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
+        // Everything that can be null, empty or unreadable is folded down in Core, where it is covered by tests:
+        // this constructor runs inside a WPF layout pass, and a throw here is what leaves a blank dialog behind.
+        var summary = BlockingProcessSummary.For(ProcessName, details, AppInfo.SessionId);
+        IsElevated = summary.IsElevated;
+        IsInAnotherSession = summary.IsInAnotherSession;
+        OtherSessionUser = summary.OtherSessionUser;
+        NeedsService = summary.NeedsService;
 
         var markers = new List<string>();
         if (IsElevated) markers.Add(Strings.CloseAppsElevated);
@@ -63,7 +62,7 @@ public sealed class BlockingProcessViewModel
     public bool HasQualifier => Qualifier.Length > 0;
 
     /// <summary>True when only the service can close this one.</summary>
-    public bool NeedsService => IsElevated || IsInAnotherSession;
+    public bool NeedsService { get; }
 }
 
 /// <summary>What the close-apps dialog's buttons do. Implemented by <see cref="Services.CloseAppsCoordinator"/>.</summary>
@@ -74,6 +73,16 @@ public interface ICloseAppsActions
     void Defer(CloseAppsViewModel dialog, int minutes);
 
     void NotNow(CloseAppsViewModel dialog);
+}
+
+/// <summary>
+/// Opens the "Close apps to update X" dialog for an update the tray already holds. Implemented by
+/// <see cref="Services.CloseAppsCoordinator"/> and injected into <see cref="MainViewModel"/>, which is how the
+/// update card can bring the dialog back without the main view model and the coordinator depending on each other.
+/// </summary>
+public interface ICloseAppsLauncher
+{
+    void ShowFor(PendingUpdate update);
 }
 
 /// <summary>The "Close apps to update X" dialog.</summary>
@@ -89,13 +98,19 @@ public sealed class CloseAppsViewModel : ObservableObject, IDisposable
     private bool _isBusy;
     private string? _detailsSignature;
 
+    /// <summary>
+    /// Set the moment the user's answer has been sent. The dialog has four ways out - the two buttons, a deferral,
+    /// and the window's X - and the service must hear about exactly one of them.
+    /// </summary>
+    private bool _answered;
+
     public CloseAppsViewModel(PendingUpdate update, ICloseAppsActions actions)
     {
         _update = update;
         _actions = actions;
 
-        _closeAndUpdateCommand = new RelayCommand(() => _actions.CloseAndUpdate(this), () => !_isBusy);
-        _notNowCommand = new RelayCommand(() => _actions.NotNow(this), () => !_isBusy);
+        _closeAndUpdateCommand = new RelayCommand(() => Answer(d => _actions.CloseAndUpdate(d)), () => !_isBusy);
+        _notNowCommand = new RelayCommand(() => Answer(d => _actions.NotNow(d)), () => !_isBusy);
 
         Processes = [];
         DeferralOptions = [];
@@ -184,22 +199,41 @@ public sealed class CloseAppsViewModel : ObservableObject, IDisposable
 
     public void RequestClose() => CloseRequested?.Invoke();
 
-    /// <summary>Applies a newer <see cref="PromptCloseMessage"/> for the same update to this dialog.</summary>
+    /// <summary>
+    /// The user closed the dialog with the window's X. That is an answer like any other - "Not now" - and the service
+    /// has to hear it: while it does not, the update sits in WaitingForClose and, in Quiet mode, nothing prompts again
+    /// until the next notification interval, which is what left a card saying "Waiting for you to close: pwsh" for
+    /// good. Programmatic closes (the coordinator pruning a finished dialog, or a button that already answered) go
+    /// through <see cref="RequestClose"/> instead and never reach this.
+    /// </summary>
+    public void UserClosedWindow() => Answer(d => _actions.NotNow(d));
+
+    /// <summary>True once one of the four exits has been taken; the rest then do nothing.</summary>
+    public bool HasAnswered => _answered;
+
+    private void Answer(Action<CloseAppsViewModel> action)
+    {
+        if (_answered) return;
+        _answered = true;
+        action(this);
+    }
+
+    /// <summary>Applies a newer <see cref="Ipc.PromptCloseMessage"/> for the same update to this dialog.</summary>
     public void Apply(PendingUpdate update)
     {
+        if (update is null) return;
         _update = update;
 
-        var names = update.BlockingProcesses.Count > 0 ? update.BlockingProcesses : update.ProcessNames;
-        SetProcesses(names, update.BlockingDetails);
+        SetProcesses(BlockingProcessSummary.NamesFor(update), update.BlockingDetails);
 
         var wanted = update.CanDefer(DateTimeOffset.UtcNow)
-            ? update.DeferralOptionsMinutes.Where(m => m > 0).Distinct().ToList()
+            ? (update.DeferralOptionsMinutes ?? []).Where(m => m > 0).Distinct().ToList()
             : [];
         if (!DeferralOptions.Select(o => o.Minutes).SequenceEqual(wanted))
         {
             DeferralOptions.Clear();
             foreach (var minutes in wanted)
-                DeferralOptions.Add(new DeferOptionViewModel(minutes, m => _actions.Defer(this, m)));
+                DeferralOptions.Add(new DeferOptionViewModel(minutes, m => Answer(d => _actions.Defer(d, m))));
         }
 
         if (ForceClosePending) _countdown.Start();
@@ -212,18 +246,20 @@ public sealed class CloseAppsViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// Narrows the list to the processes that are still running after a close attempt. <paramref name="details"/> is
-    /// what the service could read about them; pass it whenever it is at hand so the markers stay accurate.
+    /// what the service could read about them; pass it whenever it is at hand so the markers stay accurate. A null
+    /// list - from an older service, or a state file that never had the field - simply means "no markers".
     /// </summary>
-    public void SetProcesses(IReadOnlyList<string> names, IReadOnlyList<BlockingProcessInfo>? details = null)
+    public void SetProcesses(IReadOnlyList<string>? names, IReadOnlyList<BlockingProcessInfo>? details = null)
     {
-        details ??= _update.BlockingDetails;
+        var rows = (names ?? _update.BlockingProcesses ?? []).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        var detail = details ?? _update.BlockingDetails;
         // Rebuilding is not free (the friendly name walks the process list), so skip it while nothing moved - the
         // signature covers the markers too, or an instance appearing in another session would go unnoticed.
-        var signature = string.Join("|", details.Select(d => $"{d.ProcessName}:{d.ProcessId}:{d.SessionId}:{d.Elevated}"));
-        if (signature == _detailsSignature && Processes.Select(p => p.ProcessName).SequenceEqual(names, StringComparer.OrdinalIgnoreCase)) return;
+        var signature = BlockingProcessSummary.SignatureFor(detail);
+        if (signature == _detailsSignature && Processes.Select(p => p.ProcessName).SequenceEqual(rows, StringComparer.OrdinalIgnoreCase)) return;
         _detailsSignature = signature;
         Processes.Clear();
-        foreach (var name in names) Processes.Add(new BlockingProcessViewModel(name, details));
+        foreach (var name in rows) Processes.Add(new BlockingProcessViewModel(name, detail));
         OnPropertyChanged(nameof(IntroText), nameof(ShowServiceCloseHint));
     }
 

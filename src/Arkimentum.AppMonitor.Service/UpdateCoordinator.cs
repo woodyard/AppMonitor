@@ -81,6 +81,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     {
         var s = _settings.Reload();
         _state = _store.Load(s);
+        ImpersonationGuard.EnableDebugPrivilege(_logger);
         _pipe.Start();
         _logger.LogInformation("{Product} service {Version} started (pid {Pid}, user {User})",
             AgentSettings.ProductName, ServiceVersion, Environment.ProcessId, Environment.UserName);
@@ -189,6 +190,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
     public async Task RunScanAsync(string reason, CancellationToken ct)
     {
+        ImpersonationGuard.RevertIfImpersonating(_logger, $"scan ({reason})");
         if (!await _scanLock.WaitAsync(0, ct).ConfigureAwait(false)) { _logger.LogDebug("Scan already running; ignoring request ({Reason})", reason); return; }
         var sw = Stopwatch.StartNew();
         _scanInProgress = true;
@@ -398,6 +400,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
     public async Task EvaluatePoliciesAsync(CancellationToken ct)
     {
+        ImpersonationGuard.RevertIfImpersonating(_logger, "policy evaluation");
         if (!await _policyLock.WaitAsync(0, ct).ConfigureAwait(false)) return;
         var toInstall = new List<PendingUpdate>();
         var toForceClose = new List<PendingUpdate>();
@@ -480,6 +483,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
         return Task.Run(async () =>
         {
+            // Installs and forced closes run here; a pool thread that is still impersonating a pipe client must not.
+            ImpersonationGuard.RevertIfImpersonating(_logger, $"install task for {key}");
             try { await work().ConfigureAwait(false); }
             catch (Exception ex) { _logger.LogError(ex, "Install task for {Key} failed", key); }
             finally { lock (_installsInFlight) _installsInFlight.Remove(key); }
@@ -532,6 +537,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// </summary>
     private async Task<bool> TerminateBlockingAsync(PendingUpdate u, int? sessionId, CancellationToken ct)
     {
+        // "Access is denied" from SYSTEM on a plain process means this thread is not SYSTEM right now.
+        ImpersonationGuard.RevertIfImpersonating(_logger, $"forced close for {u.DisplayName}");
         var outcome = await ProcessHelper.KillAsync(u.ProcessNames, sessionId, TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
         if (outcome.Killed.Count == 0 && outcome.Cleared) return true;
 

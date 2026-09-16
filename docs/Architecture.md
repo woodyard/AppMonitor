@@ -286,6 +286,11 @@ each configured application on this device - which is what "Monitored applicatio
 from; see [Monitored applications are per session](#monitored-applications-are-per-session).
 
 ### Closing blocking applications
+**Only interactive sessions count.** A process in session 0 - a scheduled task, a management agent's
+script, a service's helper - never blocks an update and is never closed by the agent: no user can save
+work there, and the installer itself handles files in use the way MSI installers do (typically by
+finishing with a reboot-required result). Per-user installs look only at that user's session;
+machine-wide installs at every interactive session.
 
 Window handles are session-bound and a medium-integrity process cannot touch an elevated one, so the
 two halves of the agent can close different things:

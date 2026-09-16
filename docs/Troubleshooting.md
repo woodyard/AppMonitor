@@ -265,6 +265,10 @@ Internet Options proxy.
 - The install times out: raise `InstallTimeoutMinutes` for slow installers.
 
 ## The close-apps dialog keeps coming back
+Since 1.1.6 a process running in session 0 (as SYSTEM, a scheduled task, an RMM agent's script) is not
+treated as blocking at all and is left to the installer; only processes in interactive user sessions
+are prompted for or closed. If a device on 1.1.4 or 1.1.5 reported "Could not close pwsh (pid …,
+session 0, NT AUTHORITY\SYSTEM …): Access is denied", that is this case.
 
 "Close apps and update" closes what the **tray agent** can reach, and that is only windowed processes
 in the user's own session at the user's own integrity level. Three kinds of process are out of its

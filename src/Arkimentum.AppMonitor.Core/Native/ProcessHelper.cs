@@ -30,7 +30,22 @@ public static class ProcessHelper
         public IReadOnlyList<BlockingProcessInfo> Blocking => [.. Survivors, .. Restarted];
     }
 
-    /// <summary>Returns the configured process names that are currently running (optionally only in <paramref name="sessionId"/>).</summary>
+    /// <summary>
+    /// Whether a running process counts as blocking an update. <paramref name="sessionId"/> narrows to one user's
+    /// session (per-user installs). Null means "every interactive session" - and deliberately not session 0: a
+    /// process running there (a scheduled task, a management agent's script, a service's helper) is nothing a user
+    /// can save work in or close, and the installer itself copes with files in use the way MSI installers do. The
+    /// agent once prompted a user to close a pwsh that ran as SYSTEM in session 0 and then tried to kill it; both
+    /// were wrong.
+    /// </summary>
+    internal static bool IsBlocking(string processName, int processSessionId, HashSet<string> wanted, int? sessionId)
+    {
+        if (!wanted.Contains(processName)) return false;
+        if (sessionId is { } s) return processSessionId == s;
+        return processSessionId != 0;
+    }
+
+    /// <summary>Returns the configured process names that are currently running (optionally only in <paramref name="sessionId"/>; see <see cref="IsBlocking"/>).</summary>
     public static IReadOnlyList<string> GetRunning(IEnumerable<string> processNames, int? sessionId = null)
     {
         var wanted = new HashSet<string>(processNames.Select(Normalize), StringComparer.OrdinalIgnoreCase);
@@ -40,8 +55,7 @@ public static class ProcessHelper
         {
             try
             {
-                if (!wanted.Contains(p.ProcessName)) continue;
-                if (sessionId is { } s && p.SessionId != s) continue;
+                if (!IsBlocking(p.ProcessName, p.SessionId, wanted, sessionId)) continue;
                 found.Add(p.ProcessName);
             }
             catch { }
@@ -64,8 +78,7 @@ public static class ProcessHelper
         {
             try
             {
-                if (!wanted.Contains(p.ProcessName)) continue;
-                if (sessionId is { } s && p.SessionId != s) continue;
+                if (!IsBlocking(p.ProcessName, p.SessionId, wanted, sessionId)) continue;
                 result.Add(Inspect(p));
             }
             catch { }
@@ -208,7 +221,7 @@ public static class ProcessHelper
         {
             try
             {
-                if (wanted.Contains(p.ProcessName) && (sessionId is null || p.SessionId == sessionId)) targets.Add(p);
+                if (IsBlocking(p.ProcessName, p.SessionId, wanted, sessionId)) targets.Add(p);
                 else p.Dispose();
             }
             catch { p.Dispose(); }

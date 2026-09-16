@@ -57,6 +57,12 @@ public static partial class WingetOutputParser
     /// <summary>winget exit code for "no applicable upgrade found" (0x8A15002B), i.e. already up to date.</summary>
     public const int ExitNoApplicableUpgrade = unchecked((int)0x8A15002B);
 
+    /// <summary>
+    /// winget exit code for "the installed package type does not match the installer type" (0x8A15008E): the product was
+    /// installed with one technology (a per-user MSI, say) and the manifest only offers another (an exe wrapper).
+    /// </summary>
+    public const int ExitUpdateInstallTechnologyMismatch = unchecked((int)0x8A15008E);
+
     /// <summary>winget exit codes meaning "installed, reboot required".</summary>
     public const int ExitRebootRequiredToFinish = unchecked((int)0x8A150109);
     public const int ExitRebootRequiredForInstall = unchecked((int)0x8A15010A);

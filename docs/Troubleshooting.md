@@ -273,6 +273,27 @@ Internet Options proxy.
   by hand, silently, as SYSTEM.
 - The install times out: raise `InstallTimeoutMinutes` for slow installers.
 
+## winget found no applicable upgrade, but winget upgrade lists the application
+
+Symptom: an update fails with *winget found no applicable upgrade for 'X' (User scope); installed
+version is still ...* (or *the installed package type does not match the installer type*), although
+`winget upgrade` in a terminal lists that very application. Typical for products the user installed
+from the vendor's own download, not through winget: Perplexity Comet, Bing Wallpaper.
+
+Cause: `winget upgrade` compares the manifest's installers with how the product is installed and
+refuses when nothing matches. A manifest that declares only a machine-scope installer never matches a
+per-user install (Comet); an exe wrapper in the manifest never matches an ARP entry created by a
+per-user MSI (Bing Wallpaper). Those filters are built from the installed package's metadata and no
+`winget upgrade` argument relaxes them.
+
+What the agent does since 1.1.13: in the user's session it retries as `winget install --force`
+without a scope argument. `--force` makes winget skip the installed-package lookup, so no such filter
+is built, and the manifest's installer runs in the user's session just like the original setup did,
+so it needs no elevation. Success is still judged by the version winget reports afterwards. The retry
+never runs as SYSTEM, because a user-scope installer started there would land in SYSTEM's profile;
+a machine-wide install with the same problem keeps the original message and needs the vendor
+installer configured as a web source instead.
+
 ## SYSTEM is refused its own files, or machine-wide installs ask for UAC
 
 Symptoms seen on 1.1.2 to 1.1.7, all at once on the same device: `StateStore: Could not save state ...

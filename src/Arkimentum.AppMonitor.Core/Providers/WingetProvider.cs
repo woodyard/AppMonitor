@@ -216,6 +216,14 @@ public sealed class WingetProvider : IUpdateProvider
         var stillOutdated = newVersion is not null && !VersionComparer.IsUnknown(newVersion) && !string.IsNullOrWhiteSpace(update.AvailableVersion)
                             && VersionComparer.Compare(newVersion, update.AvailableVersion) < 0;
 
+        if (ShouldReinstall(run.ExitCode, context, stillOutdated || newVersion is null))
+        {
+            var refusal = run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade
+                ? "no applicable upgrade found (the manifest's installer does not match how the product is installed, typically its scope)"
+                : "the installed package type does not match the installer type";
+            return await ReinstallAsync(app, update, context, winget, wingetId, sourceName, refusal, run.ExitCode, progress, ct).ConfigureAwait(false);
+        }
+
         if (run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade)
         {
             if (stillOutdated || newVersion is null)
@@ -246,6 +254,105 @@ public sealed class WingetProvider : IUpdateProvider
             result.RebootRequired ? ", reboot required" : string.Empty, newVersion ?? update.AvailableVersion);
         return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
     }
+
+    /// <summary>
+    /// Whether a refused upgrade is retried as "winget install --force" (see <see cref="ReinstallAsync"/>). Pure, so
+    /// the rule is testable: only in a user's own session, only when winget said the upgrade is not applicable or the
+    /// installed package type does not match the installer, and only while the product is in fact still outdated.
+    /// </summary>
+    internal static bool ShouldReinstall(int exitCode, ExecutionContextInfo context, bool stillOutdated) =>
+        !context.IsSystem && stillOutdated &&
+        exitCode is WingetOutputParser.ExitNoApplicableUpgrade or WingetOutputParser.ExitUpdateInstallTechnologyMismatch;
+
+    /// <summary>
+    /// The way out when winget refuses to upgrade a per-user install it did not create. "winget upgrade" compares the
+    /// manifest's installers with where and how the product is installed: a manifest that only declares a
+    /// machine-scope installer (Perplexity.Comet) can never match a per-user install, and an installer type that
+    /// differs from the technology the ARP entry was created with (Microsoft.BingWallpaper: per-user MSI, exe wrapper
+    /// in the manifest) cannot either. Those filters are built from the installed package's metadata and no argument
+    /// relaxes them. "winget install --force" skips the installed-package lookup altogether, so no such filter exists;
+    /// without a --scope argument the manifest's installer is taken as is, and it runs in this user's session exactly
+    /// as the original per-user setup did, which is also why it needs no elevation. Success is still judged by the
+    /// version winget reports afterwards, never by the exit code. User context only: as LocalSystem a user-scope
+    /// installer would land in SYSTEM's own profile.
+    /// </summary>
+    private async Task<InstallResult> ReinstallAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
+        string wingetId, string sourceName, string refusal, int refusalExitCode, IProgress<string>? progress, CancellationToken ct)
+    {
+        var args = new StringBuilder()
+            .Append("install --id ").Append(Quote(wingetId))
+            .Append(" --exact --force");
+        AppendSource(args, sourceName);
+        args.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity");
+        AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
+        AppendExtra(args, _options.WingetGlobalArgs);
+
+        var name = string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName;
+        _logger.LogInformation("{AppId}: winget refused to upgrade '{WingetId}' ({Refusal}, 0x{Code:X8}); installing {Version} over it with 'winget install --force' in the {Context} context.",
+            app.AppId, wingetId, refusal, refusalExitCode, update.AvailableVersion, context.Context);
+        progress?.Report($"Installing {name} {update.AvailableVersion} over the current version via winget...");
+
+        var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
+        if (!run.Started) return InstallResult.Fail(run.StartFailure!);
+        if (run.TimedOut)
+            return InstallResult.Fail($"winget install timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1);
+
+        var result = InterpretWingetExitCode(run.ExitCode, run);
+        var newVersion = await ReadVersionAfterAsync(app, context, winget, wingetId, sourceName, ct).ConfigureAwait(false);
+        var stillOutdated = IsStillOutdated(newVersion, update.AvailableVersion);
+        var prefix = $"winget could not upgrade '{wingetId}' ({context.Context} scope): {refusal}.";
+
+        if (!result.Success || run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade)
+        {
+            var message = $"{prefix} Installing over it with 'winget install --force' failed as well: {result.Message}";
+            _logger.LogError("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, run.ExitCode);
+        }
+        if (stillOutdated && !result.RebootRequired)
+        {
+            var message = $"{prefix} 'winget install --force' reported success (exit 0x{run.ExitCode:X8}) but the installed version is still {newVersion}, expected {update.AvailableVersion}.";
+            _logger.LogError("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, run.ExitCode);
+        }
+
+        _logger.LogInformation("{AppId}: 'winget install --force' finished (exit 0x{Hex}){Reboot}; installed version now {Version}.", app.AppId, run.ExitCode.ToString("X8"),
+            result.RebootRequired ? ", reboot required" : string.Empty, newVersion ?? update.AvailableVersion);
+        return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
+    }
+
+    /// <summary>Forwards condensed, de-duplicated winget output lines to the progress reporter.</summary>
+    private static Action<string>? ProgressSink(IProgress<string>? progress)
+    {
+        if (progress is null) return null;
+        var last = string.Empty;
+        return line =>
+        {
+            var condensed = Condense(line);
+            if (condensed is null || condensed == last) return;
+            last = condensed;
+            progress.Report(condensed);
+        };
+    }
+
+    /// <summary>The version winget reports for the package after an install attempt, or null when it cannot be read.</summary>
+    private async Task<string?> ReadVersionAfterAsync(AppPolicy app, ExecutionContextInfo context, string winget, string wingetId, string sourceName, CancellationToken ct)
+    {
+        try
+        {
+            var after = await ListAsync(winget, app with { WingetId = wingetId, WingetSourceName = sourceName }, context, _options.CheckTimeout, ct).ConfigureAwait(false);
+            return string.IsNullOrWhiteSpace(after.Row?.Version) ? null : after.Row!.Version;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return null; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "{AppId}: could not re-read the installed version after the winget run.", app.AppId);
+            return null;
+        }
+    }
+
+    private static bool IsStillOutdated(string? installed, string? available) =>
+        installed is not null && !VersionComparer.IsUnknown(installed) && !string.IsNullOrWhiteSpace(available)
+        && VersionComparer.Compare(installed, available) < 0;
 
     /// <summary>Result of a <c>winget list</c> lookup for a single package.</summary>
     private sealed record ListLookup(WingetRow? Row, bool NotInstalled, string? Error);

@@ -159,12 +159,16 @@ public sealed partial class ConfigurationEditor : ObservableObject
 
             foreach (var app in Apps) app.Changed -= OnAppChanged;
             Apps.Clear();
-            var ids = values.Apps.Keys.Concat(_policy.Apps.Keys).Concat(_organization.Apps.Keys).Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(id => id, StringComparer.CurrentCultureIgnoreCase);
-            foreach (var id in ids) Apps.Add(CreateApp(id,
-                values.Apps.TryGetValue(id, out var pref) ? pref : new SortedDictionary<string, SettingValue>(StringComparer.OrdinalIgnoreCase),
-                _policy.Apps.TryGetValue(id, out var pol) ? pol : null,
-                _organization.Apps.TryGetValue(id, out var org) ? org : null));
+            var ids = values.Apps.Keys.Concat(_policy.Apps.Keys).Concat(_organization.Apps.Keys).Distinct(StringComparer.OrdinalIgnoreCase);
+            // Ordered by the name the list shows, not by AppId: a catalog id ("vscode") and a winget id
+            // ("Microsoft.VisualStudioCode") sort nowhere near each other, which read as an unsorted list.
+            var apps = ids.Select(id => CreateApp(id,
+                    values.Apps.TryGetValue(id, out var pref) ? pref : new SortedDictionary<string, SettingValue>(StringComparer.OrdinalIgnoreCase),
+                    _policy.Apps.TryGetValue(id, out var pol) ? pol : null,
+                    _organization.Apps.TryGetValue(id, out var org) ? org : null))
+                .OrderBy(a => a.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(a => a.AppId, StringComparer.OrdinalIgnoreCase);
+            foreach (var app in apps) Apps.Add(app);
 
             OnPropertyChanged(nameof(GlobalRows), nameof(GlobalGroups));
         }

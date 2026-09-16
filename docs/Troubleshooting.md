@@ -264,6 +264,23 @@ Internet Options proxy.
   by hand, silently, as SYSTEM.
 - The install times out: raise `InstallTimeoutMinutes` for slow installers.
 
+## SYSTEM is refused its own files, or machine-wide installs ask for UAC
+
+Symptoms seen on 1.1.2 to 1.1.7, all at once on the same device: `StateStore: Could not save state ...
+Access to the path is denied` although the ACL on `state.json` is correct, `winget.exe was not found
+(SYSTEM context)` right after a prerequisite check had found it, `Could not close ... Access is
+denied` when the service tried to end a process, and installers the SYSTEM service started that ran in
+the user's session and showed a UAC prompt (winget printed "The installer will request to run as
+administrator. Expect a prompt."; the service log shows `Started "winget.exe" ... in session 1`).
+
+Cause: identifying a pipe client with `NamedPipeServerStream.RunAsClient` leaked the client's
+impersonation into the service's async flow on .NET 10. The calling thread was reverted, but every
+continuation after the next await - and every task started from them - ran as the tray's user. Fixed in
+1.1.8: the client is identified from its process token without impersonating, and a regression test
+covers the flow. `ImpersonationGuard` still logs and reverts should any thread ever be found
+impersonating (`Thread N was still impersonating ...` in the service log); on 1.1.8 that line should
+never appear.
+
 ## The close-apps dialog keeps coming back
 Since 1.1.6 a process running in session 0 (as SYSTEM, a scheduled task, an RMM agent's script) is not
 treated as blocking at all and is left to the installer; only processes in interactive user sessions

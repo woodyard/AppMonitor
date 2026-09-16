@@ -27,7 +27,7 @@ public sealed class PipeClientConnection
 
 /// <summary>
 /// Multi-client named-pipe server hosted by the service. The pipe ACL allows any authenticated user to connect;
-/// the caller's SID/session is determined by impersonation so a client cannot spoof another user.
+/// the caller's SID/session is determined from the client process's own token so a client cannot spoof another user.
 /// </summary>
 public sealed class PipeServer : IAsyncDisposable
 {
@@ -157,20 +157,22 @@ public sealed class PipeServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Establishes who is on the other end from the OS, never from the message payload, so a client cannot claim to
+    /// be another user. The kernel tells us the client's process id; that process's own token carries the account.
+    ///
+    /// <para>
+    /// This deliberately does NOT use <see cref="NamedPipeServerStream.RunAsClient"/>. On .NET 10 the impersonation it
+    /// performs leaks into the execution context of the async flow: the calling thread is reverted, but every
+    /// continuation after the next await - and every task started from them - runs impersonating the client. In the
+    /// SYSTEM service that meant "access denied" on its own state file, an App Installer folder it could not list,
+    /// and installers launched into the user's session that then asked for UAC. Reproduced with a 60-line program;
+    /// the process-token route below shows no trace of it. The impersonating call is kept only as a fallback and is
+    /// then confined to a thread whose execution context does not flow back.
+    /// </para>
+    /// </summary>
     private void ResolveIdentity(NamedPipeServerStream pipe, PipeClientConnection conn)
     {
-        try
-        {
-            pipe.RunAsClient(() =>
-            {
-                using var id = WindowsIdentity.GetCurrent();
-                conn.UserSid = id.User?.Value;
-                conn.UserName = id.Name;
-            });
-        }
-        catch (Exception ex) { _logger.LogDebug(ex, "Impersonation of pipe client failed; falling back to the client process token"); }
-
-        if (conn.UserSid is not null) return;
         try
         {
             if (NativeMethods.GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var pid))
@@ -186,6 +188,35 @@ public sealed class PipeServer : IAsyncDisposable
                     }
                 }
             }
+        }
+        catch (Exception ex) { _logger.LogDebug(ex, "Reading the pipe client's process token failed; falling back to impersonation"); }
+
+        if (conn.UserSid is not null) return;
+        try
+        {
+            string? sid = null, name = null;
+            Exception? failure = null;
+            using (ExecutionContext.SuppressFlow())
+            {
+                var thread = new Thread(() =>
+                {
+                    try
+                    {
+                        pipe.RunAsClient(() =>
+                        {
+                            using var id = WindowsIdentity.GetCurrent();
+                            sid = id.User?.Value;
+                            name = id.Name;
+                        });
+                    }
+                    catch (Exception ex) { failure = ex; }
+                }) { IsBackground = true, Name = "pipe-client-identity" };
+                thread.Start();
+                thread.Join();
+            }
+            if (failure is not null) throw failure;
+            conn.UserSid = sid;
+            conn.UserName = name;
         }
         catch (Exception ex) { _logger.LogWarning(ex, "Could not determine the identity of the pipe client in session {Session}", conn.SessionId); }
     }

@@ -581,6 +581,7 @@ public static class Strings
     public static string InventoryVersions(IEnumerable<string> parts) => string.Join(" · ", parts);
 
     public static string InventoryAdded(int added, int skipped) => DiscoverAdded(added, skipped);
+    public const string InventoryConfigurationNotLoaded = "The organization configuration could not be loaded, so nothing was added. Open the Applications page, resolve the error shown there and try again.";
 
     // ---------------------------------------------------------------- organization configuration
     public const string OrganizationSettingsTitle = "Organization settings";

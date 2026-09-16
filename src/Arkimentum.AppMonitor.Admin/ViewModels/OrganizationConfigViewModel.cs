@@ -161,14 +161,34 @@ public sealed class OrganizationConfigViewModel : ObservableObject
     // ---------------------------------------------------------------- load
 
     /// <summary>Loads the document (and its history) when the selected organization has changed.</summary>
-    public void EnsureLoaded()
+    public void EnsureLoaded() => _ = EnsureLoadedAsync();
+
+    /// <summary>
+    /// The same as <see cref="EnsureLoaded"/>, but returns the load in flight. A page that is about to put something
+    /// into the editor (the Inventory page adding applications) must wait for it: a reload rebuilds every row from the
+    /// server document, so an addition made before the first load completed was silently discarded when the
+    /// Applications page was opened next. Completed when nothing needs loading.
+    /// </summary>
+    public Task EnsureLoadedAsync()
     {
-        if (_session.OrganizationId is not { } id) return;
-        if (_loadedOrganization == id && HasDocument) return;
-        Reload();
+        if (_session.OrganizationId is not { } id) return Task.CompletedTask;
+        if (_loadTask is { IsCompleted: false } running) return running;
+        if (_loadedOrganization == id && HasDocument) return Task.CompletedTask;
+        return ReloadAsync();
     }
 
-    private async void Reload()
+    private Task? _loadTask;
+
+    private void Reload() => _ = ReloadAsync();
+
+    /// <summary>One load at a time; a second request while one is running joins it instead of starting another.</summary>
+    private Task ReloadAsync()
+    {
+        if (_loadTask is { IsCompleted: false } running) return running;
+        return _loadTask = ReloadCoreAsync();
+    }
+
+    private async Task ReloadCoreAsync()
     {
         if (_session.OrganizationId is not { } id) return;
         IsBusy = true;

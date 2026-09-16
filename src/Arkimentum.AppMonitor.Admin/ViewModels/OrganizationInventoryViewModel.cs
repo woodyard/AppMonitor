@@ -188,6 +188,8 @@ public sealed partial class OrganizationInventoryViewModel : ObservableObject
     public void EnsureLoaded()
     {
         if (_session.OrganizationId is not { } id) return;
+        // Start loading the organization document now, so it is normally in place by the time something is added.
+        _ = _configuration.EnsureLoadedAsync();
         if (_loadedOrganization == id && _all.Count > 0) return;
         Reload();
     }
@@ -251,8 +253,20 @@ public sealed partial class OrganizationInventoryViewModel : ObservableObject
     /// Puts the ticked applications into the organization configuration editor. Nothing is sent to the server
     /// here — the administrator reviews the result on the Organization applications page and publishes it.
     /// </summary>
-    private void AddSelected()
+    private async void AddSelected()
     {
+        // Adding into an editor that has not loaded the server document yet looks fine here and is lost the moment the
+        // document arrives, because the load rebuilds every row. So wait for it, and refuse when it is not there.
+        IsBusy = true;
+        try { await _configuration.EnsureLoadedAsync().ConfigureAwait(true); }
+        finally { IsBusy = false; }
+        if (!_configuration.HasDocument)
+        {
+            Error = Strings.InventoryConfigurationNotLoaded;
+            _log.LogWarning("Nothing was added from the inventory: the organization configuration is not loaded.");
+            return;
+        }
+
         var editor = _configuration.Editor;
         int added = 0, skipped = 0;
         foreach (var row in _all.Where(i => i.IsSelected).ToList())

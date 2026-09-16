@@ -60,7 +60,7 @@ public static class ImpersonationGuard
         try
         {
             using var id = WindowsIdentity.GetCurrent();
-            return $"{id.Name} (impersonation {id.ImpersonationLevel}, thread {Environment.CurrentManagedThreadId})";
+            return $"{id.Name} (impersonation {id.ImpersonationLevel}, thread {Environment.CurrentManagedThreadId}, session {System.Diagnostics.Process.GetCurrentProcess().SessionId})";
         }
         catch (Exception ex)
         {

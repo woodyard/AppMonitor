@@ -175,7 +175,10 @@ public sealed class WingetProvider : IUpdateProvider
         AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
         AppendExtra(args, _options.WingetGlobalArgs);
 
-        _logger.LogInformation("{AppId}: upgrading '{WingetId}' via winget ({Context} scope).", app.AppId, wingetId, context.Context);
+        // The executable and the identity matter when an install misbehaves: a fleet device showed UAC prompts in the
+        // user's session for installs the SYSTEM service had started, which a session-0 process cannot cause by itself.
+        _logger.LogInformation("{AppId}: upgrading '{WingetId}' via winget ({Context} scope) using {Winget} as {Identity}.",
+            app.AppId, wingetId, context.Context, winget, Native.ImpersonationGuard.DescribeCurrentIdentity());
         progress?.Report($"Upgrading {(string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName)} via winget...");
 
         var lastProgressLine = string.Empty;

@@ -108,6 +108,11 @@ public static class ProcessRunner
         {
             if (!process.Start())
                 return new ProcessRunResult(-1, string.Empty, string.Empty, StartFailure: $"Failed to start '{fileName}'.");
+            // Which session the child landed in is the one fact that decides whether it can ever show a prompt to a
+            // user: a service's children belong in session 0. Logged at Information because it was exactly what was
+            // missing when a device showed UAC prompts for installs the SYSTEM service had started.
+            try { logger.LogInformation("Started \"{FileName}\" as pid {Pid} in session {Session}", Path.GetFileName(fileName), process.Id, process.SessionId); }
+            catch { /* the child may already be gone */ }
         }
         catch (Exception ex)
         {

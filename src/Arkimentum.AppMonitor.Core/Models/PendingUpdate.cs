@@ -77,10 +77,16 @@ public sealed class PendingUpdate
     public InstallerType InstallerType { get; set; }
     public string? Sha256 { get; set; }
 
+    /// <summary>
+    /// Whether the user may defer the update right now. False while a deferral is still running: deferring again
+    /// before it has expired would only extend it and use up another of the allowed deferrals, so the tray, the toast
+    /// and the close-apps dialog hide the buttons and the service refuses the request until the period is over.
+    /// </summary>
     public bool CanDefer(DateTimeOffset now)
     {
         if (State is UpdateState.Installing or UpdateState.Installed or UpdateState.Scheduled) return false;
         if (IsPastDeadline(now)) return false;
+        if (IsDeferred(now)) return false;
         return MaxDeferrals <= 0 || DeferralCount < MaxDeferrals;
     }
 

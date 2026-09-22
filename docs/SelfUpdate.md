@@ -6,7 +6,7 @@ running, downloads and verifies the release package and hands over to that relea
 in the fleet has to be scripted.
 
 Self-update is on by default and reads the official releases at `https://api.github.com/repos/woodyard/AppMonitor/releases/latest`; set `AgentAutoUpdate=0` to turn it off, or point `AgentUpdateFeedUrl` at your own manifest, or at the keyword `cloud` to use the cloud API's mirror.
-nothing at all.
+
 
 ## Configuration
 

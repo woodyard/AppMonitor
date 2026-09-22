@@ -7,7 +7,8 @@ configuration. Everything below is read by
 
 When the cloud service is in use, only three values - `CloudServerUrl`, `CloudOrganizationId` and
 `CloudEnrollmentKey` - have to be provisioned per device; everything else can be published once for the
-organization. ADMX, `.reg` files and the admin console keep working exactly as before and remain the
+organization. Intune / Group Policy registry values, `.reg` files and the admin console keep working
+exactly as before and remain the
 right answer for a stand-alone fleet. See [`Cloud.md`](Cloud.md).
 
 You do not have to write these values by hand. The **admin console**
@@ -23,7 +24,7 @@ precedence rules below. See [AdminConsole.md](AdminConsole.md).
 
 | # | Layer | Key | Written by |
 | --- | --- | --- | --- |
-| 1 (wins) | Policy | `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` | Group Policy (ADMX), Intune |
+| 1 (wins) | Policy | `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` | Intune or Group Policy registry values |
 | 2 | Organization configuration | `%ProgramData%\Arkimentum\AppMonitor\cloud-config.json` | published in the cloud, cached on the device |
 | 3 | Preference | `HKLM\SOFTWARE\Arkimentum\AppMonitor` | the installer, admins, scripts |
 | 4 | Catalog | `catalog.json` (per-app identity/source/detection data only) | shipped with the product / `CatalogPath` |
@@ -68,7 +69,7 @@ is for lab use only; production configuration always lives in HKLM.
 ## How values are read
 
 The reader is deliberately forgiving about types, so the same configuration can come from regedit, a
-`.reg` file, an ADMX list or Intune:
+`.reg` file, Intune or Group Policy:
 
 | Kind | Accepted types | Notes |
 | --- | --- | --- |
@@ -98,7 +99,7 @@ All of these live directly under `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` 
 | `WebSourcesEnabled` | DWORD | 1 | 0/1 | Process applications with `Source=web`. |
 | `LaunchTrayAgent` | DWORD | 1 | 0/1 | Service launches `Arkimentum.AppMonitor.Tray.exe` into interactive sessions. |
 | `NotificationsEnabled` | DWORD | 1 | 0/1 | Tray agent shows toast notifications. |
-| `NotificationMode` | SZ | `Quiet` | `Quiet`, `Reminders` | `Quiet` announces an update once and afterwards only interrupts when the user has to act (deadline approaching, applications must be closed, install failed); no "installing" toast. `Reminders` repeats every `NotificationIntervalMinutes`. |
+| `NotificationMode` | SZ | `Quiet` | `Quiet`, `Reminders` | `Quiet` announces an update once and afterwards only interrupts when the user has to act (deadline approaching, applications must be closed, install failed); no "Installing ..." toast unless `NotifyInstalling` asks for one. `Reminders` repeats every `NotificationIntervalMinutes`. |
 | `ShowInstalledNotifications` | DWORD | 0 | 0/1 | Notify the user after a successful install. Changed in 1.2: this was on by default up to 1.1.1. |
 | `LogLevel` | SZ | `Information` | `Trace`, `Debug`, `Information`, `Warning`, `Error` | Minimum level written to the log files. |
 | `LogDirectory` | SZ / EXPAND_SZ | `%ProgramData%\Arkimentum\AppMonitor\Logs` | full path | Service log folder. Must be writable by LocalSystem. Does not affect the tray agent. |
@@ -122,7 +123,8 @@ All of these live directly under `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` 
 | `DefaultDeadlineHours` | DWORD | 0 | 0-8760 | Default for `DeadlineHours`. 0 = no deadline. |
 | `DefaultMaxDeferrals` | DWORD | 3 | 0-1000 | Default for `MaxDeferrals`. 0 = unlimited. |
 | `DefaultDeferralOptions` | SZ / MULTI_SZ | `60,240,1440` | minutes | Default deferral choices offered to the user. |
-| `DefaultAutoInstall` | DWORD | 0 | 0/1 | Default for `AutoInstall`. |
+| `DefaultAutoInstall` | DWORD | 0 | 0/1 | Default for `AutoInstall`: start the install on its own when none of the application's processes are running. Whether a toast announces it is decided by `DefaultNotifyInstalling` / `NotifyInstalling`. |
+| `DefaultNotifyInstalling` | SZ | `auto` | `auto`, `always`, `never` | Default for `NotifyInstalling`: whether the "Installing ..." toast is shown when an install starts. `auto` follows `NotificationMode` (`Reminders` shows it, `Quiet` does not). An unreadable value falls back to `auto`. |
 | `DefaultCloseGracePeriodMinutes` | DWORD | 15 | 0-1440 | Default for `CloseGracePeriodMinutes`. |
 | `DefaultForceCloseAtDeadline` | DWORD | 1 | 0/1 | Default for `ForceCloseAtDeadline`. |
 | `TrayPath` | SZ | *(empty)* | full path | Explicit path to `Arkimentum.AppMonitor.Tray.exe`. Only needed when the tray agent is not in the service folder or in `..\Tray\`. |
@@ -261,12 +263,13 @@ global `Default...` value. The catalog never supplies them.
 | `MaxDeferrals` | DWORD | `DefaultMaxDeferrals` | 0-1000 | How often the user may postpone. 0 = unlimited. |
 | `DeferralOptions` | SZ / MULTI_SZ | `DefaultDeferralOptions` | minutes | Deferral choices offered in the tray agent, e.g. `60,240,1440`. |
 | `ProcessNames` | MULTI_SZ / SZ | catalog value | names | Processes that must not run during the install. `.exe` is optional and stripped: `chrome` and `chrome.exe` are identical. |
-| `AutoInstall` | DWORD | `DefaultAutoInstall` | 0/1 | Install without asking as soon as no listed process is running. |
+| `AutoInstall` | DWORD | `DefaultAutoInstall` | 0/1 | Start the install on its own as soon as no listed process is running. Whether a toast announces it is decided by `NotifyInstalling`. |
 | `CloseGracePeriodMinutes` | DWORD | `DefaultCloseGracePeriodMinutes` | 0-1440 | Time the user gets to save work after a forced close is announced. |
 | `ForceCloseAtDeadline` | DWORD | `DefaultForceCloseAtDeadline` | 0/1 | Terminate the blocking processes once the deadline has passed and the grace period has elapsed. |
 | `MinimumVersion` | SZ | catalog value | version | Only report an update when the installed version is below this one. |
 | `NotificationIntervalMinutes` | DWORD | *(unset = use the global value)* | minutes | Per-application override of the notification cadence. Not range-clamped. |
 | `NotificationMode` | SZ | *(unset = use the global value)* | `Quiet`, `Reminders` | Per-application override of the notification style. An unreadable value falls back to the global mode. |
+| `NotifyInstalling` | SZ | `DefaultNotifyInstalling` | `auto`, `always`, `never` | Show the "Installing ..." toast when this application's install starts. `auto` follows the notification style (`Reminders` shows it, `Quiet` does not), `always` and `never` decide it regardless. An unreadable value falls back to the global value. |
 
 ## The flat `AppList` format
 
@@ -305,7 +308,7 @@ process names - so the registry only has to say *which* applications to manage a
   `InstallerType`, `InstallerArgs`, `Sha256`, `Sha256Url`, `UserDownloadUrl`, `UserInstallerArgs`,
   the three `Detect*` values, `ProcessNames` and `MinimumVersion`.
 - It never supplies **behaviour**: `Mandatory`, `DeadlineHours`, `MaxDeferrals`, `DeferralOptions`,
-  `AutoInstall`, `CloseGracePeriodMinutes`, `ForceCloseAtDeadline` and `WingetReplaceOnMismatch` always come from the
+  `AutoInstall`, `CloseGracePeriodMinutes`, `ForceCloseAtDeadline`, `NotifyInstalling` and `WingetReplaceOnMismatch` always come from the
   application's own registry values, and otherwise from the global `Default...` values
   (`WingetReplaceOnMismatch` has no global counterpart and is simply off unless the application sets it). How strict
   you are with your users is your policy decision, not the catalog author's.
@@ -408,6 +411,5 @@ apply a change immediately.
 - Organization-managed configuration, provisioning and precedence examples: [Cloud.md](Cloud.md)
 - Agent self-update: [SelfUpdate.md](SelfUpdate.md)
 - Ready-made example: `deploy\Sample-Configuration.reg`, `deploy\Set-SampleConfiguration.ps1`
-- Group Policy template: `deploy\policy\` (see its README for Central Store and Intune)
 - Behaviour of these settings: [Architecture.md](Architecture.md)
 - When something does not work: [Troubleshooting.md](Troubleshooting.md)

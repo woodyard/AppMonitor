@@ -49,6 +49,18 @@ public static class PolicyEngine
         policy?.NotificationMode ?? settings.NotificationMode;
 
     /// <summary>
+    /// Whether the "Installing ..." toast is shown when this app's install starts: the app's own choice when it makes
+    /// one, otherwise the global default. Auto keeps the historical behaviour (only Reminders shows the toast).
+    /// </summary>
+    public static bool NotifyInstallingFor(AppPolicy? policy, AgentSettings settings) =>
+        (policy?.NotifyInstalling ?? settings.DefaultNotifyInstalling) switch
+        {
+            NotifyInstallingMode.Always => true,
+            NotifyInstallingMode.Never => false,
+            _ => NotificationModeFor(policy, settings) == NotificationMode.Reminders,
+        };
+
+    /// <summary>
     /// Merges scan outcomes into <paramref name="state"/>. <paramref name="checkedKeys"/> is the set of (app, context, user)
     /// combinations that were actually checked this round; tracked updates outside that set are left untouched
     /// (e.g. a user who is not logged on right now).
@@ -324,7 +336,13 @@ public static class PolicyEngine
     public static bool TryDefer(PendingUpdate u, int minutes, DateTimeOffset now, out string? reason)
     {
         reason = null;
-        if (!u.CanDefer(now)) { reason = u.IsPastDeadline(now) ? "The deadline has passed." : "No more deferrals are allowed."; return false; }
+        if (!u.CanDefer(now))
+        {
+            reason = u.IsPastDeadline(now) ? "The deadline has passed."
+                : u.IsDeferred(now) ? $"Already deferred until {u.DeferredUntilUtc!.Value.ToLocalTime():t}."
+                : "No more deferrals are allowed.";
+            return false;
+        }
         if (minutes <= 0 || (u.DeferralOptionsMinutes.Count > 0 && !u.DeferralOptionsMinutes.Contains(minutes)))
         { reason = "That deferral length is not allowed."; return false; }
 

@@ -36,6 +36,7 @@ public sealed class SettingsSchemaParityTests
         Assert.Equal(CoreConfig.SettingsSchema.ContextChoices, ApiWire.SettingsSchema.ContextChoices);
         Assert.Equal(CoreConfig.SettingsSchema.InstallerTypeChoices, ApiWire.SettingsSchema.InstallerTypeChoices);
         Assert.Equal(CoreConfig.SettingsSchema.NotificationModeChoices, ApiWire.SettingsSchema.NotificationModeChoices);
+        Assert.Equal(CoreConfig.SettingsSchema.NotifyInstallingChoices, ApiWire.SettingsSchema.NotifyInstallingChoices);
     }
 
     private static void AssertParity(IReadOnlyList<ApiWire.SettingDefinition> api, IReadOnlyList<CoreConfig.SettingDefinition> core)

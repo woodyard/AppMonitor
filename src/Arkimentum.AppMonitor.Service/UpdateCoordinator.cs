@@ -716,8 +716,9 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             u = Get(key)!;
             _logger.LogInformation("Installing {App} {From} -> {To} ({Source}, {Context}{User})", u.DisplayName, u.InstalledVersion, u.AvailableVersion, u.Source, u.Context,
                 u.Context == InstallContext.User ? $" for {u.UserSid}" : "");
-            // "Installing" is pure progress chatter: Quiet mode leaves it to the tray window and the icon badge.
-            if (settings.NotificationsEnabled && PolicyEngine.NotificationModeFor(policy, settings) == NotificationMode.Reminders)
+            // Whether the start of an install is announced is the app's NotifyInstalling choice (auto = progress chatter
+            // that only Reminders shows, so Quiet leaves it to the tray window and the icon badge).
+            if (settings.NotificationsEnabled && PolicyEngine.NotifyInstallingFor(policy, settings))
                 await SendNotificationAsync(u, NotificationKind.Installing, ct).ConfigureAwait(false);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);

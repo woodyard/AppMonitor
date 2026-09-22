@@ -237,6 +237,7 @@ public sealed class AppEditorViewModel : ObservableObject
             "ForceCloseAtDeadline" => "DefaultForceCloseAtDeadline",
             "NotificationIntervalMinutes" => "NotificationIntervalMinutes",
             "NotificationMode" => "NotificationMode",
+            "NotifyInstalling" => "DefaultNotifyInstalling",
             _ => null,
         };
         if (global is not null) return (_globalValue(global), Strings.InheritedFromGlobal);

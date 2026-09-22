@@ -56,6 +56,21 @@ public enum NotificationMode
     Reminders = 1,
 }
 
+/// <summary>
+/// Whether the "Installing <app>" toast is shown when an install starts. <see cref="Auto"/> keeps the historical
+/// behaviour (progress chatter that only <see cref="NotificationMode.Reminders"/> shows); the other two decide it
+/// for the application regardless of the notification style.
+/// </summary>
+public enum NotifyInstallingMode
+{
+    /// <summary>Follow the notification style: Reminders shows the toast, Quiet does not.</summary>
+    Auto = 0,
+    /// <summary>Always show the toast when the install starts.</summary>
+    Always = 1,
+    /// <summary>Never show the toast when the install starts.</summary>
+    Never = 2,
+}
+
 public enum NotificationKind
 {
     UpdateAvailable = 0,

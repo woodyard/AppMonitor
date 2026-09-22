@@ -1,8 +1,11 @@
 # The cloud service
 
-Arkimentum AppMonitor works perfectly well on its own: configuration in the registry, updates from
-winget and vendor sites, nothing leaving the device. The cloud service is **optional** and changes one
-thing - where the configuration comes from, and where the device reports what it did.
+The cloud service is where an organization is managed: the configuration is published once in the
+admin console and every enrolled device collects it, reports what it found and what it did, and
+takes commands from the console. A device can also run without it, with the whole configuration in
+the registry and updates from winget and vendor sites; what still leaves such a device is the agent
+self-update check and the winget or vendor traffic of the updates themselves, each of which can be
+switched off.
 
 With it in place you provision **three registry values per device** and nothing else. Everything the
 agent needs afterwards - which applications to monitor, how mandatory they are, deadlines, deferrals,
@@ -10,16 +13,15 @@ log levels - is published once for the organization and collected by every devic
 
 | Without the cloud | With the cloud |
 | --- | --- |
-| Configuration pushed to every device (ADMX, `.reg`, Intune script) | Three connection values per device; the rest published once |
+| Configuration pushed to every device (`.reg`, Intune script, Group Policy) | Three connection values per device; the rest published once |
 | A configuration change is a deployment | A configuration change is a *Publish* in the web admin console - in a browser, nothing installed |
 | No fleet view; one device at a time | Devices and Inventory pages across the organization |
 | "Is this machine patched?" answered per machine | Answered for the fleet, with versions and device counts |
 | New agent versions deployed by Intune / RMM | The agent updates itself from signed releases |
-| No data leaves the device | The device reports its inventory and update state ([exact fields](#what-leaves-the-device)) |
+| Nothing reported anywhere; only the self-update check and the update downloads themselves leave the device | The device reports its inventory and update state ([exact fields](#what-leaves-the-device)) |
 
-Nothing is taken away. The Policies key still wins over everything, the ADMX template still works,
-`.reg` files and the admin console still work, and a device that cannot reach the service keeps
-running on what it cached.
+Nothing is taken away. The Policies key still wins over everything, `.reg` files and the admin console
+still work, and a device that cannot reach the service keeps running on what it cached.
 
 Operators deploying the backend itself (Azure Functions, Azure SQL, Blob storage, the Static Web App that
 hosts the web admin console, Entra ID app registrations, Bicep, `Deploy-Cloud.ps1`) want
@@ -459,25 +461,24 @@ parameter 'LiteralPath' because it is an empty string"; `-SourceRoot .` names th
 
 The transcript written by `-LogFile` starts with the full command line, enrollment key included, and
 `%ProgramData%` logs are readable by every user of the device. Either leave `-LogFile` off once the rollout is
-proven, or provision the three cloud values through the ADMX policy instead of the command line.
+proven, or provision the three cloud values as policy registry values instead of on the command line.
 
 Use `-SkipPrerequisites` in an Intune install: the ESP has enough to do, and the service runs the
 prerequisite check itself shortly after it starts. Add `-NoAutoUpdate` if Intune should remain the only
 thing that ever replaces the binaries.
 
-### Group Policy (ADMX)
+### Intune / Group Policy
 
-Computer Configuration → Administrative Templates → Arkimentum → AppMonitor → **Organization
-connection** → *Organization connection* → Enabled, and fill in the three fields. Import
-`deploy\policy\ArkimentumAppMonitor.admx` and `en-US\ArkimentumAppMonitor.adml` into the Central Store
-first; see [`deploy/policy/README.md`](../deploy/policy/README.md).
+Write `CloudServerUrl`, `CloudOrganizationId` and `CloudEnrollmentKey` as `REG_SZ` values under
+`HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` - with an Intune configuration profile (Settings
+Catalog → Registry, or a custom profile), an Intune platform script, or a Group Policy preference.
 
-Policy-provisioned values land in `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor`, which is read-only
-for the agent and the consoles and cannot be changed locally - the right choice when the connection
-must not be tampered with. Restrict who can read the GPO: the enrollment key is in it.
+Policy-provisioned values are read-only for the agent and the consoles and cannot be changed locally -
+the right choice when the connection must not be tampered with. Restrict who can read the profile or
+GPO: the enrollment key is in it.
 
-The same category also has *Organization sync interval*, *Apply the organization configuration* and
-*Report inventory to the organization*; *Agent updates* is the neighbouring category.
+The same key also takes `CloudSyncIntervalMinutes`, `CloudConfigEnabled` and
+`CloudReportingEnabled`, plus the agent-update values; see [`Registry.md`](Registry.md).
 
 ### Manually, on one machine
 

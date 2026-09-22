@@ -44,6 +44,7 @@ public sealed class AppEditor
         ["ForceCloseAtDeadline"] = "DefaultForceCloseAtDeadline",
         ["NotificationIntervalMinutes"] = "NotificationIntervalMinutes",
         ["NotificationMode"] = "NotificationMode",
+        ["NotifyInstalling"] = "DefaultNotifyInstalling",
     };
 
     private readonly Func<string, string> _globalValue;

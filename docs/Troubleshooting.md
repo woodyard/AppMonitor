@@ -336,6 +336,10 @@ application editor ("Replace mismatched installs"). The agent then does what win
 by the version winget reports afterwards. If several versions of the package are registered and winget
 refuses to choose between them (`0x8A150016`, *Multiple versions of this package are installed*), the
 agent retries the uninstall once with `--all-versions` so that every registered version is removed.
+Because winget reports such a multi-uninstall as failed (`0x8A150066`, *multiple uninstall failed*) when
+even one registration resists, the agent judges the removal by what winget lists afterwards - the
+package gone, or a different version than the one being replaced - and goes on to the install with a
+warning in the log rather than stopping on the exit code.
 
 Caveat: it is off by default because the uninstall comes first. Between the two steps the application
 is not installed, and if the install then fails the device is left without it until the next scan
@@ -522,10 +526,9 @@ reg query 'HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor' /s
 gpresult /h "$env:TEMP\gp.html"    # which GPO it came from
 ```
 
-Change it where it is set - the GPO, or the Intune configuration profile / ADMX ingestion. See
-[`../deploy/policy/README.md`](../deploy/policy/README.md). If the key was written by a script rather
-than by real policy (an export run with `--policy`), remove those values from the Policies key to hand
-control back to the console.
+Change it where it is set - the GPO, or the Intune configuration profile or platform script that
+writes the Policies key. If the key was written by a script rather than by real policy (an export run
+with `--policy`), remove those values from the Policies key to hand control back to the console.
 
 ### Testing without administrative rights
 
@@ -711,8 +714,9 @@ by an upgrade.
 ### An update keeps reinstalling itself
 
 Two mechanisms are replacing the same files - typically self-update and an Intune Win32 app deployment
-of the same product. Set `AgentAutoUpdate = 0` (or the ADMX *Update the agent automatically* → Disabled)
-and let the deployment tool own the binaries, or stop deploying it and let the agent update itself.
+of the same product. Set `AgentAutoUpdate = 0` (locally, from the admin console, or as a policy
+registry value) and let the deployment tool own the binaries, or stop deploying it and let the agent
+update itself.
 
 ## The service does not start
 

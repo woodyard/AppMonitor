@@ -333,8 +333,8 @@ Set-App -AppId 'powershell' -Values ([ordered]@{
 
 # 5) The flat AppList format -------------------------------------------------------------------
 #    One REG_SZ value per app: the value name is the AppId, the data is Name=Value;Name=Value.
-#    This is what the ADMX "Monitored applications" list element and Intune produce, because
-#    neither can create nested registry keys. Inside an AppList entry, list values use '|' as the
+#    This is what Intune and configuration scripts produce, because they cannot create nested
+#    registry keys. Inside an AppList entry, list values use '|' as the
 #    separator (';' already separates the pairs) - the reader converts '|' to ',' for ProcessNames
 #    and DeferralOptions.
 Write-Step 'Applications (flat AppList format)'

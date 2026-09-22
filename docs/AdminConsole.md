@@ -245,7 +245,7 @@ groups them:
 | --- | --- |
 | Scanning | `ScanIntervalMinutes`, `ScanOnStartup`, `StartupDelaySeconds`, `PolicyTickSeconds`, `CheckTimeoutMinutes`, `InstallTimeoutMinutes` |
 | Notifications | `NotificationsEnabled`, `NotificationMode`, `NotificationIntervalMinutes`, `ShowInstalledNotifications`, `LaunchTrayAgent` |
-| Default update behaviour | `DefaultMandatory`, `DefaultDeadlineHours`, `DefaultMaxDeferrals`, `DefaultDeferralOptions`, `DefaultAutoInstall`, `DefaultCloseGracePeriodMinutes`, `DefaultForceCloseAtDeadline` |
+| Default update behaviour | `DefaultMandatory`, `DefaultDeadlineHours`, `DefaultMaxDeferrals`, `DefaultDeferralOptions`, `DefaultAutoInstall`, `DefaultNotifyInstalling`, `DefaultCloseGracePeriodMinutes`, `DefaultForceCloseAtDeadline` |
 | Sources | `WingetEnabled`, `WebSourcesEnabled`, `UseCatalog`, `EnableAllCatalogApps`, `CatalogPath`, `ProxyUrl`, `WingetGlobalArgs`, `WingetIncludeUnknown`, `WingetPath`, and the prerequisite settings `AutoInstallPrerequisites`, `PrerequisiteCheckIntervalHours`, `WingetMinimumVersion` |
 | Logging and storage | `LogLevel`, `LogDirectory`, `LogRetentionDays`, `MaxLogFileSizeMB`, `StateDirectory` |
 | Advanced | `TrayPath`, and every value marked advanced in the groups above |
@@ -268,7 +268,8 @@ Changes apply without a service restart: the service re-reads the registry on ev
   the web-source fields (`VersionUrl`, `VersionRegex`, `DownloadUrl`, `InstallerType`,
   `InstallerArgs`, `Sha256`/`Sha256Url`), the detection fields and the behaviour fields
   (`Mandatory`, `DeadlineHours`, `MaxDeferrals`, `DeferralOptions`, `AutoInstall`, `ProcessNames`,
-  `CloseGracePeriodMinutes`, `ForceCloseAtDeadline`, `NotificationIntervalMinutes`, `NotificationMode`).
+  `CloseGracePeriodMinutes`, `ForceCloseAtDeadline`, `NotificationIntervalMinutes`, `NotificationMode`,
+  `NotifyInstalling`).
 - **Test detection** - runs the real check for that one application (the winget query or the web
   request plus the version regex) **as the administrator running the console**, and shows what it
   found: installed version, available version, and the error if it failed. It is a check only - it
@@ -308,7 +309,7 @@ Three states per value:
   [`Registry.md`](Registry.md#layers-and-precedence).
 - The `--export --policy` switch and the *target the Policies key* option in the export dialog exist
   for the deployment artefacts only - they generate a file that writes the Policies key on **other**
-  machines. See [Relation to the ADMX policy layer](#relation-to-the-admx-policy-layer).
+  machines. See [Relation to the policy layer](#relation-to-the-policy-layer).
 
 ### Export formats
 
@@ -482,7 +483,8 @@ Two ways, both with the `.reg` export:
    redirection itself.
 
 Both write the **preference** key, which Group Policy does not clean up when the GPO is unlinked. For
-settings that must disappear with the policy, use the ADMX template instead (below).
+settings that must disappear with the policy, write the Policies key from Group Policy or Intune
+instead (below).
 
 #### (d) RMM or one-off
 
@@ -513,12 +515,12 @@ Either through the UI - **Export & Import** → *Import profile* → choose the 
 The import is validated first; a profile with unknown value names or out-of-range numbers is rejected
 as a whole and nothing is written.
 
-### Relation to the ADMX policy layer
+### Relation to the policy layer
 
 | | Preference key | Policies key |
 | --- | --- | --- |
 | Path | `HKLM\SOFTWARE\Arkimentum\AppMonitor` | `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` |
-| Written by | installer, admin console, exported `.reg`/`.ps1` | Group Policy (ADMX), Intune ADMX ingestion, or an export targeting it |
+| Written by | installer, admin console, exported `.reg`/`.ps1` | Group Policy, an Intune configuration profile or platform script, or an export targeting it |
 | Precedence | loses | **wins** |
 | Standard users | cannot write (administrators only) | cannot write at all |
 | Removed when the policy is unassigned | no | yes (Group Policy cleans its own key) |
@@ -527,18 +529,19 @@ The exports can target the Policies key (`--policy`, or the option in the export
 can *emulate* policy on machines that are not managed by Group Policy or Intune. That is a fallback,
 not the recommended path:
 
-- For a managed fleet, deploy the real ADMX template (`deploy\policy\ArkimentumAppMonitor.admx` and
-  `en-US\*.adml`) - see [`deploy/policy/README.md`](../deploy/policy/README.md). Real policy is
-  reported in `gpresult`, is refreshed automatically, is tamper-resistant, and disappears when you
-  unassign it.
+- For a managed fleet, have Group Policy or Intune write the Policies key itself (a configuration
+  profile, a Group Policy preference, or a platform script that targets
+  `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor`); the value names are in
+  [`Registry.md`](Registry.md). Real policy is reported in `gpresult`, is refreshed automatically, is
+  tamper-resistant, and disappears when you unassign it.
 - A script-written Policies key looks like policy to the agent but is invisible to Group Policy
   tooling, and nothing removes it when you stop wanting it.
 - The admin console **cannot edit policy-managed values** - it only displays them as locked. If you
   write the Policies key with an exported script, you are also removing those values from what the
   console (and any local administrator) can change. That is sometimes exactly the point.
 
-A sensible split: ADMX/Intune for the handful of settings the organisation mandates, the admin console
-and the preference key for everything else.
+A sensible split: Group Policy / Intune for the handful of settings the organisation mandates, the
+admin console and the preference key for everything else.
 
 ### Headless use
 
@@ -611,5 +614,4 @@ elevation. To reach the deprecated per-machine pages, start the executable with 
 - The cloud service, provisioning and precedence: [`Cloud.md`](Cloud.md)
 - Agent self-update: [`SelfUpdate.md`](SelfUpdate.md)
 - How the agent behaves: [`Architecture.md`](Architecture.md)
-- Group Policy / Intune ADMX: [`../deploy/policy/README.md`](../deploy/policy/README.md)
 - When something does not work: [`Troubleshooting.md`](Troubleshooting.md)

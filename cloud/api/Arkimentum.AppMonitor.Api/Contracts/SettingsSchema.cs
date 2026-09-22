@@ -52,6 +52,7 @@ public static class SettingsSchema
     public static readonly IReadOnlyList<string> ContextChoices = ["auto", "system", "user"];
     public static readonly IReadOnlyList<string> InstallerTypeChoices = ["exe", "msi", "msix"];
     public static readonly IReadOnlyList<string> NotificationModeChoices = ["Quiet", "Reminders"];
+    public static readonly IReadOnlyList<string> NotifyInstallingChoices = ["auto", "always", "never"];
 
     public static readonly IReadOnlyList<SettingDefinition> Global =
     [
@@ -72,7 +73,8 @@ public static class SettingsSchema
         new("DefaultDeadlineHours", SettingKind.Int, CategoryBehaviour, "Default deadline (hours)", "Hours after detection when a mandatory update is enforced. 0 = no deadline.", 0, 0, 8760),
         new("DefaultMaxDeferrals", SettingKind.Int, CategoryBehaviour, "Default maximum deferrals", "How many times a user may defer an update. 0 = unlimited.", 3, 0, 1000),
         new("DefaultDeferralOptions", SettingKind.IntList, CategoryBehaviour, "Default deferral choices (minutes)", "Deferral lengths offered to the user, in minutes, e.g. 60,240,1440.", "60,240,1440"),
-        new("DefaultAutoInstall", SettingKind.Bool, CategoryBehaviour, "Install silently by default", "Install without asking when none of the application's processes are running.", false),
+        new("DefaultAutoInstall", SettingKind.Bool, CategoryBehaviour, "Install automatically by default", "Start the install on its own when none of the application's processes are running. Whether a toast announces it is decided by 'Notify when installing'.", false),
+        new("DefaultNotifyInstalling", SettingKind.Choice, CategoryBehaviour, "Notify when installing", "Show a toast when the install of an application starts: auto = follow the notification style (Reminders shows it, Quiet does not), always, never.", "auto", Choices: NotifyInstallingChoices),
         new("DefaultCloseGracePeriodMinutes", SettingKind.Int, CategoryBehaviour, "Default grace period before forced close (minutes)", "Time the user gets to save work after a forced close is announced.", 15, 0, 1440),
         new("DefaultForceCloseAtDeadline", SettingKind.Bool, CategoryBehaviour, "Force-close applications at the deadline", "Terminate blocking processes when the deadline has passed and the grace period elapsed.", true),
 
@@ -142,11 +144,12 @@ public static class SettingsSchema
         new("DeadlineHours", SettingKind.Int, AppCategoryBehaviour, "Deadline (hours after detection)", "0 = no deadline.", Min: 0, Max: 8760),
         new("MaxDeferrals", SettingKind.Int, AppCategoryBehaviour, "Maximum deferrals", "0 = unlimited.", Min: 0, Max: 1000),
         new("DeferralOptions", SettingKind.IntList, AppCategoryBehaviour, "Deferral choices (minutes)", "e.g. 60,240,1440."),
-        new("AutoInstall", SettingKind.Bool, AppCategoryBehaviour, "Install silently", "Install without asking when no listed process is running."),
+        new("AutoInstall", SettingKind.Bool, AppCategoryBehaviour, "Install automatically", "Start the install on its own when no listed process is running. Whether a toast announces it is decided by 'Notify when installing'."),
         new("CloseGracePeriodMinutes", SettingKind.Int, AppCategoryBehaviour, "Grace period before forced close (minutes)", "", Min: 0, Max: 1440),
         new("ForceCloseAtDeadline", SettingKind.Bool, AppCategoryBehaviour, "Force-close at the deadline", ""),
         new("NotificationIntervalMinutes", SettingKind.Int, AppCategoryBehaviour, "Notification interval (minutes)", "Overrides the global interval for this app.", Min: 1, Max: 10080, Advanced: true),
         new("NotificationMode", SettingKind.Choice, AppCategoryBehaviour, "Notification style", "Overrides the global notification style for this app.", Choices: NotificationModeChoices, Advanced: true),
+        new("NotifyInstalling", SettingKind.Choice, AppCategoryBehaviour, "Notify when installing", "Show a toast when the install of this application starts: auto = follow the notification style (Reminders shows it, Quiet does not), always, never.", Choices: NotifyInstallingChoices),
     ];
 
     public static SettingDefinition? FindGlobal(string name) => Global.FirstOrDefault(d => d.Name.Equals(name, StringComparison.OrdinalIgnoreCase));

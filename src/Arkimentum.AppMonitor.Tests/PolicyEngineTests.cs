@@ -254,15 +254,26 @@ public class PolicyEngineTests
     }
 
     [Fact]
-    public void Deferral_is_capped_at_deadline_and_by_max_deferrals()
+    public void Deferral_is_capped_at_the_deadline()
     {
         var (_, u) = Detect(Policy(mandatory: true, deadlineHours: 2, maxDeferrals: 2), T0);
         Assert.True(PolicyEngine.TryDefer(u, 1440, T0, out _));
         Assert.Equal(T0.AddHours(2), u.DeferredUntilUtc);
-        Assert.True(PolicyEngine.TryDefer(u, 60, T0.AddMinutes(1), out _));
-        Assert.False(PolicyEngine.TryDefer(u, 60, T0.AddMinutes(2), out var reason));
+    }
+
+    [Fact]
+    public void Deferral_is_limited_by_max_deferrals_once_each_period_is_over()
+    {
+        var (_, u) = Detect(Policy(mandatory: true, deadlineHours: 3, maxDeferrals: 2), T0);
+        Assert.True(PolicyEngine.TryDefer(u, 60, T0, out _));
+        // A running deferral cannot be stacked; it neither extends the period nor uses up another deferral.
+        Assert.False(PolicyEngine.TryDefer(u, 60, T0.AddMinutes(1), out var reason));
+        Assert.Contains("Already deferred", reason);
+        Assert.Equal(1, u.DeferralCount);
+        Assert.True(PolicyEngine.TryDefer(u, 60, T0.AddHours(1), out _));
+        Assert.False(PolicyEngine.TryDefer(u, 60, T0.AddHours(2), out reason));
         Assert.Contains("No more deferrals", reason);
-        Assert.False(u.CanDefer(T0.AddMinutes(2)));
+        Assert.False(u.CanDefer(T0.AddHours(2)));
     }
 
     [Fact]
@@ -279,7 +290,8 @@ public class PolicyEngineTests
     public void Unlimited_deferrals_when_max_is_zero()
     {
         var (_, u) = Detect(Policy(maxDeferrals: 0), T0);
-        for (var i = 0; i < 10; i++) Assert.True(PolicyEngine.TryDefer(u, 60, T0.AddMinutes(i), out _));
+        // Each deferral is taken once the previous one has run out; only the count is unlimited.
+        for (var i = 0; i < 10; i++) Assert.True(PolicyEngine.TryDefer(u, 60, T0.AddHours(i), out _));
     }
 
     [Fact]

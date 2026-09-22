@@ -5,8 +5,8 @@
 .DESCRIPTION
     Publishes src\Arkimentum.AppMonitor.Service, src\Arkimentum.AppMonitor.Tray and
     src\Arkimentum.AppMonitor.Admin for win-x64 into <OutputRoot>\Service, <OutputRoot>\Tray and
-    <OutputRoot>\Admin, runs the xunit test project, copies the deployment scripts, the ADMX policy
-    folder and the documentation into <OutputRoot>, and finally creates
+    <OutputRoot>\Admin, runs the xunit test project, copies the deployment scripts and the
+    documentation into <OutputRoot>, and finally creates
     artifacts\Arkimentum.AppMonitor-<Version>.zip.
 
     No administrative rights are required: this script only builds and packages. Installation is done
@@ -269,13 +269,6 @@ foreach ($file in $payloadFiles) {
     Write-Info ("Copied: {0}" -f (Split-Path -Leaf $file))
 }
 
-$policySource = Join-Path $DeployDir 'policy'
-if (-not (Test-Path -LiteralPath $policySource -PathType Container)) {
-    Stop-WithError "Policy folder missing: $policySource"
-}
-Copy-Item -LiteralPath $policySource -Destination (Join-Path $OutputRoot 'policy') -Recurse -Force
-Write-Info 'Copied: policy\ (ADMX/ADML)'
-
 $docsSource = Join-Path $RepoRoot 'docs'
 if (Test-Path -LiteralPath $docsSource -PathType Container) {
     Copy-Item -LiteralPath $docsSource -Destination (Join-Path $OutputRoot 'docs') -Recurse -Force
@@ -308,5 +301,5 @@ Write-Host '  2. .\Install-ArkimentumAppMonitor.ps1'
 Write-Host '  3. Configure centrally: enrol the device (-CloudServerUrl / -CloudOrganizationId /'
 Write-Host '     -CloudEnrollmentKey) and publish the settings from the admin console - the browser one,'
 Write-Host '     or Start Menu -> Arkimentum -> "Arkimentum AppMonitor Admin" (no elevation needed).'
-Write-Host '     Stand-alone devices only: the ADMX policy template, .\Set-SampleConfiguration.ps1, or'
+Write-Host '     Stand-alone devices only: .\Set-SampleConfiguration.ps1, or'
 Write-Host '     the console started with --local (deprecated).'

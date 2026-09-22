@@ -213,8 +213,8 @@ Windows Registry Editor Version 5.00
 ; =============================================================================================
 ; 5) The flat AppList format
 ;    One REG_SZ value per app: the value NAME is the AppId, the DATA is Name=Value;Name=Value.
-;    This is the format produced by the ADMX "Monitored applications" list element and by Intune,
-;    neither of which can create nested registry keys. Inside an entry, list values use '|' as
+;    This is the format produced by Intune and by configuration scripts, which cannot create
+;    nested registry keys. Inside an entry, list values use '|' as
 ;    the separator because ';' already separates the pairs; the reader converts '|' to ',' for
 ;    ProcessNames and DeferralOptions.
 ; =============================================================================================

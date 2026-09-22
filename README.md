@@ -6,15 +6,17 @@ user through a tray agent, and installs the update according to policy - optiona
 and a forced close of the application.
 
 Built for cloud-only (Entra ID joined, Intune managed) fleets that need more control than
-`winget upgrade --all` and less machinery than a full software-distribution product. Configuration is
-read **from the registry**, so Group Policy, Intune or a simple script can drive it - or, optionally,
-from an **organization configuration delivered by the cloud service**, in which case three registry
-values per device are all you have to deploy.
+`winget upgrade --all` and less machinery than a full software-distribution product. It is
+**managed centrally**: an organization publishes its configuration once in the admin console and every
+enrolled device collects it on its own, so three registry values per device are all you have to
+deploy. The registry remains the **policy and bootstrap layer** - Intune or Group Policy write values
+that outrank the published configuration - and it is the whole configuration on devices without a
+cloud deployment.
 
 - .NET 10, Windows x64
-- A Windows service (`LocalSystem`), a per-session WPF tray agent, a browser-based admin console hosted in the cloud and a WPF organization console
-- Runs stand-alone with no call-home at all, or connected to the optional cloud service
+- A Windows service (`LocalSystem`), a per-session WPF tray agent, a browser admin console hosted in the cloud (the primary one) and a Windows organization console
 - **Organization-managed configuration** - publish once, every enrolled device collects it
+- Runs without the cloud service too, with every device configured through the registry; each outbound connection can be switched off, and there is no telemetry beyond what an enrolled device reports to its own organization's API ([field by field](docs/Cloud.md#what-leaves-the-device))
 - **Device inventory and update reporting** - a fleet view of what is installed and what is behind
 - **Agent self-update** from GitHub Releases, SHA-256 verified before anything is installed
 - No network listeners; every connection is outbound HTTPS that the device itself initiates
@@ -86,7 +88,7 @@ flowchart LR
         WEB["Vendor web sites"]
     end
 
-    subgraph CloudSvc["Optional cloud service"]
+    subgraph CloudSvc["Cloud service and release feed"]
         API["AppMonitor API<br/>Azure Functions + SQL + Blob"]
         GH["GitHub Releases<br/>manifest.json + package.zip"]
     end
@@ -97,13 +99,13 @@ flowchart LR
     CAT --> SCAN
     POL -- "wins over" --> CCFG
     CCFG -- "wins over" --> PREF
-    ADMIN -- "reads and writes" --> PREF
+    ADMIN -- "local mode (deprecated):<br/>reads and writes" --> PREF
     POL -. "shown locked" .-> ADMIN
     ADMIN -- "Entra ID sign-in:<br/>devices, inventory, publish" --> API
     SCAN --> POLICY
     POLICY --> PIPE
     PIPE <--> TRAY
-    PIPE <-- "state, scan now<br/>(admin client)" --> ADMIN
+    PIPE <-- "state, scan now<br/>(local mode, deprecated)" --> ADMIN
     SCAN --> WINGET
     SCAN --> WEB
     TRAY --> WINGET
@@ -119,8 +121,15 @@ flowchart LR
     TRAY --> ULOGS[("%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs")]
 ```
 
-Everything in the *Optional cloud service* box is exactly that: with no `CloudServerUrl` configured the
-agent never contacts it, and no data leaves the device.
+These are the outbound connections a device makes, and it accepts none inbound: the **cloud API**
+(enrolment, configuration, inventory and update reports, queued commands) once the three `Cloud*`
+values are provisioned - with no `CloudServerUrl` the agent never contacts it; the **agent update
+feed** (GitHub Releases by default, `AgentUpdateFeedUrl`), which `AgentAutoUpdate = 0` turns off;
+**winget sources** for applications with `Source = winget`; **vendor web sites** for web-source
+applications; and the **winget prerequisite repair** downloads (GitHub, `aka.ms`, nuget.org, the
+PowerShell Gallery) while `AutoInstallPrerequisites = 1`. What an enrolled device sends its
+organization is listed field by field in [`docs/Cloud.md`](docs/Cloud.md#what-leaves-the-device);
+`CloudReportingEnabled = 0` stops it.
 
 Details, including the scan cycle, the update state machine and the IPC message table:
 [`docs/Architecture.md`](docs/Architecture.md). The cloud side, end to end:
@@ -132,11 +141,13 @@ Details, including the scan cycle, the update state machine and the IPC message 
 | --- | --- | --- |
 | **Optional update** | `Mandatory = 0` | One notification when the update appears, and the tray icon carries a badge with the number of pending updates until it is installed. |
 | **Mandatory update** | `Mandatory = 1`, `DeadlineHours` | The same notification, but deferrals are limited and the update is enforced at the deadline. |
-| **Deferrals** | `MaxDeferrals`, `DeferralOptions` (e.g. `60,240,1440`) | "Remind me in 1 hour / 4 hours / tomorrow", until the deferrals run out or the deadline passes. |
+| **Deferrals** | `MaxDeferrals`, `DeferralOptions` (e.g. `60,240,1440`) | "Remind me in 1 hour / 4 hours / tomorrow", until the deferrals run out or the deadline passes. A running deferral cannot be stacked: **Defer** is unavailable until the period is over. |
 | **Deadline** | `DeadlineHours` counted from first detection | After it, deferral is refused and the install proceeds. |
 | **Forced close with grace period** | `ProcessNames`, `ForceCloseAtDeadline = 1`, `CloseGracePeriodMinutes` | A warning naming the applications to close, a countdown, then the windows are asked to close and finally terminated. |
-| **Silent install** | `AutoInstall = 1` | Nothing, unless `ShowInstalledNotifications` is on (off by default) - then a confirmation afterwards. |
+| **Install automatically** | `AutoInstall = 1` (global default `DefaultAutoInstall`, off) | The install starts on its own as soon as none of the listed processes is running. It decides only *whether an install may start by itself* - not whether the user hears about it. |
+| **Notify when installing** | `NotifyInstalling` = `auto` (default), `always` or `never`; global `DefaultNotifyInstalling` | `auto` follows the notification style: `Reminders` shows an "Installing ..." toast, `Quiet` does not. A confirmation *afterwards* is a separate setting, `ShowInstalledNotifications` (off by default). |
 | **System vs user context** | `Context = auto \| system \| user` | Machine-wide updates run as LocalSystem; per-user applications (VS Code User Setup, Slack, ...) are installed by the tray agent inside the user's own session. |
+| **Take over a mismatched winget package** | `WingetReplaceOnMismatch = 1` (per application, off by default) | Nothing extra. When `winget upgrade` refuses because the installed package's install technology differs from the new one, the agent uninstalls the package with winget and installs the new version. |
 | **Notification style** | `NotificationMode` = `Quiet` (default) or `Reminders`, `NotificationIntervalMinutes` (both global, per-app override) | `Quiet`: one toast per update - several updates found in one scan are collapsed into a single "3 updates available" toast - and after that only a deadline, a close prompt or a failure interrupts. `Reminders`: a reminder every interval while the update is pending. |
 | **Scan cadence** | `ScanIntervalMinutes`, `StartupDelaySeconds`, `ScanOnStartup` | Nothing - scans are silent. |
 
@@ -148,8 +159,9 @@ how mandatory, how strict and how forceful an update is always comes from your o
 ## Admin console
 
 Every setting is managed centrally. The **browser admin console** hosted next to the cloud API is the
-primary way to do it: sign in with Entra ID from any device, with nothing installed. The server
-advertises it in `/api/v1/public/auth-config`.
+primary way to do it: a Blazor WebAssembly application on an Azure Static Web App, signed in with
+Entra ID from any device, with nothing installed. The server advertises it in
+`/api/v1/public/auth-config`.
 
 `Arkimentum.AppMonitor.Admin.exe` is the Windows console for the same job: Start Menu → Arkimentum →
 **Arkimentum AppMonitor Admin**. It opens on the organization pages, runs as a **standard user** with
@@ -185,11 +197,11 @@ $env:DOTNET_ROOT = "$env:LOCALAPPDATA\Microsoft\dotnet"; $env:PATH = "$env:DOTNE
 .\deploy\Build-Release.ps1 -Version 1.0.0
 ```
 
-Produces `artifacts\publish\` (Service, Tray, Admin, scripts, policy templates, docs) and
+Produces `artifacts\publish\` (Service, Tray, Admin, scripts, docs) and
 `artifacts\Arkimentum.AppMonitor-1.0.0.zip`. The default build is self-contained, so target machines need
 no .NET runtime; `-SelfContained:$false` gives a smaller, framework-dependent build.
 
-The build also runs the unit tests (210 at the time of writing); `-SkipTests` leaves them out. To run
+The build also runs the unit tests (472 at the time of writing); `-SkipTests` leaves them out. To run
 them alone:
 
 ```powershell
@@ -216,15 +228,15 @@ Useful switches: `-NoSampleApps`, `-NoAdminConsole`, `-SkipPrerequisites`, `-NoS
 
 ### 3. Configure
 
-There are two ways to run a fleet. **Path B is the one to pick**: settings are meant to be managed
-centrally. Path A is for devices that cannot reach a cloud deployment at all.
+**Path B is the one to pick**: settings are meant to be published once and collected by the devices.
+Path A is the fallback for devices that cannot reach a cloud deployment at all.
 
-#### Path A - stand-alone (every device configured locally)
+#### Path A - stand-alone, the fallback (every device configured locally)
 
-- **Group Policy / Intune** - import `deploy\policy\ArkimentumAppMonitor.admx` and its `en-US\*.adml`
-  (Computer Configuration → Administrative Templates → Arkimentum → AppMonitor). Policy wins over
-  everything else. See [`deploy/policy/README.md`](deploy/policy/README.md). This is the right choice
-  for a managed fleet with no cloud deployment.
+- **Group Policy / Intune** - write the settings as registry values under
+  `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor`, with an Intune configuration profile or platform
+  script, or a Group Policy preference. Policy wins over everything else, including the published
+  organization configuration; see [`docs/Registry.md`](docs/Registry.md).
 - **Registry, scripted** - `deploy\Set-SampleConfiguration.ps1` writes a complete, commented example.
 - **Registry, by hand or by .reg file** - `deploy\Sample-Configuration.reg`, and the full reference in
   [`docs/Registry.md`](docs/Registry.md).
@@ -259,9 +271,9 @@ and collected by every device on its own.
     -CloudEnrollmentKey  'ek_live_...'
 ```
 
-Or write the same three `REG_SZ` values with an Intune platform script, with the ADMX setting
-*Organization connection*, or by hand - the console's **Enrollment** page generates each snippet with
-your real values in it.
+Or write the same three `REG_SZ` values with an Intune platform script, with a configuration profile
+that targets the Policies key, or by hand - the console's **Enrollment** page generates each snippet
+with your real values in it.
 
 The device enrols on its first sync, exchanges the enrollment key for a per-device key (DPAPI-protected
 in `%ProgramData%\Arkimentum\AppMonitor\device.credential`), collects the organization configuration,
@@ -420,9 +432,9 @@ src\Arkimentum.AppMonitor.Admin     WPF organization console (local mode depreca
 src\Arkimentum.AppMonitor.UI        shared WPF brand theme, styles and controls
 src\Arkimentum.AppMonitor.Tests     xunit tests
 catalog\catalog.json            application catalog
-cloud\                          optional cloud service: Azure Functions API, browser admin console (cloud\web),
+cloud\                          cloud service: Azure Functions API, browser admin console (cloud\web),
                                 Bicep, Deploy-Cloud.ps1
-deploy\                         build, install, uninstall and configuration scripts + ADMX template
+deploy\                         build, install, uninstall and configuration scripts
 docs\                           registry reference, architecture, admin console, cloud, self-update,
                                 troubleshooting
 ```

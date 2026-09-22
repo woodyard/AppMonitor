@@ -289,6 +289,22 @@ public sealed class WingetProvider : IUpdateProvider
         exitCode == WingetOutputParser.ExitMultiplePackagesFound;
 
     /// <summary>
+    /// Whether the take-over's removal step got far enough to install over it. Pure, so the rule is testable. The exit
+    /// code alone is not enough: with several registrations winget reports the whole run as failed when any one of them
+    /// resists (0x8A150066, APPINSTALLER_CLI_ERROR_MULTIPLE_UNINSTALL_FAILED) even though the registration the upgrade
+    /// complained about is gone. So the listing afterwards decides: nothing installed any more, or an installed version
+    /// that differs from the one we set out to replace, both mean the old install is out of the way. Anything else -
+    /// including a listing that could not be read - counts as a failure.
+    /// </summary>
+    internal static bool RemovalSucceeded(int exitCode, bool notInstalledAfter, string? versionAfter, string? versionBefore)
+    {
+        if (exitCode == 0) return true;
+        if (notInstalledAfter) return true;
+        if (string.IsNullOrWhiteSpace(versionAfter) || string.IsNullOrWhiteSpace(versionBefore)) return false;
+        return !string.Equals(VersionComparer.Normalize(versionAfter), VersionComparer.Normalize(versionBefore), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// The way out when winget refuses to upgrade a per-user install it did not create. "winget upgrade" compares the
     /// manifest's installers with where and how the product is installed: a manifest that only declares a
     /// machine-scope installer (Perplexity.Comet) can never match a per-user install, and an installer type that
@@ -353,8 +369,10 @@ public sealed class WingetProvider : IUpdateProvider
     /// fixed - uninstall first - and that is exactly the risk the setting opts into: between the two steps the
     /// application is not installed, and if the install fails it stays that way until the next scan. When several
     /// versions of the package are registered and winget refuses to choose (0x8A150016) the uninstall is run once more
-    /// with <c>--all-versions</c>, because replacing every registered version is what the take-over is for. Success is
-    /// judged only by the version winget reports afterwards, never by the exit code.
+    /// with <c>--all-versions</c>, because replacing every registered version is what the take-over is for. Whether the
+    /// removal worked is judged by what winget lists afterwards rather than by its exit code, because winget reports the
+    /// whole multi-uninstall as failed (0x8A150066) when one registration resists even though the rest are gone. Success
+    /// is judged only by the version winget reports afterwards, never by the exit code.
     /// </summary>
     private async Task<InstallResult> ReplaceAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, int refusalExitCode, IProgress<string>? progress, CancellationToken ct)
@@ -383,6 +401,35 @@ public sealed class WingetProvider : IUpdateProvider
         if (!uninstall.Started) uninstallFailure = uninstall.StartFailure;
         else if (uninstall.TimedOut) uninstallFailure = $"{step} timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.";
         else if (uninstall.ExitCode != 0) uninstallFailure = $"{step} exited with 0x{uninstall.ExitCode:X8}. {uninstall.LastLines()}".TrimEnd();
+
+        if (uninstall.Started && !uninstall.TimedOut && uninstallFailure is not null)
+        {
+            // The exit code alone does not settle it: with several registrations winget fails the whole run when one of
+            // them resists, so ask what is actually installed now.
+            var after = await ReadInstalledAfterAsync(app, context, winget, wingetId, sourceName, ct).ConfigureAwait(false);
+            var versionAfter = string.IsNullOrWhiteSpace(after?.Row?.Version) ? null : after!.Row!.Version;
+            var notInstalledAfter = after?.NotInstalled == true;
+            var listing = after is null
+                ? "the installed state could not be re-read afterwards"
+                : notInstalledAfter ? "winget no longer lists the package"
+                : versionAfter is not null ? $"winget still lists version {versionAfter} in the {context.Context} scope"
+                : after.Error is not null ? $"the installed state could not be re-read afterwards ({after.Error})"
+                : "winget's listing afterwards was inconclusive";
+
+            if (RemovalSucceeded(uninstall.ExitCode, notInstalledAfter, versionAfter, update.InstalledVersion))
+            {
+                var kind = uninstall.ExitCode == WingetOutputParser.ExitMultipleUninstallFailed
+                    ? "multiple uninstall failed"
+                    : "a non-zero exit code";
+                _logger.LogWarning("{AppId}: {Step} for '{WingetId}' reported {Kind} (0x{Code:X8}), but {Listing}; continuing with the install.",
+                    app.AppId, step, wingetId, kind, uninstall.ExitCode, listing);
+                uninstallFailure = null;
+            }
+            else
+            {
+                uninstallFailure = $"{uninstallFailure} Afterwards {listing}.";
+            }
+        }
 
         if (uninstallFailure is not null)
         {
@@ -477,6 +524,25 @@ public sealed class WingetProvider : IUpdateProvider
             last = condensed;
             progress.Report(condensed);
         };
+    }
+
+    /// <summary>
+    /// What winget lists for the package in this context after a run, or null when the lookup itself failed (which the
+    /// caller treats as "unknown"). Used by the take-over to judge the removal by the installed state rather than by
+    /// the uninstall's exit code.
+    /// </summary>
+    private async Task<ListLookup?> ReadInstalledAfterAsync(AppPolicy app, ExecutionContextInfo context, string winget, string wingetId, string sourceName, CancellationToken ct)
+    {
+        try
+        {
+            return await ListAsync(winget, app with { WingetId = wingetId, WingetSourceName = sourceName }, context, _options.CheckTimeout, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return null; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "{AppId}: could not re-read the installed state after the winget run.", app.AppId);
+            return null;
+        }
     }
 
     /// <summary>The version winget reports for the package after an install attempt, or null when it cannot be read.</summary>

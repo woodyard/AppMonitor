@@ -30,6 +30,8 @@ public sealed record AgentSettings
     public bool NotificationsEnabled { get; init; } = true;
     /// <summary>Confirmation toast after a successful install. Off by default: a silent update needs no applause.</summary>
     public bool ShowInstalledNotifications { get; init; }
+    /// <summary>Whether the "Installing ..." toast is shown for applications that do not set <see cref="AppPolicy.NotifyInstalling"/>.</summary>
+    public NotifyInstallingMode DefaultNotifyInstalling { get; init; } = NotifyInstallingMode.Auto;
     /// <summary>Trace, Debug, Information, Warning, Error.</summary>
     public string LogLevel { get; init; } = "Information";
     public string LogDirectory { get; init; } = DefaultLogDirectory;

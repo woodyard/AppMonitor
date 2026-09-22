@@ -73,6 +73,8 @@ public sealed record AppPolicy
     public int? NotificationIntervalMinutes { get; init; }
     /// <summary>Override of the global notification mode for this app. null = global.</summary>
     public NotificationMode? NotificationMode { get; init; }
+    /// <summary>Whether the "Installing ..." toast is shown for this app. null = the global DefaultNotifyInstalling.</summary>
+    public NotifyInstallingMode? NotifyInstalling { get; init; }
 
     public bool IsWeb => Source == UpdateSource.Web;
     public bool IsWinget => Source == UpdateSource.Winget;

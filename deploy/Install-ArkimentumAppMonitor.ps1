@@ -837,7 +837,7 @@ Write-Host 'Troubleshooting: run the service interactively with'
 Write-Host ("  `"{0}`" --console" -f $serviceExe)
 Write-Host 'Configuration is managed centrally: enrol the device, then publish the settings from the browser admin'
 Write-Host 'console or from the Start Menu -> Arkimentum -> Arkimentum AppMonitor Admin. See docs\AdminConsole.md.'
-Write-Host 'Stand-alone devices: docs\Registry.md, the ADMX template, or Set-SampleConfiguration.ps1.'
+Write-Host 'Stand-alone devices: docs\Registry.md or Set-SampleConfiguration.ps1.'
 if ($effectiveServerUrl) {
     Write-Host 'Cloud service, provisioning and troubleshooting: docs\Cloud.md. Self-update: docs\SelfUpdate.md.'
 }

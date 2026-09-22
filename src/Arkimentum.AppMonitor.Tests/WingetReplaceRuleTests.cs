@@ -80,6 +80,49 @@ public class WingetReplaceRuleTests
     }
 
     [Fact]
+    public void A_clean_uninstall_counts_as_removed()
+    {
+        Assert.True(WingetProvider.RemovalSucceeded(0, notInstalledAfter: false, versionAfter: "29.26.0", versionBefore: "29.26.0"));
+    }
+
+    [Fact]
+    public void A_package_winget_no_longer_lists_counts_as_removed()
+    {
+        // Whatever the exit code said: nothing is installed any more, so the install step can go ahead.
+        Assert.True(WingetProvider.RemovalSucceeded(-1, notInstalledAfter: true, versionAfter: null, versionBefore: "29.26.0"));
+    }
+
+    [Fact]
+    public void A_moved_version_counts_as_removed_even_when_one_uninstall_failed()
+    {
+        // The real case: three registrations of JanDeDobbeleer.OhMyPosh, one resisted, winget failed the whole run -
+        // but the registration the upgrade complained about is gone.
+        Assert.True(WingetProvider.RemovalSucceeded(
+            WingetOutputParser.ExitMultipleUninstallFailed, notInstalledAfter: false, versionAfter: "31.3.0", versionBefore: "29.26.0"));
+    }
+
+    [Fact]
+    public void The_same_version_still_listed_is_a_failure()
+    {
+        Assert.False(WingetProvider.RemovalSucceeded(
+            WingetOutputParser.ExitMultipleUninstallFailed, notInstalledAfter: false, versionAfter: "29.26.0", versionBefore: "29.26.0"));
+    }
+
+    [Fact]
+    public void An_unreadable_listing_after_a_failed_uninstall_is_a_failure()
+    {
+        // "Unknown" is not "gone": the take-over must not install over an install it cannot account for.
+        Assert.False(WingetProvider.RemovalSucceeded(-1, notInstalledAfter: false, versionAfter: null, versionBefore: "29.26.0"));
+    }
+
+    [Fact]
+    public void The_multiple_uninstall_failed_exit_code_is_winget_s()
+    {
+        // APPINSTALLER_CLI_ERROR_MULTIPLE_UNINSTALL_FAILED, as winget prints it.
+        Assert.Equal(unchecked((int)0x8A150066), WingetOutputParser.ExitMultipleUninstallFailed);
+    }
+
+    [Fact]
     public void With_the_flag_set_the_take_over_wins_over_the_reinstall()
     {
         // Same situation, user context: the reinstall rule would also fire here ("winget install --force"), which

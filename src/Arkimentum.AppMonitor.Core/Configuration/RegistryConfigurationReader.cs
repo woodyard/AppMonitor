@@ -55,6 +55,7 @@ public sealed class RegistryConfigurationReader
             ScanIntervalMinutes = r.Int("ScanIntervalMinutes", defaults.ScanIntervalMinutes, 5, 10080),
             NotificationIntervalMinutes = r.Int("NotificationIntervalMinutes", defaults.NotificationIntervalMinutes, 1, 10080),
             NotificationMode = ParseNotificationMode(r.String("NotificationMode", defaults.NotificationMode.ToString()), defaults.NotificationMode),
+            DefaultNotifyInstalling = ParseNotifyInstalling(r.String("DefaultNotifyInstalling", defaults.DefaultNotifyInstalling.ToString()), defaults.DefaultNotifyInstalling),
             StartupDelaySeconds = r.Int("StartupDelaySeconds", defaults.StartupDelaySeconds, 0, 3600),
             ScanOnStartup = r.Bool("ScanOnStartup", defaults.ScanOnStartup),
             WingetEnabled = r.Bool("WingetEnabled", defaults.WingetEnabled),
@@ -108,7 +109,7 @@ public sealed class RegistryConfigurationReader
     /// <summary>
     /// Parses the flat "AppList" format: a key whose value names are AppIds and whose string data is a
     /// semicolon-separated list of Name=Value pairs, e.g. <c>Source=winget;WingetId=7zip.7zip;Mandatory=1;DeadlineHours=72</c>.
-    /// This format can be produced by Group Policy list elements (ADMX) and Intune, which cannot create nested keys.
+    /// This format can be produced by Intune or Group Policy registry writes, which cannot create nested keys.
     /// </summary>
     internal static Dictionary<string, Dictionary<string, object>> ReadAppList(RegistryKey? root)
     {
@@ -269,6 +270,7 @@ public sealed class RegistryConfigurationReader
             MinimumVersion = r.OptString("MinimumVersion") ?? baseline.MinimumVersion,
             NotificationIntervalMinutes = r.OptInt("NotificationIntervalMinutes"),
             NotificationMode = r.OptString("NotificationMode") is { } modeText ? ParseNotificationMode(modeText, global.NotificationMode) : null,
+            NotifyInstalling = r.OptString("NotifyInstalling") is { } notifyText ? ParseNotifyInstalling(notifyText, global.DefaultNotifyInstalling) : null,
         };
 
         if (app.Source == UpdateSource.Winget && string.IsNullOrWhiteSpace(app.WingetId))
@@ -290,6 +292,16 @@ public sealed class RegistryConfigurationReader
         {
             "quiet" => NotificationMode.Quiet,
             "reminders" or "reminder" => NotificationMode.Reminders,
+            _ => fallback,
+        };
+
+    /// <summary>Unknown text falls back instead of throwing, like <see cref="ParseNotificationMode"/>.</summary>
+    private static NotifyInstallingMode ParseNotifyInstalling(string value, NotifyInstallingMode fallback) =>
+        value.Trim().ToLowerInvariant() switch
+        {
+            "auto" => NotifyInstallingMode.Auto,
+            "always" or "yes" or "1" or "true" => NotifyInstallingMode.Always,
+            "never" or "no" or "0" or "false" => NotifyInstallingMode.Never,
             _ => fallback,
         };
 

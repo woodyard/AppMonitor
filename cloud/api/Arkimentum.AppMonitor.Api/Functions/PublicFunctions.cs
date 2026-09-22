@@ -25,6 +25,7 @@ public sealed class PublicFunctions(ServerOptions options)
             Authority = options.Authority,
             Scope = options.ScopeUri,
             ApiVersion = CloudRoutes.ApiVersion,
+            WebAdminUrl = string.IsNullOrWhiteSpace(options.PublicWebAdminUrl) ? null : options.PublicWebAdminUrl,
         }).ToResult(request);
     }
 

@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OverrideHtmlAssetPlaceholders>true</OverrideHtmlAssetPlaceholders>
+    <RootNamespace>Arkimentum.AppMonitor.Web</RootNamespace>
+    <!-- Static files only: no AOT, no PWA, no hosted server. `dotnet publish` produces a wwwroot folder that is
+         uploaded to an Azure Static Web App, which serves it and falls back to index.html
+         (see wwwroot/staticwebapp.config.json). -->
+    <RunAOTCompilation>false</RunAOTCompilation>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.12" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.12" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Authentication.WebAssembly.Msal" Version="10.0.12" />
+  </ItemGroup>
+
+  <!-- Trimming roots: the framework collections the reflection-based serializer needs to construct but the app never
+       news up with their default constructor. See the comment in the descriptor. -->
+  <ItemGroup>
+    <TrimmerRootDescriptor Include="ILLink.Descriptors.xml" />
+  </ItemGroup>
+
+  <!-- The wire contracts are compiled in from the API rather than copied: CloudRoutes, CloudJson, the admin DTOs,
+       SettingsDocument and SettingsSchema are the very types the server validates against, so this console cannot
+       drift from it. The API's own copy is in turn round-tripped against Core by Arkimentum.AppMonitor.Api.Tests. -->
+  <ItemGroup>
+    <Compile Include="..\..\api\Arkimentum.AppMonitor.Api\Contracts\*.cs" Link="Contracts\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- The application catalog shipped with the agent is what the console offers under "Add from catalog". It is
+       copied into wwwroot before the static web assets are collected (and registered as Content there and then, so
+       a clean clone works on the first build), which serves it at /catalog.json and puts it in the publish output. -->
+  <Target Name="CopyAppCatalog" BeforeTargets="BeforeBuild;ResolveStaticWebAssetsInputs">
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\..\..\catalog\catalog.json"
+          DestinationFiles="$(MSBuildThisFileDirectory)wwwroot\catalog.json"
+          SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <Content Remove="wwwroot\catalog.json" />
+      <Content Include="wwwroot\catalog.json" />
+    </ItemGroup>
+  </Target>
+
+</Project>

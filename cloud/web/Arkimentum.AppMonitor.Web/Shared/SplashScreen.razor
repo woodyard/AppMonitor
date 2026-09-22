@@ -1,0 +1,21 @@
+@* A centred card on the ground colour: what the console shows before it has a page to show. *@
+
+<div class="splash">
+    <div class="splash-card">
+        <Wordmark Large="true" />
+        <p class="splash-message">@Message</p>
+        @if (!string.IsNullOrWhiteSpace(Detail))
+        {
+            <p class="muted">@Detail</p>
+        }
+        @ChildContent
+    </div>
+</div>
+
+@code {
+    [Parameter] public string? Message { get; set; }
+
+    [Parameter] public string? Detail { get; set; }
+
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

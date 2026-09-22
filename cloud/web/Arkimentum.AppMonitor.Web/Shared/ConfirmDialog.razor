@@ -1,0 +1,36 @@
+@* "Are you sure?" - used for deleting a device, rotating an enrollment key and discarding pending edits. *@
+
+<Modal IsOpen="IsOpen" Title="@Title" OnClose="OnCancel">
+    <ChildContent>
+    <p>@Body</p>
+    @if (!string.IsNullOrWhiteSpace(Detail))
+    {
+        <p class="muted">@Detail</p>
+    }
+    </ChildContent>
+    <Footer>
+        <button type="button" class="btn btn-quiet" @onclick="OnCancel">@CancelText</button>
+        <button type="button" class="btn @(Danger ? "btn-danger" : "btn-primary")" @onclick="OnConfirm">@ConfirmText</button>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+
+    [Parameter] public string Title { get; set; } = "Are you sure?";
+
+    [Parameter] public string? Body { get; set; }
+
+    [Parameter] public string? Detail { get; set; }
+
+    [Parameter] public string ConfirmText { get; set; } = "Confirm";
+
+    [Parameter] public string CancelText { get; set; } = "Cancel";
+
+    /// <summary>Destructive confirmations get the terracotta button.</summary>
+    [Parameter] public bool Danger { get; set; }
+
+    [Parameter] public EventCallback OnConfirm { get; set; }
+
+    [Parameter] public EventCallback OnCancel { get; set; }
+}

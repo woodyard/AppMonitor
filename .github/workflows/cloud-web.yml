@@ -1,0 +1,81 @@
+name: Cloud web admin
+
+# Publishes the Blazor WebAssembly admin console (cloud/web) to the Azure Static Web App created by
+# cloud/infra/main.bicep. The contracts and the catalog are in the trigger because the site is compiled
+# against them.
+#
+# Two repository settings are required, and the deploy step skips itself cleanly when either is missing:
+#   Variable  APPMON_API_BASE_URL            the Function App URL, e.g. https://appmon-prod-func-ab12cd.azurewebsites.net
+#   Secret    AZURE_STATIC_WEB_APPS_API_TOKEN   az staticwebapp secrets list -n <swa> -g <rg> --query properties.apiKey -o tsv
+
+on:
+  push:
+    branches: ['main']
+    paths:
+      - 'cloud/web/**'
+      - 'cloud/api/Arkimentum.AppMonitor.Api/Contracts/**'
+      - 'catalog/catalog.json'
+      - '.github/workflows/cloud-web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-web
+  cancel-in-progress: true
+
+env:
+  WEB_PROJECT: cloud/web/Arkimentum.AppMonitor.Web/Arkimentum.AppMonitor.Web.csproj
+  PUBLISH_DIR: artifacts/cloud-web
+
+jobs:
+  deploy:
+    name: Publish and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      # `if:` cannot read secrets, so the decision is made here and read back as a step output.
+      - name: Check the deployment configuration
+        id: config
+        env:
+          API_BASE_URL: ${{ vars.APPMON_API_BASE_URL }}
+          SWA_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+        run: |
+          if [ -n "$API_BASE_URL" ] && [ -n "$SWA_TOKEN" ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo "::warning::The site is built but not deployed: set the repository variable APPMON_API_BASE_URL and the secret AZURE_STATIC_WEB_APPS_API_TOKEN."
+          fi
+
+      - name: Publish
+        run: dotnet publish "$WEB_PROJECT" -c Release -o "$PUBLISH_DIR" --nologo
+
+      # The site's only deployment-time configuration; everything else comes from GET /api/v1/public/auth-config.
+      - name: Write appsettings.json
+        if: steps.config.outputs.ready == 'true'
+        env:
+          API_BASE_URL: ${{ vars.APPMON_API_BASE_URL }}
+        run: |
+          printf '{ "ApiBaseUrl": "%s" }\n' "${API_BASE_URL%/}" > "$PUBLISH_DIR/wwwroot/appsettings.json"
+          # dotnet publish precompresses every static asset; the .br/.gz twins of the placeholder must not outlive the rewrite.
+          rm -f "$PUBLISH_DIR/wwwroot/appsettings.json.br" "$PUBLISH_DIR/wwwroot/appsettings.json.gz"
+          cat "$PUBLISH_DIR/wwwroot/appsettings.json"
+
+      - name: Deploy to Azure Static Web Apps
+        if: steps.config.outputs.ready == 'true'
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          action: upload
+          skip_app_build: true
+          skip_api_build: true
+          app_location: ${{ env.PUBLISH_DIR }}/wwwroot
+          output_location: ''

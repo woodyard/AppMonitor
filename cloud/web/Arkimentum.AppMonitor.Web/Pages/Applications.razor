@@ -1,0 +1,289 @@
+@page "/applications"
+@attribute [Authorize]
+@inherits OrganizationPage
+@inject ConfigWorkspace Workspace
+@inject CatalogService Catalog
+
+@*
+    The applications the organization monitors: a master list, and an editor generated from SettingsSchema.App.
+
+    "Add from catalog" writes nothing but Enabled, so the shipped identity, source and detection data stay
+    authoritative and follow the catalog when it is updated. Everything on this page edits the same pending document
+    the Settings page edits, and the footer publishes it.
+*@
+
+<PageTitle>Applications · AppMonitor admin</PageTitle>
+
+<h1>Applications</h1>
+<p class="page-subtitle">What the agent monitors on every device in @Organizations.OrganizationName.</p>
+
+<Banner Kind="error" Message="@Error" OnDismiss="Dismiss" />
+
+@if (!HasOrganization)
+{
+    <NoOrganization />
+}
+else if (!Workspace.HasDocument && Workspace.IsBusy)
+{
+    <Spinner Message="Loading the organization configuration…" />
+}
+else if (!Workspace.HasDocument)
+{
+    @* The load failed; the workspace kept the reason. Spinning forever here would hide it. *@
+    <Banner Kind="error" Message="@(Workspace.Error ?? "The organization configuration could not be loaded.")">
+        <button type="button" class="btn btn-quiet" @onclick="Workspace.ReloadAsync">Try again</button>
+    </Banner>
+}
+else
+{
+    <div class="toolbar">
+        <input class="search" type="search" placeholder="Search applications"
+               value="@_filter" @oninput="e => _filter = e.Value?.ToString() ?? string.Empty" />
+        <label class="check">
+            <input type="checkbox" checked="@Workspace.ShowAdvanced" @onchange="e => Workspace.ShowAdvanced = e.Value is true" />
+            <span>Show advanced</span>
+        </label>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-quiet" @onclick="OpenCatalogAsync">Add from catalog</button>
+        <button type="button" class="btn btn-quiet" @onclick="() => { _customId = string.Empty; _addingCustom = true; }">Add custom</button>
+    </div>
+
+    <div class="master-detail">
+        <aside class="master">
+            @if (Visible.Count == 0)
+            {
+                <p class="muted pad">
+                    @(Workspace.Editor.Apps.Count == 0
+                        ? "No application is configured yet. Add one from the catalog, or start from the Inventory page."
+                        : "Nothing matches that filter.")
+                </p>
+            }
+            @foreach (var app in Visible)
+            {
+                <button type="button" class="master-item @(ReferenceEquals(app, _selected) ? "master-selected" : null)"
+                        @onclick="() => _selected = app">
+                    <span class="master-title">
+                        @app.DisplayName
+                        @if (!app.IsEnabled)
+                        {
+                            <span class="tag tag-quiet">Disabled</span>
+                        }
+                    </span>
+                    <span class="master-sub">@app.SummaryLine</span>
+                </button>
+            }
+        </aside>
+
+        <section class="detail">
+            @if (_selected is not { } selected)
+            {
+                <p class="muted pad">Pick an application to edit it.</p>
+            }
+            else
+            {
+                <header class="detail-head">
+                    <div>
+                        <h2>@selected.DisplayName</h2>
+                        <p class="muted">
+                            <span class="mono">@selected.AppId</span>
+                            @if (selected.IsFromCatalog)
+                            {
+                                <span class="tag tag-info" title="Identity, source and detection come from catalog.json unless you set them here">In catalog</span>
+                            }
+                            · @(selected.IsMandatory ? $"Mandatory · {selected.MandatoryText}" : "Optional")
+                        </p>
+                    </div>
+                    <div class="button-row">
+                        <button type="button" class="btn btn-quiet" @onclick="() => StartDuplicate(selected)">Duplicate</button>
+                        <button type="button" class="btn btn-danger" @onclick="() => _confirmRemove = true">Remove</button>
+                    </div>
+                </header>
+
+                @foreach (var group in selected.Groups.Where(g => g.IsShown(Workspace.ShowAdvanced)))
+                {
+                    <section class="setting-group">
+                        <h3>@group.Category</h3>
+                        @foreach (var row in group.Rows.Where(r => r.IsShown(Workspace.ShowAdvanced)))
+                        {
+                            <SettingRowEditor Row="row" OnChanged="StateHasChanged" />
+                        }
+                    </section>
+                }
+            }
+        </section>
+    </div>
+
+    <PublishFooter />
+}
+
+@* ---------------------------------------------------------------- add from catalog *@
+<Modal IsOpen="_addingCatalog" Title="Add from catalog" Wide="true" OnClose="() => _addingCatalog = false">
+    <ChildContent>
+    <p class="muted">
+        Only <code>Enabled</code> is written for a catalog application, so its winget id, URLs and detection stay
+        with the catalog and follow it when the catalog is updated.
+    </p>
+    <input class="search" type="search" placeholder="Search the catalog"
+           value="@_catalogFilter" @oninput="e => _catalogFilter = e.Value?.ToString() ?? string.Empty" />
+    @if (Catalog.LoadError is { } catalogError)
+    {
+        <Banner Kind="error" Message="@($"The catalog could not be read: {catalogError}")" />
+    }
+    <div class="picker">
+        @foreach (var entry in Catalog.NotConfigured(Workspace.Editor.Exists, _catalogFilter))
+        {
+            <label class="picker-row">
+                <input type="checkbox" checked="@_catalogPicked.Contains(entry.AppId!)"
+                       @onchange="e => TogglePick(entry.AppId!, e)" />
+                <span class="picker-title">@entry.Title</span>
+                <span class="picker-sub">@entry.AppId · @Display.OrNone(entry.WingetId)</span>
+            </label>
+        }
+    </div>
+    </ChildContent>
+    <Footer>
+        <span class="muted">@_catalogPicked.Count selected</span>
+        <button type="button" class="btn btn-quiet" @onclick="() => _addingCatalog = false">Cancel</button>
+        <button type="button" class="btn btn-primary" disabled="@(_catalogPicked.Count == 0)" @onclick="AddFromCatalog">Add</button>
+    </Footer>
+</Modal>
+
+@* ---------------------------------------------------------------- add custom / duplicate *@
+<Modal IsOpen="_addingCustom" Title="Add a custom application" OnClose="() => _addingCustom = false">
+    <ChildContent>
+    <label class="field">
+        <span class="field-label">Application id</span>
+        <input class="field-input mono" @bind="_customId" @bind:event="oninput" placeholder="contoso-tool" />
+        <span class="field-hint">Letters, digits, dot, dash and underscore. It becomes a registry key name on the device.</span>
+    </label>
+    <Banner Kind="error" Message="@AppIdProblem(_customId)" />
+    </ChildContent>
+    <Footer>
+        <button type="button" class="btn btn-quiet" @onclick="() => _addingCustom = false">Cancel</button>
+        <button type="button" class="btn btn-primary" disabled="@(AppIdProblem(_customId) is not null)" @onclick="AddCustom">Add</button>
+    </Footer>
+</Modal>
+
+<Modal IsOpen="_duplicating" Title="Duplicate this application" OnClose="() => _duplicating = false">
+    <ChildContent>
+    <label class="field">
+        <span class="field-label">New application id</span>
+        <input class="field-input mono" @bind="_duplicateId" @bind:event="oninput" />
+    </label>
+    <Banner Kind="error" Message="@AppIdProblem(_duplicateId)" />
+    </ChildContent>
+    <Footer>
+        <button type="button" class="btn btn-quiet" @onclick="() => _duplicating = false">Cancel</button>
+        <button type="button" class="btn btn-primary" disabled="@(AppIdProblem(_duplicateId) is not null)" @onclick="Duplicate">Duplicate</button>
+    </Footer>
+</Modal>
+
+<ConfirmDialog IsOpen="_confirmRemove"
+               Title="Remove this application?"
+               Body="@($"{_selected?.DisplayName} stops being monitored once the change is published.")"
+               Detail="Nothing is uninstalled from the devices."
+               ConfirmText="Remove" Danger="true"
+               OnConfirm="Remove" OnCancel="() => _confirmRemove = false" />
+
+@code {
+    private AppEditor? _selected;
+    private string _filter = string.Empty;
+    private string _catalogFilter = string.Empty;
+    private readonly HashSet<string> _catalogPicked = new(StringComparer.OrdinalIgnoreCase);
+    private bool _addingCatalog, _addingCustom, _duplicating, _confirmRemove;
+    private string _customId = string.Empty;
+    private string _duplicateId = string.Empty;
+
+    private List<AppEditor> Visible => Workspace.Editor.Apps.Where(a => a.Matches(_filter)).ToList();
+
+    protected override async Task LoadAsync()
+    {
+        await Catalog.EnsureLoadedAsync();
+        await Workspace.EnsureLoadedAsync();
+        _selected = Workspace.Editor.Apps.FirstOrDefault();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Workspace.Changed += OnWorkspaceChanged;
+        await base.OnInitializedAsync();
+    }
+
+    private void OnWorkspaceChanged() => _ = InvokeAsync(() =>
+    {
+        // A reload (publish, discard, restore, organization switch) rebuilds every editor, so the selection has to
+        // be re-established by AppId rather than by reference.
+        if (_selected is { } previous && !Workspace.Editor.Apps.Contains(previous))
+            _selected = Workspace.Editor.Apps.FirstOrDefault(a => a.AppId.Equals(previous.AppId, StringComparison.OrdinalIgnoreCase))
+                        ?? Workspace.Editor.Apps.FirstOrDefault();
+        StateHasChanged();
+    });
+
+    private async Task OpenCatalogAsync()
+    {
+        _catalogPicked.Clear();
+        _catalogFilter = string.Empty;
+        _addingCatalog = true;
+        await Catalog.EnsureLoadedAsync();
+    }
+
+    private void TogglePick(string appId, ChangeEventArgs args)
+    {
+        if (args.Value is true) _catalogPicked.Add(appId);
+        else _catalogPicked.Remove(appId);
+    }
+
+    private void AddFromCatalog()
+    {
+        AppEditor? last = null;
+        foreach (var appId in _catalogPicked.Where(id => !Workspace.Editor.Exists(id)).ToList())
+            last = Workspace.Editor.AddFromCatalog(appId);
+        _catalogPicked.Clear();
+        _addingCatalog = false;
+        if (last is not null) _selected = last;
+    }
+
+    private void AddCustom()
+    {
+        _selected = Workspace.Editor.AddCustom(_customId.Trim());
+        _addingCustom = false;
+    }
+
+    private void StartDuplicate(AppEditor source)
+    {
+        _selected = source;
+        _duplicateId = source.AppId + "-copy";
+        _duplicating = true;
+    }
+
+    private void Duplicate()
+    {
+        if (_selected is not { } source) return;
+        _selected = Workspace.Editor.Duplicate(source, _duplicateId.Trim());
+        _duplicating = false;
+    }
+
+    private void Remove()
+    {
+        _confirmRemove = false;
+        if (_selected is not { } app) return;
+        Workspace.Editor.Remove(app);
+        _selected = Workspace.Editor.Apps.FirstOrDefault();
+    }
+
+    /// <summary>Why an AppId cannot be used, or null when it can.</summary>
+    private string? AppIdProblem(string? appId)
+    {
+        var id = (appId ?? string.Empty).Trim();
+        if (id.Length == 0) return "Enter an application id.";
+        if (!ConfigDocumentEditor.AppIdPattern.IsMatch(id)) return "Use only letters, digits, dot, dash and underscore.";
+        if (Workspace.Editor.Exists(id)) return $"'{id}' is already configured.";
+        return null;
+    }
+
+    public override void Dispose()
+    {
+        Workspace.Changed -= OnWorkspaceChanged;
+        base.Dispose();
+    }
+}

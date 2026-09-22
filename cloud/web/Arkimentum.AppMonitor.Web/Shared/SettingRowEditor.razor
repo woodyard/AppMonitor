@@ -1,0 +1,115 @@
+@*
+    One row of the configuration, rendered from its SettingDefinition - never hand-written per setting.
+
+    A row that is not "Set" is disabled and shows the value the agent would use instead, greyed out, which is what
+    the hint underneath names. "Reset to default" removes the key from the document entirely rather than writing the
+    default value into it, so the agent keeps following the default when it changes.
+*@
+
+<div class="setting @(Row.HasError ? "setting-error-state" : null)">
+    <div class="setting-head">
+        <span class="setting-title">@Row.Title</span>
+        <span class="tag tag-@(Row.IsOverridden ? "set" : "quiet")">@Row.SourceBadge</span>
+        @if (Row.IsAdvanced)
+        {
+            <span class="tag tag-quiet">Advanced</span>
+        }
+        <span class="spacer"></span>
+        @if (Row.IsOverridden)
+        {
+            <button type="button" class="btn-link" @onclick="() => SetOverride(false)">Reset to default</button>
+        }
+        else
+        {
+            <button type="button" class="btn-link" @onclick="() => SetOverride(true)">Set</button>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(Row.Description))
+    {
+        <p class="setting-desc">@Row.Description</p>
+    }
+
+    <div class="setting-editor">
+        @switch (Row.Kind)
+        {
+            case SettingKind.Bool:
+                <label class="check">
+                    <input type="checkbox" disabled="@(!Row.IsOverridden)" checked="@Row.BoolValue"
+                           @onchange="e => { Row.BoolValue = e.Value is true; Notify(); }" />
+                    <span>@(Row.BoolValue ? "Yes" : "No")</span>
+                </label>
+                break;
+
+            case SettingKind.Choice:
+                <select class="field-input" disabled="@(!Row.IsOverridden)" value="@Row.TextValue"
+                        @onchange="e => { Row.TextValue = e.Value?.ToString() ?? string.Empty; Notify(); }">
+                    @foreach (var choice in Row.Choices)
+                    {
+                        <option value="@choice" selected="@(string.Equals(choice, Row.TextValue, StringComparison.OrdinalIgnoreCase))">@choice</option>
+                    }
+                </select>
+                break;
+
+            case SettingKind.StringList:
+                <textarea class="field-input" rows="3" disabled="@(!Row.IsOverridden)"
+                          placeholder="@Row.InheritedText"
+                          value="@Row.TextValue"
+                          @oninput="e => { Row.TextValue = e.Value?.ToString() ?? string.Empty; Notify(); }"></textarea>
+                break;
+
+            case SettingKind.Int:
+                <input class="field-input field-narrow" type="number" disabled="@(!Row.IsOverridden)"
+                       placeholder="@Row.InheritedText"
+                       value="@Row.TextValue"
+                       @oninput="e => { Row.TextValue = e.Value?.ToString() ?? string.Empty; Notify(); }" />
+                break;
+
+            default:
+                <input class="field-input" type="text" disabled="@(!Row.IsOverridden)"
+                       placeholder="@Row.InheritedText"
+                       value="@Row.TextValue"
+                       @oninput="e => { Row.TextValue = e.Value?.ToString() ?? string.Empty; Notify(); }" />
+                break;
+        }
+    </div>
+
+    <p class="setting-hint">
+        @if (!Row.IsOverridden)
+        {
+            @Row.HintText
+        }
+        else if (Row.HasRangeHint)
+        {
+            <text>Allowed: @Row.RangeHint.</text>
+        }
+        else if (Row.Kind == SettingKind.StringList)
+        {
+            <text>One per line.</text>
+        }
+        else if (Row.Kind == SettingKind.IntList)
+        {
+            <text>Comma-separated minutes, e.g. 60,240,1440.</text>
+        }
+    </p>
+
+    @if (Row.HasError)
+    {
+        <p class="setting-error">@Row.Error</p>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public SettingRow Row { get; set; } = default!;
+
+    /// <summary>Raised after every edit so the owning page can re-render its dirty state and footer.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private void SetOverride(bool value)
+    {
+        Row.IsOverridden = value;
+        Notify();
+    }
+
+    private void Notify() => _ = OnChanged.InvokeAsync();
+}

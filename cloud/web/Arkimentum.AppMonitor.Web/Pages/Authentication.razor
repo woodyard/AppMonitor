@@ -1,0 +1,38 @@
+@page "/authentication/{action}"
+@layout Arkimentum.AppMonitor.Web.Layout.EmptyLayout
+
+@* The MSAL redirect endpoints: login, login-callback, logout, logout-callback, profile. *@
+
+<RemoteAuthenticatorView Action="@Action">
+    <LoggingIn>
+        <SplashScreen Message="Redirecting you to your organization's sign-in…" />
+    </LoggingIn>
+    <CompletingLoggingIn>
+        <SplashScreen Message="Finishing sign-in…" />
+    </CompletingLoggingIn>
+    <LogOut>
+        <SplashScreen Message="Signing you out…" />
+    </LogOut>
+    <CompletingLogOut>
+        <SplashScreen Message="Signing you out…" />
+    </CompletingLogOut>
+    <LogOutSucceeded>
+        <SplashScreen Message="You are signed out.">
+            <a class="btn btn-primary" href="">Sign in again</a>
+        </SplashScreen>
+    </LogOutSucceeded>
+    <LogInFailed>
+        <SplashScreen Message="Sign-in failed." Detail="@context">
+            <a class="btn btn-primary" href="">Try again</a>
+        </SplashScreen>
+    </LogInFailed>
+    <LogOutFailed>
+        <SplashScreen Message="Sign-out failed." Detail="@context">
+            <a class="btn btn-primary" href="">Back to the console</a>
+        </SplashScreen>
+    </LogOutFailed>
+</RemoteAuthenticatorView>
+
+@code {
+    [Parameter] public string? Action { get; set; }
+}

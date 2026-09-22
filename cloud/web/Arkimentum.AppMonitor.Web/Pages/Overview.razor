@@ -1,0 +1,188 @@
+@page "/"
+@attribute [Authorize]
+@inherits OrganizationPage
+@inject AdminApiClient Api
+@inject ConfigWorkspace Workspace
+
+<PageTitle>Overview · AppMonitor admin</PageTitle>
+
+<h1>@Organizations.OrganizationName</h1>
+<p class="page-subtitle">How the fleet is doing right now.</p>
+
+<Banner Kind="error" Message="@Error" OnDismiss="Dismiss" />
+
+@if (!HasOrganization)
+{
+    <NoOrganization />
+}
+else if (IsBusy && _devices is null)
+{
+    <Spinner />
+}
+else
+{
+    <div class="stat-row">
+        <div class="stat">
+            <span class="stat-value">@_total</span>
+            <span class="stat-label">Devices</span>
+        </div>
+        <div class="stat @(_pending > 0 ? "stat-warn" : null)">
+            <span class="stat-value">@_pending</span>
+            <span class="stat-label">With pending updates</span>
+        </div>
+        <div class="stat @(_failed > 0 ? "stat-danger" : null)">
+            <span class="stat-value">@_failed</span>
+            <span class="stat-label">With failed updates</span>
+        </div>
+        <div class="stat @(_stale > 0 ? "stat-warn" : null)">
+            <span class="stat-value">@_stale</span>
+            <span class="stat-label">Not seen in 7 days</span>
+        </div>
+        <div class="stat @(_unhealthy > 0 ? "stat-danger" : null)">
+            <span class="stat-value">@_unhealthy</span>
+            <span class="stat-label">Prerequisites unhealthy</span>
+        </div>
+    </div>
+
+    @if (_sampled)
+    {
+        <p class="muted">
+            The counters above are computed from the first @_devices!.Count devices of @_total; open
+            <a href="devices">Devices</a> to page through the rest.
+        </p>
+    }
+
+    <div class="card-grid">
+        <section class="card">
+            <h2>Agent versions</h2>
+            @if (_versions.Count == 0)
+            {
+                <p class="muted">No device has reported a version yet.</p>
+            }
+            else
+            {
+                <table class="table">
+                    <thead><tr><th>Version</th><th class="num">Devices</th><th>Share</th></tr></thead>
+                    <tbody>
+                        @foreach (var (version, count) in _versions)
+                        {
+                            <tr>
+                                <td class="mono">@version</td>
+                                <td class="num">@count</td>
+                                <td><span class="bar" style="--share:@(Share(count))%"></span></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <section class="card">
+            <h2>Configuration</h2>
+            @if (!Workspace.HasDocument)
+            {
+                <p class="muted">The organization configuration has not been loaded.</p>
+            }
+            else
+            {
+                <dl class="detail-list">
+                    <dt>Version</dt>
+                    <dd class="mono">@Display.OrNone(Workspace.ConfigVersion)</dd>
+                    <dt>Last published</dt>
+                    <dd>@TimeFormat.Both(Workspace.UpdatedUtc)</dd>
+                    <dt>By</dt>
+                    <dd>@Display.OrNone(Workspace.UpdatedBy)</dd>
+                    <dt>Applications</dt>
+                    <dd>@Workspace.Editor.Apps.Count monitored, @Workspace.Editor.GlobalRows.Count(r => r.IsOverridden) global setting(s) set</dd>
+                </dl>
+                @if (Workspace.IsDirty)
+                {
+                    <Banner Kind="notice" Message="You have unpublished changes.">
+                        <a class="btn btn-quiet" href="applications">Review</a>
+                    </Banner>
+                }
+            }
+        </section>
+    </div>
+
+    <section class="card">
+        <header class="card-head">
+            <h2>Latest activity</h2>
+            <a class="btn btn-quiet" href="activity">All activity</a>
+        </header>
+        @if (_events.Count == 0)
+        {
+            <p class="muted">Nothing has happened yet.</p>
+        }
+        else
+        {
+            <table class="table">
+                <thead>
+                    <tr><th>When</th><th>Device</th><th>Event</th><th>Application</th><th>Detail</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in _events)
+                    {
+                        <tr>
+                            <td title="@TimeFormat.Absolute(item.OccurredUtc)">@TimeFormat.Relative(item.OccurredUtc)</td>
+                            <td>
+                                <a href="devices?device=@item.DeviceId">@Display.OrNone(item.DeviceName)</a>
+                            </td>
+                            <td><span class="tag tag-@Display.EventTone(item.Kind)">@Display.Event(item.Kind)</span></td>
+                            <td class="mono">@Display.OrNone(item.AppId)</td>
+                            <td class="wrap">@Detail(item)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+
+@code {
+    private const int DeviceSampleSize = 500;
+
+    private List<DeviceSummary>? _devices;
+    private List<OrganizationEvent> _events = [];
+    private List<(string Version, int Count)> _versions = [];
+    private int _total, _pending, _failed, _stale, _unhealthy;
+    private bool _sampled;
+
+    protected override async Task LoadAsync()
+    {
+        if (OrganizationId is not { } id) return;
+
+        // One page is enough to characterise a fleet of this size; the flag below is honest when it is not.
+        var page = await Api.GetDevicesAsync(id, null, 1, DeviceSampleSize);
+        _devices = page.Items;
+        _total = page.Total;
+        _sampled = page.Total > page.Items.Count;
+
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-7);
+        _pending = _devices.Count(d => d.PendingUpdateCount > 0);
+        _failed = _devices.Count(d => d.FailedUpdateCount > 0);
+        _stale = _devices.Count(d => d.LastSeenUtc is null || d.LastSeenUtc < cutoff);
+        _unhealthy = _devices.Count(d => !d.PrerequisitesHealthy);
+        _versions = _devices
+            .GroupBy(d => string.IsNullOrWhiteSpace(d.AgentVersion) ? "Unknown" : d.AgentVersion!)
+            .Select(g => (Version: g.Key, Count: g.Count()))
+            .OrderByDescending(v => v.Count).ThenByDescending(v => v.Version, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var events = await Api.GetEventsAsync(id, null, 1, 10);
+        _events = events.Items;
+
+        // The configuration card reuses the shared pending document, so opening Applications next is instant.
+        await Workspace.EnsureLoadedAsync();
+    }
+
+    private int Share(int count) => _devices is { Count: > 0 } ? (int)Math.Round(count * 100.0 / _devices.Count) : 0;
+
+    private static string Detail(OrganizationEvent item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.Message)) return item.Message!;
+        if (item.FromVersion is not null || item.ToVersion is not null)
+            return $"{Display.OrNone(item.FromVersion)} → {Display.OrNone(item.ToVersion)}";
+        return string.Empty;
+    }
+}

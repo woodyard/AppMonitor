@@ -1,0 +1,101 @@
+@page "/activity"
+@attribute [Authorize]
+@inherits OrganizationPage
+@inject AdminApiClient Api
+
+<PageTitle>Activity · AppMonitor admin</PageTitle>
+
+<h1>Activity</h1>
+<p class="page-subtitle">Installs, deferrals, forced closes and repairs across @Organizations.OrganizationName.</p>
+
+<Banner Kind="error" Message="@Error" OnDismiss="Dismiss" />
+
+@if (!HasOrganization)
+{
+    <NoOrganization />
+}
+else
+{
+    <div class="toolbar">
+        <label class="field field-inline">
+            <span class="field-label">Since</span>
+            <select class="field-input field-narrow" value="@_sinceDays" @onchange="SinceChangedAsync">
+                <option value="0">Everything</option>
+                <option value="1">Last 24 hours</option>
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option>
+            </select>
+        </label>
+        <button type="button" class="btn btn-quiet" disabled="@IsBusy" @onclick="ReloadAsync">Refresh</button>
+    </div>
+
+    @if (IsBusy && _page is null)
+    {
+        <Spinner />
+    }
+    else if (_page is { Items.Count: 0 })
+    {
+        <p class="muted">Nothing has been recorded in that period.</p>
+    }
+    else if (_page is { } page)
+    {
+        <div class="table-scroll table-tall">
+            <table class="table">
+                <thead>
+                    <tr><th>When</th><th>Device</th><th>Event</th><th>Application</th><th>Detail</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in page.Items)
+                    {
+                        <tr>
+                            <td title="@TimeFormat.Absolute(item.OccurredUtc)">@TimeFormat.Relative(item.OccurredUtc)</td>
+                            <td><a href="devices?device=@item.DeviceId">@Display.OrNone(item.DeviceName)</a></td>
+                            <td><span class="tag tag-@Display.EventTone(item.Kind)">@Display.Event(item.Kind)</span></td>
+                            <td class="mono">@Display.OrNone(item.AppId)</td>
+                            <td class="wrap">@Detail(item)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <Pager Page="_pageNumber" PageSize="PageSize" Total="page.Total" Disabled="IsBusy" PageChanged="GoToPageAsync" />
+    }
+}
+
+@code {
+    private const int PageSize = 50;
+
+    private PagedResult<OrganizationEvent>? _page;
+    private int _pageNumber = 1;
+    private int _sinceDays;
+
+    protected override async Task LoadAsync()
+    {
+        if (OrganizationId is not { } id) return;
+        var since = _sinceDays > 0 ? DateTimeOffset.UtcNow.AddDays(-_sinceDays) : (DateTimeOffset?)null;
+        _page = await Api.GetEventsAsync(id, since, _pageNumber, PageSize);
+    }
+
+    private async Task SinceChangedAsync(ChangeEventArgs args)
+    {
+        _sinceDays = int.TryParse(args.Value?.ToString(), out var days) ? days : 0;
+        _pageNumber = 1;
+        await ReloadAsync();
+    }
+
+    private async Task GoToPageAsync(int page)
+    {
+        _pageNumber = page;
+        await ReloadAsync();
+    }
+
+    private static string Detail(OrganizationEvent item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.Message)) return item.Message!;
+        if (item.FromVersion is not null || item.ToVersion is not null)
+            return $"{Display.OrNone(item.FromVersion)} → {Display.OrNone(item.ToVersion)}";
+        return string.Empty;
+    }
+}

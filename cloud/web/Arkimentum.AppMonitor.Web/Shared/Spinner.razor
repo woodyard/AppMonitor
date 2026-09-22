@@ -1,0 +1,10 @@
+@* The loading state every page uses while it waits for the API. *@
+
+<div class="spinner-row">
+    <span class="spinner" aria-hidden="true"></span>
+    <span>@Message</span>
+</div>
+
+@code {
+    [Parameter] public string Message { get; set; } = "Loading…";
+}

@@ -14,14 +14,20 @@ public static class Strings
     public const string WordmarkBrand = "Arkimentum";
     public const string WordmarkProduct = "APPMONITOR ADMIN";
     public const string WindowTitle = ProductName;
-    public const string HeaderSubtitle = "Configure the update agent on this machine";
+    /// <summary>
+    /// The header line of the deprecated per-machine pages. The console as a whole is the organization console —
+    /// see <see cref="HeaderSubtitleOrganization"/>, which is what an administrator normally sees.
+    /// </summary>
+    public const string HeaderSubtitle = "Configure this one machine — deprecated, manage settings centrally";
     public const string HeaderSubtitleOrganization = "Manage an organization in the AppMonitor cloud";
 
     // ---------------------------------------------------------------- elevation / startup
     public const string MustRunElevated = "Arkimentum AppMonitor Admin must run as an administrator.";
     public const string MustRunElevatedDetail =
         "Windows refused the elevation prompt, so the console cannot read or write the machine configuration. " +
-        "Start it again from an elevated context, or use --user-config for an unprivileged test run against HKCU.";
+        "Only the deprecated per-machine work needs this: start the console without --local (and without " +
+        "--export / --import) to manage the organization as a standard user, run it again from an elevated " +
+        "context, or use --user-config for an unprivileged test run against HKCU.";
     public const string TestingModeBanner = "Testing mode: reading and writing HKCU, service control disabled";
     public const string TestingModeDetail =
         "--user-config was given. Nothing here affects the machine configuration under HKLM, and the service is not touched.";
@@ -35,6 +41,10 @@ public static class Strings
     public const string NavApplications = "Applications";
     public const string NavExportImport = "Export & import";
     public const string NavAbout = "About";
+    // The rail labels of the deprecated local pages are "Settings" and "Applications", like the organization ones;
+    // read on their own by a screen reader they must still say which machine they mean.
+    public const string LocalSettingsAutomationName = "Settings (this machine, deprecated)";
+    public const string LocalApplicationsAutomationName = "Applications (this machine, deprecated)";
 
     /// <summary>Segoe Fluent Icons / Segoe MDL2 Assets glyphs.</summary>
     public const string GlyphOverview = "\uE80F";      // Home
@@ -384,7 +394,13 @@ public static class Strings
     // unchanged; the two halves never share a string whose wording differs between them.
 
     // ---------------------------------------------------------------- navigation and scope
-    public const string NavGroupLocal = "This machine";
+    /// <summary>The rail header of the deprecated per-machine group; it only appears under <c>--local</c>.</summary>
+    public const string NavGroupLocalDeprecated = "This machine (deprecated)";
+
+    /// <summary>One line under that header, so nobody adopts the local pages by accident.</summary>
+    public const string NavGroupLocalTip =
+        "Settings are managed centrally; these pages change only this one machine.";
+
     public const string NavGroupOrganization = "Organization";
     public const string NavConnect = "Connect";
     public const string NavDevices = "Devices";
@@ -411,7 +427,18 @@ public static class Strings
     public const string GlyphHide = "\uED1A";         // Hide
 
     public const string ScopeLocal = "Local machine";
-    public const string ScopeLocalTip = "The pages in this group edit this machine's registry configuration.";
+    public const string ScopeLocalTip =
+        "The pages in this group edit this machine's registry configuration. They are deprecated: manage settings " +
+        "centrally under Organization instead.";
+
+    // ---------------------------------------------------------------- the browser admin console
+    public const string ButtonOpenWebConsole = "Open the web admin console";
+    public const string TipOpenWebConsole =
+        "Opens this deployment's browser-based admin console in your default browser. It manages the same " +
+        "organization from any device, and is the way settings are meant to be managed.";
+
+    public static string WebConsoleOpenFailed(string url) =>
+        $"The web admin console could not be opened.\n\n{url}\n\nCopy the address into a browser instead.";
 
     public static string ScopeOrganization(string name) => $"Organization: {name}";
 

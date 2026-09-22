@@ -1,0 +1,39 @@
+@inject StartupState Startup
+
+@*
+    The shell. When the deployment has no usable API configuration there is no authentication provider to cascade
+    from, so the router is not built at all and the "not configured" page is rendered on its own - that page is the
+    one thing that must work when nothing else does.
+*@
+
+@if (!Startup.IsConfigured)
+{
+    <NotConfigured />
+}
+else
+{
+    <CascadingAuthenticationState>
+        <Router AppAssembly="@typeof(App).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+            <Found Context="routeData">
+                <AuthorizeRouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)">
+                    <Authorizing>
+                        <SplashScreen Message="Signing you in…" />
+                    </Authorizing>
+                    <NotAuthorized>
+                        @if (context.User.Identity?.IsAuthenticated == true)
+                        {
+                            @* Signed in, but the API role is missing: the sign-in itself worked, the access did not. *@
+                            <SplashScreen Message="Your account has no access to AppMonitor."
+                                          Detail="Ask a global administrator to give your account the AppMonitor.Admin role on the API application." />
+                        }
+                        else
+                        {
+                            <SignIn />
+                        }
+                    </NotAuthorized>
+                </AuthorizeRouteView>
+                <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+            </Found>
+        </Router>
+    </CascadingAuthenticationState>
+}

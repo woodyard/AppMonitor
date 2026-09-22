@@ -1,0 +1,25 @@
+@inject ClipboardService Clipboard
+
+@* Copies a value and says so for a moment. A refused clipboard is reported, not swallowed. *@
+
+<button type="button" class="btn btn-quiet btn-copy" disabled="@(string.IsNullOrEmpty(Text))" @onclick="CopyAsync">
+    @(_state ?? Label)
+</button>
+
+@code {
+    [Parameter] public string? Text { get; set; }
+
+    [Parameter] public string Label { get; set; } = "Copy";
+
+    private string? _state;
+
+    private async Task CopyAsync()
+    {
+        var copied = await Clipboard.CopyAsync(Text);
+        _state = copied ? "Copied" : "Cannot copy";
+        StateHasChanged();
+        await Task.Delay(copied ? 1500 : 2500);
+        _state = null;
+        StateHasChanged();
+    }
+}

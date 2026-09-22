@@ -1,0 +1,99 @@
+@inject ConfigWorkspace Workspace
+
+@*
+    Who changed the configuration, when and why.
+
+    A revision can be viewed, and restored into the editor as a pending change. Restoring writes nothing: the
+    restored document is published against the *current* version, which appends a new revision instead of rewinding
+    the history.
+*@
+
+<Modal IsOpen="IsOpen" Title="Configuration history" Wide="true" OnClose="CloseAsync">
+    <ChildContent>
+    @if (Workspace.History.Count == 0)
+    {
+        <p class="muted">This organization has no published history yet.</p>
+    }
+    else
+    {
+        <table class="table table-rows">
+            <thead><tr><th>Version</th><th>When</th><th>By</th><th>Comment</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var entry in Workspace.History)
+                {
+                    <tr class="@(_viewing?.Id == entry.Id ? "row-selected" : null)">
+                        <td class="mono">
+                            @entry.ConfigVersion
+                            @if (Workspace.IsCurrent(entry))
+                            {
+                                <span class="tag tag-ok">Current</span>
+                            }
+                        </td>
+                        <td title="@TimeFormat.Absolute(entry.UpdatedUtc)">@TimeFormat.Relative(entry.UpdatedUtc)</td>
+                        <td>@Display.OrNone(entry.UpdatedBy)</td>
+                        <td class="wrap">@Display.OrNone(entry.Comment)</td>
+                        <td class="right">
+                            <button type="button" class="btn btn-quiet" @onclick="() => ViewAsync(entry)">View</button>
+                            <button type="button" class="btn btn-quiet" disabled="@Workspace.IsCurrent(entry)"
+                                    @onclick="() => RestoreAsync(entry)">Restore</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        @if (_viewed is { } revision)
+        {
+            <section class="revision">
+                <h3>Version @revision.ConfigVersion</h3>
+                <p class="muted">
+                    @revision.Settings.Global.Count global value(s), @revision.Settings.Apps.Count application(s),
+                    published @TimeFormat.Both(revision.UpdatedUtc) by @Display.OrNone(revision.UpdatedBy).
+                </p>
+                <pre class="revision-json">@revision.Settings.ToJson()</pre>
+            </section>
+        }
+        else if (_loading)
+        {
+            <Spinner Message="Loading the revision…" />
+        }
+    }
+
+    </ChildContent>
+    <Footer>
+        <button type="button" class="btn btn-quiet" @onclick="CloseAsync">Close</button>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private ConfigHistoryEntry? _viewing;
+    private OrganizationConfigResponse? _viewed;
+    private bool _loading;
+
+    private async Task ViewAsync(ConfigHistoryEntry entry)
+    {
+        _viewing = entry;
+        _viewed = null;
+        _loading = true;
+        StateHasChanged();
+        _viewed = await Workspace.ViewAsync(entry.Id);
+        _loading = false;
+    }
+
+    private async Task RestoreAsync(ConfigHistoryEntry entry)
+    {
+        await Workspace.RestoreAsync(entry.Id);
+        await CloseAsync();
+    }
+
+    private Task CloseAsync()
+    {
+        _viewing = null;
+        _viewed = null;
+        return OnClose.InvokeAsync();
+    }
+}

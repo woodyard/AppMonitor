@@ -21,9 +21,14 @@ namespace Arkimentum.AppMonitor.Admin;
 ///
 /// <para>
 /// Startup order matters: the brand theme first (so even the elevation failure message is branded), then the
-/// elevation check, then the registry write probe, then the host. The console edits HKLM and therefore only ever
-/// runs elevated — the single exception is <c>--user-config</c>, which binds everything to HKCU for testing and
-/// says so in a banner that never goes away.
+/// elevation check, then the registry write probe, then the host.
+/// </para>
+///
+/// <para>
+/// Elevation and the write probe belong to the <b>deprecated</b> per-machine work only — <c>--local</c> and the
+/// headless <c>--export</c>/<c>--import</c>. The console's normal job is to manage an organization in the cloud,
+/// which changes nothing here, so it runs as a standard user and never raises a UAC prompt. <c>--user-config</c>
+/// stays what it was: everything bound to HKCU for testing, unprivileged, with a banner that never goes away.
 /// </para>
 /// </summary>
 public partial class App : Application
@@ -48,23 +53,34 @@ public partial class App : Application
         _log = _host.Services.GetRequiredService<ILogger<App>>();
         HookExceptionHandlers();
 
-        _log.LogInformation("{Product} {Version} started as {User} (elevated={Elevated}, userConfig={UserConfig}).",
-            Strings.ProductName, AdminAppInfo.Version, AdminAppInfo.UserName, AdminAppInfo.IsElevated, _options.UserConfig);
+        _log.LogInformation("{Product} {Version} started as {User} (elevated={Elevated}, userConfig={UserConfig}, local={Local}).",
+            Strings.ProductName, AdminAppInfo.Version, AdminAppInfo.UserName, AdminAppInfo.IsElevated,
+            _options.UserConfig, _options.Local);
         if (_options.UserConfig)
         {
             _log.LogWarning("TESTING MODE: --user-config is active. Configuration is read from and written to HKCU, " +
                             "and service control is disabled. Nothing here affects the machine configuration.");
         }
+        if (_options.Local)
+        {
+            _log.LogWarning("--local is deprecated. The per-machine pages will be removed; manage settings centrally " +
+                            "from the organization pages or the browser admin console.");
+        }
         foreach (var unknown in _options.Unknown) _log.LogWarning("Ignoring unknown command-line argument '{Argument}'.", unknown);
 
-        var store = _host.Services.GetRequiredService<SettingsStoreService>();
-        if (!store.CanWrite(out var error))
+        // Only the per-machine work writes a configuration layer, and only it may refuse to start over one it
+        // cannot open. Organization mode never touches the registry here, so it must not be probed for it.
+        if (_options.ManagesThisMachine)
         {
-            _log.LogError("The configuration key {Key} cannot be opened for writing: {Error}", store.PreferencePath, error);
-            _host.Services.GetRequiredService<IDialogService>().ShowMessage(
-                Strings.RegistryNotWritableTitle, Strings.RegistryNotWritable(store.PreferencePath, error), DialogTone.Critical);
-            Shutdown(1);
-            return;
+            var store = _host.Services.GetRequiredService<SettingsStoreService>();
+            if (!store.CanWrite(out var error))
+            {
+                _log.LogError("The configuration key {Key} cannot be opened for writing: {Error}", store.PreferencePath, error);
+                _host.Services.GetRequiredService<IDialogService>().ShowMessage(
+                    Strings.RegistryNotWritableTitle, Strings.RegistryNotWritable(store.PreferencePath, error), DialogTone.Critical);
+                Shutdown(1);
+                return;
+            }
         }
 
         if (_options.IsHeadless)
@@ -137,10 +153,16 @@ public partial class App : Application
     /// <summary>
     /// True when the process may continue. Otherwise it has already asked Windows to start an elevated copy (or
     /// told the user why it cannot) and called <see cref="Application.Shutdown()"/>.
+    ///
+    /// <para>
+    /// Elevation is asked for only when this run actually works on this machine's configuration — the deprecated
+    /// <c>--local</c> pages, or a headless export/import. The organization console changes nothing here, so it
+    /// opens as a standard user with no UAC prompt at all.
+    /// </para>
     /// </summary>
     private bool EnsureElevated()
     {
-        if (_options.UserConfig || AdminAppInfo.IsElevated) return true;
+        if (!_options.RequiresElevation || AdminAppInfo.IsElevated) return true;
 
         var result = Elevation.Relaunch(_options.RawArguments, waitForExit: _options.IsHeadless, out var exitCode, out _);
         switch (result)
@@ -161,8 +183,9 @@ public partial class App : Application
     private IHost BuildHost()
     {
         var builder = Host.CreateApplicationBuilder();
+        // A standard user cannot write under %ProgramData%; the organization console runs as one, and a console
+        // without a log is a console nobody can troubleshoot.
         var logDirectory = AdminAppInfo.LogDirectory(_options.UserConfig);
-        AdminAppInfo.TryCreateDirectory(logDirectory);
 
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Information);
@@ -189,7 +212,9 @@ public partial class App : Application
         services.AddSingleton<IDialogService, DialogService>();
         services.AddSingleton<HeadlessRunner>();
         services.AddSingleton<AdminIpcService>();
-        services.AddHostedService(sp => sp.GetRequiredService<AdminIpcService>());
+        // The pipe to the local service belongs to the deprecated Overview page. Without --local nothing in the
+        // console talks to this machine's service, so the client is never started and never connects.
+        if (_options.Local) services.AddHostedService(sp => sp.GetRequiredService<AdminIpcService>());
 
         // The local pages edit the registry; the organization pages edit the document the cloud API serves. Both
         // go through ConfigurationEditor, which only knows an IConfigurationStore — see IConfigurationStore.cs.

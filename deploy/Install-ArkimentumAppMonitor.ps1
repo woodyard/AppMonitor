@@ -112,7 +112,8 @@
 .PARAMETER NoAdminConsole
     Do not create the all-users Start Menu shortcut "Arkimentum AppMonitor Admin" (and remove it if a
     previous install created one). The Admin\ binaries are still copied, so the console can be started
-    from <InstallDir>\Admin\Arkimentum.AppMonitor.Admin.exe or used headless (--export / --import).
+    from <InstallDir>\Admin\Arkimentum.AppMonitor.Admin.exe. It opens on the organization pages; the
+    per-machine pages (--local) and the headless --export / --import are deprecated.
 
 .PARAMETER Force
     Overwrite existing preference values (including sample apps) instead of leaving them alone, and
@@ -490,13 +491,13 @@ if (-not $hasAdminPayload) {
             $lnk.TargetPath       = $adminExe
             $lnk.IconLocation     = "$adminExe,0"
             $lnk.WorkingDirectory = $adminInstallDir
-            $lnk.Description      = 'Configure Arkimentum AppMonitor on this computer (requires administrative rights).'
+            $lnk.Description      = 'Manage Arkimentum AppMonitor centrally: sign in and configure your organization.'
             $lnk.Save()
         } finally {
             [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
         }
         Write-Info ("Shortcut: {0} -> {1}" -f $adminShortcut, $adminExe)
-        Write-Info 'The console elevates itself (UAC) when it starts; standard users cannot change the configuration.'
+        Write-Info 'The console opens on the organization pages and needs no elevation; only the deprecated per-machine pages (--local) do.'
     } catch {
         Write-Warning ("Could not create the Start Menu shortcut: {0}. Start the console from {1} instead." -f $_.Exception.Message, $adminExe)
     }
@@ -834,8 +835,9 @@ Write-Host "  Prerequisites    : $script:PrerequisiteOutcome (winget for the SYS
 Write-Host ''
 Write-Host 'Troubleshooting: run the service interactively with'
 Write-Host ("  `"{0}`" --console" -f $serviceExe)
-Write-Host 'Configuration: the admin console (Start Menu -> Arkimentum -> Arkimentum AppMonitor Admin), docs\AdminConsole.md.'
-Write-Host 'Registry reference: docs\Registry.md. Example configuration: Set-SampleConfiguration.ps1.'
+Write-Host 'Configuration is managed centrally: enrol the device, then publish the settings from the browser admin'
+Write-Host 'console or from the Start Menu -> Arkimentum -> Arkimentum AppMonitor Admin. See docs\AdminConsole.md.'
+Write-Host 'Stand-alone devices: docs\Registry.md, the ADMX template, or Set-SampleConfiguration.ps1.'
 if ($effectiveServerUrl) {
     Write-Host 'Cloud service, provisioning and troubleshooting: docs\Cloud.md. Self-update: docs\SelfUpdate.md.'
 }

@@ -49,6 +49,34 @@
 
                     <TextBlock Style="{StaticResource CaptionText}" Margin="0,12,0,0" Text="{Binding StatusText}" />
 
+                    <!-- ==== the browser console this deployment hosts, once the server has named it in
+                         /public/auth-config. It is the cross-device way to manage the organization; this window
+                         only ever manages one at a time, from this machine. -->
+                    <Border Style="{StaticResource Banner}"
+                            Margin="0,12,0,0"
+                            HorizontalAlignment="Left"
+                            Visibility="{Binding HasWebAdminConsole, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource SymbolGlyph}"
+                                       FontSize="14"
+                                       Margin="0,1,10,0"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource BrandSkyTextBrush}"
+                                       Text="{x:Static res:Strings.GlyphCloud}" />
+                            <Button Style="{StaticResource LinkButton}"
+                                    VerticalAlignment="Center"
+                                    Content="{x:Static res:Strings.ButtonOpenWebConsole}"
+                                    ToolTip="{x:Static res:Strings.TipOpenWebConsole}"
+                                    Command="{Binding OpenWebConsoleCommand}" />
+                            <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                       Margin="12,0,0,0"
+                                       MaxWidth="360"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       Text="{Binding WebAdminUrl}" />
+                        </StackPanel>
+                    </Border>
+
                     <Border Style="{StaticResource CriticalBanner}"
                             Margin="0,12,0,0"
                             Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">

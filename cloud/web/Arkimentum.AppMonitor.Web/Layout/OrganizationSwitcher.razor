@@ -1,0 +1,146 @@
+@inject OrganizationState Organizations
+@inject AdminApiClient Api
+@implements IDisposable
+
+@*
+    Which organization the console is looking at. One organization selects itself and is shown as a badge; several
+    give a picker, and the choice is remembered in localStorage. Global administrators can create one from here -
+    the enrollment key that comes back is shown once, and never again.
+*@
+
+<div class="org-switcher">
+    @if (!Organizations.IsLoaded)
+    {
+        <span class="scope-badge">Loading…</span>
+    }
+    else if (Organizations.Organizations.Count == 0)
+    {
+        <span class="scope-badge scope-empty">No organization</span>
+    }
+    else if (Organizations.Organizations.Count == 1)
+    {
+        <span class="scope-badge">@Organizations.OrganizationName</span>
+    }
+    else
+    {
+        <label class="visually-hidden" for="org-select">Organization</label>
+        <select id="org-select" class="scope-select" value="@Organizations.OrganizationId"
+                @onchange="SelectAsync">
+            @foreach (var organization in Organizations.Organizations.OrderBy(o => o.Name, StringComparer.CurrentCultureIgnoreCase))
+            {
+                <option value="@organization.OrganizationId">@organization.Name</option>
+            }
+        </select>
+    }
+
+    @if (Organizations.IsGlobalAdmin)
+    {
+        <button type="button" class="btn btn-quiet" @onclick="() => _creating = true">New organization</button>
+    }
+</div>
+
+<Modal IsOpen="_creating" Title="New organization" OnClose="CloseCreate">
+    <ChildContent>
+    @if (_created is null)
+    {
+        <p class="muted">
+            The organization gets an enrollment key straight away. It is shown here once and never again - copy it
+            before closing this dialog, or rotate it later on the Enrollment page.
+        </p>
+        <label class="field">
+            <span class="field-label">Name</span>
+            <input class="field-input" @bind="_name" @bind:event="oninput" placeholder="Contoso A/S" />
+        </label>
+        <label class="field">
+            <span class="field-label">Entra tenant id (optional)</span>
+            <input class="field-input" @bind="_tenantId" @bind:event="oninput" placeholder="00000000-0000-0000-0000-000000000000" />
+            <span class="field-hint">
+                Administrators signing in from this tenant are mapped to this organization. Leave empty to map it later.
+            </span>
+        </label>
+        <Banner Kind="error" Message="@_error" />
+    }
+    else
+    {
+        <p><strong>@_created.Organization.Name</strong> was created.</p>
+        <label class="field">
+            <span class="field-label">Organization id</span>
+            <div class="field-row">
+                <input class="field-input mono" readonly value="@_created.Organization.OrganizationId" />
+                <CopyButton Text="@_created.Organization.OrganizationId.ToString()" />
+            </div>
+        </label>
+        <label class="field">
+            <span class="field-label">Enrollment key - shown once</span>
+            <div class="field-row">
+                <input class="field-input mono" readonly value="@_created.Enrollment.EnrollmentKey" />
+                <CopyButton Text="@_created.Enrollment.EnrollmentKey" />
+            </div>
+            <span class="field-hint">Store it now. The server never returns it again; rotating issues a new one.</span>
+        </label>
+    }
+    </ChildContent>
+    <Footer>
+        @if (_created is null)
+        {
+            <button type="button" class="btn btn-quiet" @onclick="CloseCreate">Cancel</button>
+            <button type="button" class="btn btn-primary" disabled="@(_busy || string.IsNullOrWhiteSpace(_name))" @onclick="CreateAsync">
+                @(_busy ? "Creating…" : "Create")
+            </button>
+        }
+        else
+        {
+            <button type="button" class="btn btn-primary" @onclick="CloseCreate">Done</button>
+        }
+    </Footer>
+</Modal>
+
+@code {
+    private bool _creating;
+    private bool _busy;
+    private string _name = string.Empty;
+    private string _tenantId = string.Empty;
+    private string? _error;
+    private CreateOrganizationResponse? _created;
+
+    protected override void OnInitialized() => Organizations.Changed += OnChanged;
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task SelectAsync(ChangeEventArgs args)
+    {
+        if (Guid.TryParse(args.Value?.ToString(), out var id)) await Organizations.SelectAsync(id);
+    }
+
+    private async Task CreateAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            _created = await Api.CreateOrganizationAsync(_name, _tenantId);
+            // The new organization is not in /admin/me yet, so re-read it and switch to what was just created.
+            await Organizations.ReloadAsync();
+            await Organizations.SelectAsync(_created.Organization.OrganizationId);
+        }
+        catch (Exception ex)
+        {
+            _error = ApiException.Describe(ex);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void CloseCreate()
+    {
+        _creating = false;
+        _created = null;
+        _name = string.Empty;
+        _tenantId = string.Empty;
+        _error = null;
+    }
+
+    public void Dispose() => Organizations.Changed -= OnChanged;
+}

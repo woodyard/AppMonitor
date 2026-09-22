@@ -29,6 +29,9 @@ public sealed class ServerOptions
     /// <summary>Public base URL of this API; handed to devices as the third registry value.</summary>
     public string PublicServerUrl { get; init; } = string.Empty;
 
+    /// <summary>Public URL of the browser-based admin console (Static Web App); empty when none is deployed.</summary>
+    public string PublicWebAdminUrl { get; init; } = string.Empty;
+
     /// <summary>Value of DeviceConfigResponse.PollIntervalSeconds.</summary>
     public int PollIntervalSeconds { get; init; } = 900;
 
@@ -74,6 +77,7 @@ public sealed class ServerOptions
             ValidAudiences = audiences.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             OperatorTenantId = configuration["OperatorTenantId"] ?? string.Empty,
             PublicServerUrl = (configuration["PublicServerUrl"] ?? string.Empty).TrimEnd('/'),
+            PublicWebAdminUrl = (configuration["PublicWebAdminUrl"] ?? string.Empty).TrimEnd('/'),
             PollIntervalSeconds = ReadInt(configuration, "PollIntervalSeconds", 900),
             BlobServiceUri = configuration["BlobServiceUri"],
             ReportContainer = configuration["ReportContainer"] ?? "reports",

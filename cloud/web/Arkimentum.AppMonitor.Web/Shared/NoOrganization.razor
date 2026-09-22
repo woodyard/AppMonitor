@@ -1,0 +1,21 @@
+@inject OrganizationState Organizations
+
+@*
+    The signed-in account is allowed in, but has no organization to look at. For a global administrator that means
+    "create one"; for anybody else it means their tenant has not been mapped yet.
+*@
+
+<div class="card">
+    <h2>No organization</h2>
+    @if (Organizations.IsGlobalAdmin)
+    {
+        <p>Create an organization with the button in the header, then enrol your first device from the Enrollment page.</p>
+    }
+    else
+    {
+        <p>
+            Your account is not mapped to an AppMonitor organization. Ask a global administrator to map your Entra
+            tenant to one.
+        </p>
+    }
+</div>

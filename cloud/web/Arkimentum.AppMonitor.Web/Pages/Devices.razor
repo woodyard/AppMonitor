@@ -1,0 +1,341 @@
+@page "/devices"
+@attribute [Authorize]
+@inherits OrganizationPage
+@inject AdminApiClient Api
+
+<PageTitle>Devices · AppMonitor admin</PageTitle>
+
+<h1>Devices</h1>
+<p class="page-subtitle">Every machine enrolled in @Organizations.OrganizationName.</p>
+
+<Banner Kind="error" Message="@Error" OnDismiss="Dismiss" />
+<Banner Kind="notice" Message="@Notice" OnDismiss="Dismiss" />
+
+@if (!HasOrganization)
+{
+    <NoOrganization />
+}
+else
+{
+    <div class="toolbar">
+        <input class="search" type="search" placeholder="Search name, user, OS or agent version"
+               value="@_search" @oninput="SearchAsync" />
+        <button type="button" class="btn btn-quiet" disabled="@IsBusy" @onclick="ReloadAsync">Refresh</button>
+    </div>
+
+    @if (IsBusy && _page is null)
+    {
+        <Spinner />
+    }
+    else if (_page is { Items.Count: 0 })
+    {
+        <p class="muted">@(string.IsNullOrWhiteSpace(_search) ? "No device has enrolled yet." : "No device matches that search.")</p>
+    }
+    else if (_page is { } page)
+    {
+        <div class="table-scroll">
+            <table class="table table-rows">
+                <thead>
+                    <tr>
+                        <th>Device</th>
+                        <th>Last seen</th>
+                        <th>Agent</th>
+                        <th>Config applied</th>
+                        <th class="num">Pending</th>
+                        <th class="num">Failed</th>
+                        <th>Prerequisites</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var device in page.Items)
+                    {
+                        <tr class="@(device.DeviceId == _selectedId ? "row-selected" : null)" @onclick="() => SelectAsync(device.DeviceId)">
+                            <td>
+                                <strong>@device.DeviceName</strong>
+                                <span class="sub">@Display.OrNone(device.LastLogonUser) · @Display.OrNone(device.OsVersion)</span>
+                            </td>
+                            <td title="@TimeFormat.Absolute(device.LastSeenUtc)">@TimeFormat.Relative(device.LastSeenUtc)</td>
+                            <td class="mono">@Display.OrNone(device.AgentVersion)</td>
+                            <td class="mono">@Display.OrNone(device.ConfigVersionApplied)</td>
+                            <td class="num">@(device.PendingUpdateCount > 0 ? device.PendingUpdateCount.ToString() : "–")</td>
+                            <td class="num">
+                                @if (device.FailedUpdateCount > 0)
+                                {
+                                    <span class="tag tag-danger">@device.FailedUpdateCount</span>
+                                }
+                                else
+                                {
+                                    <text>–</text>
+                                }
+                            </td>
+                            <td>
+                                <span class="tag tag-@(device.PrerequisitesHealthy ? "ok" : "danger")">
+                                    @(device.PrerequisitesHealthy ? "Healthy" : "Needs repair")
+                                </span>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <Pager Page="_pageNumber" PageSize="PageSize" Total="page.Total" Disabled="IsBusy" PageChanged="GoToPageAsync" />
+    }
+
+    @if (_detailLoading)
+    {
+        <section class="card"><Spinner Message="Loading the device…" /></section>
+    }
+    else if (_detail is { } detail)
+    {
+        <section class="card detail-panel">
+            <header class="card-head">
+                <div>
+                    <h2>@detail.Summary.DeviceName</h2>
+                    <p class="muted">
+                        Enrolled @TimeFormat.Relative(detail.Summary.EnrolledUtc) ·
+                        last scan @TimeFormat.Relative(detail.Summary.LastScanUtc) ·
+                        <span class="mono">@detail.Summary.DeviceId</span>
+                    </p>
+                </div>
+                <button type="button" class="btn btn-quiet" @onclick="() => { _selectedId = null; _detail = null; }">Close</button>
+            </header>
+
+            <div class="button-row">
+                <button type="button" class="btn btn-primary" disabled="@_commandBusy" @onclick="() => CommandAsync(DeviceCommandKind.ScanNow)">Scan now</button>
+                <button type="button" class="btn btn-quiet" disabled="@_commandBusy" @onclick="() => CommandAsync(DeviceCommandKind.ReportNow)">Report now</button>
+                <button type="button" class="btn btn-quiet" disabled="@_commandBusy" @onclick="() => CommandAsync(DeviceCommandKind.RepairPrerequisites)">Repair prerequisites</button>
+                <button type="button" class="btn btn-quiet" disabled="@_commandBusy" @onclick="() => CommandAsync(DeviceCommandKind.UpdateAgent)">Update agent</button>
+                <span class="spacer"></span>
+                <button type="button" class="btn btn-danger" disabled="@_commandBusy" @onclick="() => _confirmDelete = true">Delete device</button>
+            </div>
+
+            @if (detail.Prerequisites is { } prerequisites)
+            {
+                <p class="@(prerequisites.IsHealthy ? "muted" : "attention")">
+                    @prerequisites.Summary@(string.IsNullOrWhiteSpace(prerequisites.LastError) ? "" : $" — {prerequisites.LastError}")
+                    (checked @TimeFormat.Relative(prerequisites.CheckedUtc))
+                </p>
+            }
+
+            @if (detail.PendingCommands.Count > 0)
+            {
+                <h3>Pending commands</h3>
+                <ul class="plain-list">
+                    @foreach (var command in detail.PendingCommands)
+                    {
+                        <li>
+                            <span class="tag tag-quiet">@Display.Command(command.Kind)</span>
+                            queued @TimeFormat.Relative(command.IssuedUtc) by @Display.OrNone(command.IssuedBy)
+                        </li>
+                    }
+                </ul>
+            }
+
+            <h3>Updates</h3>
+            @if (detail.Updates.Count == 0)
+            {
+                <p class="muted">Nothing pending.</p>
+            }
+            else
+            {
+                <div class="table-scroll">
+                    <table class="table">
+                        <thead>
+                            <tr><th>Application</th><th>State</th><th>Installed</th><th>Available</th><th>Deadline</th><th class="num">Deferrals</th><th>Last error</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var update in detail.Updates)
+                            {
+                                <tr>
+                                    <td>
+                                        <strong>@Display.OrNone(update.DisplayName ?? update.AppId)</strong>
+                                        <span class="sub">@update.AppId · @Display.Context(update.Context)@(update.Mandatory ? " · mandatory" : "")</span>
+                                    </td>
+                                    <td><span class="tag tag-@Display.UpdateTone(update.State)">@Display.UpdateState(update.State)</span></td>
+                                    <td class="mono">@Display.OrNone(update.InstalledVersion)</td>
+                                    <td class="mono">@Display.OrNone(update.AvailableVersion)</td>
+                                    <td title="@TimeFormat.Absolute(update.DeadlineUtc)">
+                                        @(update.DeadlineUtc is null ? "None" : TimeFormat.Relative(update.DeadlineUtc))
+                                    </td>
+                                    <td class="num">
+                                        @update.DeferralCount@(update.DeferredUntilUtc is { } until ? $" (until {TimeFormat.Relative(until)})" : "")
+                                    </td>
+                                    <td class="wrap attention">@update.LastError</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+
+            <h3>Installed applications (@detail.InstalledApps.Count)</h3>
+            @if (detail.InstalledApps.Count == 0)
+            {
+                <p class="muted">The device has not reported an inventory yet.</p>
+            }
+            else
+            {
+                <div class="table-scroll table-tall">
+                    <table class="table">
+                        <thead>
+                            <tr><th>Application</th><th>Version</th><th>Available</th><th>Publisher</th><th>winget id</th><th>Context</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var app in detail.InstalledApps.OrderBy(a => a.DisplayName, StringComparer.CurrentCultureIgnoreCase))
+                            {
+                                <tr>
+                                    <td>@app.DisplayName</td>
+                                    <td class="mono">@Display.OrNone(app.Version)</td>
+                                    <td class="mono">@Display.OrNone(app.AvailableVersion)</td>
+                                    <td>@Display.OrNone(app.Publisher)</td>
+                                    <td class="mono">@Display.OrNone(app.WingetId)</td>
+                                    <td>@Display.Context(app.Context)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+
+            <h3>Recent events</h3>
+            @if (detail.RecentEvents.Count == 0)
+            {
+                <p class="muted">Nothing recorded.</p>
+            }
+            else
+            {
+                <table class="table">
+                    <thead><tr><th>When</th><th>Event</th><th>Application</th><th>Detail</th></tr></thead>
+                    <tbody>
+                        @foreach (var item in detail.RecentEvents.OrderByDescending(e => e.OccurredUtc))
+                        {
+                            <tr>
+                                <td title="@TimeFormat.Absolute(item.OccurredUtc)">@TimeFormat.Relative(item.OccurredUtc)</td>
+                                <td><span class="tag tag-@Display.EventTone(item.Kind)">@Display.Event(item.Kind)</span></td>
+                                <td class="mono">@Display.OrNone(item.AppId)</td>
+                                <td class="wrap">@(item.Message ?? $"{Display.OrNone(item.FromVersion)} → {Display.OrNone(item.ToVersion)}")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <ConfirmDialog IsOpen="_confirmDelete"
+                       Title="Delete this device?"
+                       Body="@($"{detail.Summary.DeviceName} is removed from the organization and its device key stops working immediately.")"
+                       Detail="The machine re-attaches to its own history if it enrols again."
+                       ConfirmText="Delete" Danger="true"
+                       OnConfirm="DeleteAsync" OnCancel="() => _confirmDelete = false" />
+    }
+}
+
+@code {
+    private const int PageSize = 25;
+
+    /// <summary>Set by the links on the Overview and Activity pages, so an event opens the device it happened on.</summary>
+    [SupplyParameterFromQuery(Name = "device")] public Guid? DeviceQuery { get; set; }
+
+    private PagedResult<DeviceSummary>? _page;
+    private DeviceDetail? _detail;
+    private Guid? _selectedId;
+    private int _pageNumber = 1;
+    private string _search = string.Empty;
+    private bool _detailLoading;
+    private bool _commandBusy;
+    private bool _confirmDelete;
+    private CancellationTokenSource? _searchDebounce;
+
+    protected override async Task LoadAsync()
+    {
+        if (OrganizationId is not { } id) return;
+        _page = await Api.GetDevicesAsync(id, _search, _pageNumber, PageSize);
+        if (DeviceQuery is { } requested && _selectedId != requested) await SelectAsync(requested);
+    }
+
+    /// <summary>Typing does not fire a request per keystroke; a short pause does.</summary>
+    private async Task SearchAsync(ChangeEventArgs args)
+    {
+        _search = args.Value?.ToString() ?? string.Empty;
+        _searchDebounce?.Cancel();
+        _searchDebounce = new CancellationTokenSource();
+        var token = _searchDebounce.Token;
+        try
+        {
+            await Task.Delay(300, token);
+            _pageNumber = 1;
+            await ReloadAsync();
+        }
+        catch (TaskCanceledException) { /* a newer keystroke took over */ }
+    }
+
+    private async Task GoToPageAsync(int page)
+    {
+        _pageNumber = page;
+        await ReloadAsync();
+    }
+
+    private async Task SelectAsync(Guid deviceId)
+    {
+        if (OrganizationId is not { } id) return;
+        _selectedId = deviceId;
+        _detailLoading = true;
+        _detail = null;
+        StateHasChanged();
+        try { _detail = await Api.GetDeviceAsync(id, deviceId); }
+        catch (Exception ex) { Error = ApiException.Describe(ex); }
+        finally { _detailLoading = false; StateHasChanged(); }
+    }
+
+    private async Task CommandAsync(DeviceCommandKind kind)
+    {
+        if (OrganizationId is not { } id || _selectedId is not { } deviceId) return;
+        _commandBusy = true;
+        Error = null;
+        try
+        {
+            await Api.SendCommandAsync(id, deviceId, kind);
+            Notice = $"{Display.Command(kind)} was queued; the device picks it up on its next sync.";
+            _detail = await Api.GetDeviceAsync(id, deviceId);
+        }
+        catch (Exception ex)
+        {
+            Error = ApiException.Describe(ex);
+        }
+        finally
+        {
+            _commandBusy = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        _confirmDelete = false;
+        if (OrganizationId is not { } id || _selectedId is not { } deviceId) return;
+        _commandBusy = true;
+        try
+        {
+            await Api.DeleteDeviceAsync(id, deviceId);
+            Notice = "The device was deleted.";
+            _selectedId = null;
+            _detail = null;
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = ApiException.Describe(ex);
+        }
+        finally
+        {
+            _commandBusy = false;
+        }
+    }
+
+    public override void Dispose()
+    {
+        _searchDebounce?.Cancel();
+        _searchDebounce?.Dispose();
+        base.Dispose();
+    }
+}

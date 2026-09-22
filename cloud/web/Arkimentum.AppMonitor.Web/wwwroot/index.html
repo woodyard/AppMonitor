@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AppMonitor admin</title>
+    <base href="/" />
+    <link rel="preload" id="webassembly" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gelasio:wght@500;600&display=swap" />
+    <link rel="stylesheet" href="css/app.css" />
+    <!-- Inline favicon in the brand colours: an olive ground with a terracotta check. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237a894a'/%3E%3Cpath d='M8 17l5 5 11-12' fill='none' stroke='%23f5f1ee' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <script type="importmap"></script>
+</head>
+
+<body>
+    <div id="app">
+        <div class="boot">
+            <span class="boot-name">Arkimentum</span>
+            <span class="boot-product">AppMonitor</span>
+            <span class="boot-bar"><span></span></span>
+        </div>
+    </div>
+
+    <div id="blazor-error-ui">
+        Something went wrong.
+        <a href="." class="reload">Reload</a>
+        <span class="dismiss">&times;</span>
+    </div>
+
+    <script>
+        // The clipboard API only exists in a secure context and can be refused outright, so fall back to a hidden
+        // textarea and tell the caller whether anything was actually copied.
+        window.appMonitor = {
+            copyToClipboard: async function (text) {
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(text);
+                        return true;
+                    }
+                } catch (e) { /* fall through to the textarea */ }
+                try {
+                    const area = document.createElement('textarea');
+                    area.value = text;
+                    area.setAttribute('readonly', '');
+                    area.style.position = 'fixed';
+                    area.style.opacity = '0';
+                    document.body.appendChild(area);
+                    area.select();
+                    const ok = document.execCommand('copy');
+                    document.body.removeChild(area);
+                    return ok;
+                } catch (e) {
+                    return false;
+                }
+            }
+        };
+    </script>
+    <!-- MSAL's browser side. RemoteAuthenticationService calls AuthenticationService.init on first render, so this
+         must be loaded before Blazor starts; without it every page dies with "AuthenticationService was undefined". -->
+    <script src="_content/Microsoft.Authentication.WebAssembly.Msal/AuthenticationService.js"></script>
+    <script src="_framework/blazor.webassembly#[.{fingerprint}].js"></script>
+</body>
+
+</html>

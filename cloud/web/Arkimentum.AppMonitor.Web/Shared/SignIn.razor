@@ -1,0 +1,18 @@
+@inject NavigationManager Navigation
+@inject StartupState Startup
+
+@* What an anonymous visitor sees. Sign-in is a redirect to Entra ID and back to /authentication/login-callback. *@
+
+<SplashScreen Message="Sign in with your work account to manage this organization."
+              Detail="@($"Server: {Startup.ApiBaseUrl}")">
+    <button type="button" class="btn btn-primary btn-large" @onclick="BeginSignIn">Sign in</button>
+</SplashScreen>
+
+@code {
+    private void BeginSignIn() =>
+        Navigation.NavigateToLogin("authentication/login", new InteractiveRequestOptions
+        {
+            Interaction = InteractionType.SignIn,
+            ReturnUrl = Navigation.Uri,
+        });
+}

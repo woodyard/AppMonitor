@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows.Input;
+using Arkimentum.AppMonitor.Admin.Infrastructure;
 using Arkimentum.AppMonitor.Admin.Resources;
 using Arkimentum.AppMonitor.Admin.Services;
 using Arkimentum.AppMonitor.Cloud;
@@ -53,6 +54,7 @@ public sealed class CloudConnectViewModel : ObservableObject
     private readonly RelayCommand _reloadCommand;
     private readonly RelayCommand _useCommand;
     private readonly RelayCommand _createCommand;
+    private readonly RelayCommand _openWebConsoleCommand;
     private readonly OrganizationEnrollmentViewModel _enrollment;
 
     private string _serverUrl;
@@ -77,6 +79,7 @@ public sealed class CloudConnectViewModel : ObservableObject
         _reloadCommand = new RelayCommand(ReloadOrganizations, () => !_isBusy && _session.IsSignedIn);
         _useCommand = new RelayCommand(UseSelected, () => !_isBusy && _selected is not null);
         _createCommand = new RelayCommand(CreateOrganization, () => !_isBusy && IsGlobalAdmin);
+        _openWebConsoleCommand = new RelayCommand(OpenWebConsole, () => HasWebAdminConsole);
 
         _session.Changed += OnSessionChanged;
     }
@@ -139,6 +142,25 @@ public sealed class CloudConnectViewModel : ObservableObject
     public string ScopeText => _session.AuthConfig?.Scope ?? Strings.None;
 
     public string ClientIdText => _session.AuthConfig?.ClientId ?? Strings.None;
+
+    // ---------------------------------------------------------------- the browser console
+
+    /// <summary>
+    /// Where this deployment's browser-based admin console lives, if it hosts one: the server says so in
+    /// <c>webAdminUrl</c>. That console is the one that manages settings centrally from any device, so the page
+    /// offers it as soon as the server has named it — before signing in here, too.
+    /// </summary>
+    public string WebAdminUrl => _session.AuthConfig?.WebAdminUrl ?? string.Empty;
+
+    public bool HasWebAdminConsole => ExternalLink.IsBrowsable(WebAdminUrl);
+
+    public ICommand OpenWebConsoleCommand => _openWebConsoleCommand;
+
+    private void OpenWebConsole()
+    {
+        if (!ExternalLink.TryOpen(WebAdminUrl, _log))
+            _dialogs.ShowMessage(Strings.ProductName, Strings.WebConsoleOpenFailed(WebAdminUrl), DialogTone.Warning);
+    }
 
     public ObservableCollection<OrganizationRowViewModel> Organizations { get; } = [];
 
@@ -399,7 +421,7 @@ public sealed class CloudConnectViewModel : ObservableObject
         OnPropertyChanged(
             nameof(IsSignedIn), nameof(HasAuthConfig), nameof(SignedInAs), nameof(TenantText), nameof(IsGlobalAdmin),
             nameof(AuthorityText), nameof(ScopeText), nameof(ClientIdText), nameof(StatusText), nameof(HasOrganizations),
-            nameof(ServerUrlSource));
+            nameof(ServerUrlSource), nameof(WebAdminUrl), nameof(HasWebAdminConsole));
         RaiseCanExecuteChanged();
     }
 
@@ -411,5 +433,6 @@ public sealed class CloudConnectViewModel : ObservableObject
         _reloadCommand.RaiseCanExecuteChanged();
         _useCommand.RaiseCanExecuteChanged();
         _createCommand.RaiseCanExecuteChanged();
+        _openWebConsoleCommand.RaiseCanExecuteChanged();
     }
 }

@@ -1,0 +1,101 @@
+@page "/settings"
+@attribute [Authorize]
+@inherits OrganizationPage
+@inject ConfigWorkspace Workspace
+
+@*
+    The global settings of the organization configuration, generated from SettingsSchema.Global and grouped by
+    category. Anything set here sits above the devices' own preferences; anything left at "Default" is not written
+    to the document at all, so the agent keeps following the built-in default when it changes.
+
+    This page and the Applications page edit the same pending document and share one Publish footer.
+*@
+
+<PageTitle>Settings · AppMonitor admin</PageTitle>
+
+<h1>Settings</h1>
+<p class="page-subtitle">What the agent does on every device in @Organizations.OrganizationName.</p>
+
+<Banner Kind="error" Message="@Error" OnDismiss="Dismiss" />
+
+@if (!HasOrganization)
+{
+    <NoOrganization />
+}
+else if (!Workspace.HasDocument && Workspace.IsBusy)
+{
+    <Spinner Message="Loading the organization configuration…" />
+}
+else if (!Workspace.HasDocument)
+{
+    @* The load failed; the workspace kept the reason. Spinning forever here would hide it. *@
+    <Banner Kind="error" Message="@(Workspace.Error ?? "The organization configuration could not be loaded.")">
+        <button type="button" class="btn btn-quiet" @onclick="Workspace.ReloadAsync">Try again</button>
+    </Banner>
+}
+else
+{
+    <div class="toolbar">
+        <input class="search" type="search" placeholder="Search settings"
+               value="@_filter" @oninput="e => _filter = e.Value?.ToString() ?? string.Empty" />
+        <label class="check">
+            <input type="checkbox" checked="@Workspace.ShowAdvanced" @onchange="e => Workspace.ShowAdvanced = e.Value is true" />
+            <span>Show advanced</span>
+        </label>
+        <span class="spacer"></span>
+        <span class="muted">@Workspace.Editor.GlobalRows.Count(r => r.IsOverridden) of @Workspace.Editor.GlobalRows.Count set</span>
+    </div>
+
+    @foreach (var group in Groups)
+    {
+        <section class="card setting-group">
+            <h2>@group.Category</h2>
+            @foreach (var row in Rows(group))
+            {
+                <SettingRowEditor Row="row" OnChanged="StateHasChanged" />
+            }
+        </section>
+    }
+
+    @if (Groups.Count == 0)
+    {
+        <p class="muted">Nothing matches that search.</p>
+    }
+
+    <PublishFooter />
+}
+
+@code {
+    private string _filter = string.Empty;
+
+    private List<SettingGroup> Groups => Workspace.Editor.GlobalGroups.Where(g => Rows(g).Count > 0).ToList();
+
+    protected override Task LoadAsync() => Workspace.EnsureLoadedAsync();
+
+    protected override async Task OnInitializedAsync()
+    {
+        Workspace.Changed += OnWorkspaceChanged;
+        await base.OnInitializedAsync();
+    }
+
+    private void OnWorkspaceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private List<SettingRow> Rows(SettingGroup group) => group.Rows
+        .Where(r => r.IsShown(Workspace.ShowAdvanced) && Matches(r))
+        .ToList();
+
+    private bool Matches(SettingRow row)
+    {
+        var needle = _filter.Trim();
+        if (needle.Length == 0) return true;
+        return row.Title.Contains(needle, StringComparison.CurrentCultureIgnoreCase)
+            || row.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
+            || row.Description.Contains(needle, StringComparison.CurrentCultureIgnoreCase);
+    }
+
+    public override void Dispose()
+    {
+        Workspace.Changed -= OnWorkspaceChanged;
+        base.Dispose();
+    }
+}

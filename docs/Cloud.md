@@ -11,7 +11,7 @@ log levels - is published once for the organization and collected by every devic
 | Without the cloud | With the cloud |
 | --- | --- |
 | Configuration pushed to every device (ADMX, `.reg`, Intune script) | Three connection values per device; the rest published once |
-| A configuration change is a deployment | A configuration change is a *Publish* in the admin console |
+| A configuration change is a deployment | A configuration change is a *Publish* in the web admin console - in a browser, nothing installed |
 | No fleet view; one device at a time | Devices and Inventory pages across the organization |
 | "Is this machine patched?" answered per machine | Answered for the fleet, with versions and device counts |
 | New agent versions deployed by Intune / RMM | The agent updates itself from signed releases |
@@ -21,9 +21,10 @@ Nothing is taken away. The Policies key still wins over everything, the ADMX tem
 `.reg` files and the admin console still work, and a device that cannot reach the service keeps
 running on what it cached.
 
-Operators deploying the backend itself (Azure Functions, Azure SQL, Blob storage, Entra ID app
-registrations, Bicep, `Deploy-Cloud.ps1`) want [`cloud/README.md`](../cloud/README.md) instead. This
-page is about the **devices** and the people who provision them.
+Operators deploying the backend itself (Azure Functions, Azure SQL, Blob storage, the Static Web App that
+hosts the web admin console, Entra ID app registrations, Bicep, `Deploy-Cloud.ps1`) want
+[`cloud/README.md`](../cloud/README.md) instead. This page is about the **devices** and the people who
+provision them.
 
 ## Architecture
 
@@ -46,6 +47,7 @@ flowchart LR
     end
 
     subgraph Admins["Administrators"]
+        WEB["Web admin console<br/>(browser, Azure Static Web App)"]
         CONSOLE["Arkimentum.AppMonitor.Admin.exe<br/>Organization mode"]
         ENTRA["Entra ID<br/>sign-in"]
     end
@@ -66,6 +68,8 @@ flowchart LR
     SVC <--> TRAY
     API <--> DB
     API --> BLOB
+    WEB -- "Entra token (MSAL)" --> ENTRA
+    WEB -- "devices, inventory,<br/>publish configuration" --> API
     CONSOLE -- "Entra token" --> ENTRA
     CONSOLE -- "devices, inventory,<br/>publish configuration" --> API
     SVC -- "manifest + package<br/>SHA-256 verified" --> GH
@@ -81,7 +85,27 @@ up on the device's next poll - the console cannot reach into a machine.
 | Device side | `src\Arkimentum.AppMonitor.Core\Cloud\` (`CloudClient`, `CloudConfigCache`, `DeviceCredentialStore`, `CloudContracts`) | Enrol, fetch configuration, report, read release manifests |
 | Wire contracts | `CloudContracts.cs`, routes in `CloudRoutes` | The exact JSON both sides serialise; camelCase, string enums, nulls omitted |
 | Backend | `cloud\` | Azure Functions API, Azure SQL, Blob, Bicep, `Deploy-Cloud.ps1` |
-| Console | Organization mode, see [`AdminConsole.md`](AdminConsole.md#organization-mode) | Devices, Inventory, Organization settings/applications, Enrollment |
+| Web admin console | Browser, hosted on an Azure Static Web App (`cloud\web\`) | **The console.** Devices, Inventory, Organization settings/applications, Enrollment |
+| Desktop console | Organization mode, see [`AdminConsole.md`](AdminConsole.md#organization-mode) | The same organization pages in `Arkimentum.AppMonitor.Admin.exe`, plus the local "This machine" pages |
+
+### Where you manage an organization
+
+The **web admin console** is the primary console. It is a browser application - nothing to install, nothing to
+elevate, works from any machine including a Mac - hosted on an Azure Static Web App next to the API. Its URL is
+printed by `Deploy-Cloud.ps1` and looks like `https://appmon-prod-web-ab12cd.azurestaticapps.net` (or your own
+custom domain). Sign in with your work account; what you may see and change comes from the app roles on the
+AppMonitor API in your tenant, exactly as before:
+
+| App role | What it gives |
+| --- | --- |
+| `AppMonitor.Admin` | manage the one organization mapped to your Entra tenant |
+| `AppMonitor.GlobalAdmin` | Arkimentum staff only, and only from the operator tenant: manage every organization |
+
+Publishing a configuration, queueing a command, deleting a device and rotating the enrollment key are the same
+operations against the same API whichever console you use - they are admin API calls, not console features. The
+desktop console (`Arkimentum.AppMonitor.Admin.exe`) keeps its organization mode for anyone who prefers it, and
+remains the place for the machine-local pages; those local pages are deprecated, see
+[`AdminConsole.md`](AdminConsole.md).
 
 ## The three values
 
@@ -290,10 +314,12 @@ that carried it is lost; devices that have already enrolled are unaffected.
 - Every device row, inventory row, event and configuration version is scoped to an `organizationId`,
   and the device credential carries the organization it belongs to. A device can only ever read or
   write within its own organization.
-- Administrators sign in with **Entra ID**; the console asks the API for
+- Administrators sign in with **Entra ID**; either console asks the API for
   `/api/v1/public/auth-config` (client id, authority, scope) and then presents a bearer token. Which
   organizations a signed-in administrator may see comes back from `/api/v1/admin/me`
-  (`AdminMeResponse.Organizations`) - the console never chooses on its own.
+  (`AdminMeResponse.Organizations`) - the console never chooses on its own. The web console does the
+  same from the browser with MSAL, and the API accepts its cross-origin calls only from the console's
+  own origin (the Function App's CORS list is exactly that origin plus whatever the operator added).
 - The device endpoints and the admin endpoints are different route prefixes with different
   authentication schemes: a device key is useless against `/api/v1/admin/*`, and an Entra token is
   useless against `/api/v1/device/*`.
@@ -447,8 +473,8 @@ connection** → *Organization connection* → Enabled, and fill in the three fi
 first; see [`deploy/policy/README.md`](../deploy/policy/README.md).
 
 Policy-provisioned values land in `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor`, which is read-only
-for the admin console and cannot be changed locally - the right choice when the connection must not be
-tampered with. Restrict who can read the GPO: the enrollment key is in it.
+for the agent and the consoles and cannot be changed locally - the right choice when the connection
+must not be tampered with. Restrict who can read the GPO: the enrollment key is in it.
 
 The same category also has *Organization sync interval*, *Apply the organization configuration* and
 *Report inventory to the organization*; *Agent updates* is the neighbouring category.
@@ -477,8 +503,8 @@ Or on an existing install, with the installer:
 ```
 
 The three values are written as `REG_SZ` only when you pass them; anything already configured on the
-device is left exactly as it is. The Enrollment page of the admin console's organization mode generates
-all of these snippets with the real values filled in.
+device is left exactly as it is. The **Enrollment** page of the web admin console (and of the desktop
+console's organization mode) generates all of these snippets with the real values filled in.
 
 ### Network requirements
 
@@ -726,7 +752,10 @@ More: [`Troubleshooting.md`](Troubleshooting.md).
 ## Related
 
 - [`Registry.md`](Registry.md) - every value, its type, range and layer
-- [`AdminConsole.md`](AdminConsole.md#organization-mode) - the console's organization mode
+- [`AdminConsole.md`](AdminConsole.md#organization-mode) - the desktop console's organization mode, and
+  what is deprecated in its local pages
+- [`cloud/README.md` §8](../cloud/README.md#8-web-admin-console) - the web admin console: URL, hosting,
+  how it is deployed and how to give it a custom domain
 - [`SelfUpdate.md`](SelfUpdate.md) - release manifests, the GitHub workflow, the update installer
 - [`Architecture.md`](Architecture.md) - components and flows
 - [`cloud/README.md`](../cloud/README.md) - deploying and operating the backend

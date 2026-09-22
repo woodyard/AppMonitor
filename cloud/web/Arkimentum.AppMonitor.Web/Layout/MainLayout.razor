@@ -1,0 +1,51 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject OrganizationState Organizations
+
+@*
+    The shell: a header carrying the wordmark, the organization switcher and the signed-in account, a left rail with
+    the pages, and the content area. At phone width the rail becomes a scrolling row under the header.
+*@
+
+<div class="shell">
+    <header class="shell-head">
+        <a class="shell-brand" href="">
+            <Wordmark />
+        </a>
+
+        <AuthorizeView>
+            <Authorized>
+                <OrganizationSwitcher />
+                <UserMenu AuthState="context" />
+            </Authorized>
+        </AuthorizeView>
+    </header>
+
+    <div class="shell-body">
+        <AuthorizeView>
+            <Authorized>
+                <NavMenu />
+            </Authorized>
+        </AuthorizeView>
+
+        <main class="shell-content">
+            @if (Organizations.Error is { } error)
+            {
+                <Banner Kind="error" Message="@error" />
+            }
+            @Body
+        </main>
+    </div>
+</div>
+
+<div id="blazor-error-ui">
+    Something went wrong. <a href="." class="reload">Reload</a><span class="dismiss">&times;</span>
+</div>
+
+@code {
+    protected override void OnInitialized() => Organizations.Changed += OnChanged;
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Organizations.Changed -= OnChanged;
+}

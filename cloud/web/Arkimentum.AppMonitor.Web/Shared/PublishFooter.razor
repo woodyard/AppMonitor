@@ -1,0 +1,86 @@
+@inject ConfigWorkspace Workspace
+@implements IDisposable
+
+@*
+    The footer the Applications page and the Settings page share, because they edit one document between them.
+
+    Publishing is optimistic: the PUT carries the version the editor started from, and a 409 means somebody else
+    published in the meantime. The two answers are spelled out rather than resolved silently - reload theirs, or
+    re-read and publish these edits on top.
+*@
+
+@if (Workspace.HasDocument)
+{
+    <div class="publish-footer @(Workspace.IsDirty || Workspace.HasConflict ? "publish-open" : "publish-quiet")">
+        <div class="publish-status">
+            <span class="mono" title="The version this editor started from">@Display.OrNone(Workspace.ConfigVersion)</span>
+            <span class="muted">
+                published @TimeFormat.Relative(Workspace.UpdatedUtc)
+                @(string.IsNullOrWhiteSpace(Workspace.UpdatedBy) ? "" : $"by {Workspace.UpdatedBy}")
+            </span>
+            @if (Workspace.RestoredFrom is { } restored)
+            {
+                <span class="tag tag-info">Restored from @restored</span>
+            }
+            <button type="button" class="btn-link" @onclick="() => _historyOpen = true">History (@Workspace.HistoryTotal)</button>
+        </div>
+
+        @if (Workspace.Editor.HasProblems)
+        {
+            <details class="publish-problems">
+                <summary>@Workspace.Editor.Problems.Count problem(s) block publishing</summary>
+                <ul>
+                    @foreach (var problem in Workspace.Editor.Problems)
+                    {
+                        <li>@problem</li>
+                    }
+                </ul>
+            </details>
+        }
+
+        @if (Workspace.IsDirty || Workspace.HasConflict)
+        {
+            <div class="publish-actions">
+                <input class="field-input publish-comment" placeholder="What changed? (optional)"
+                       value="@_comment" @oninput="e => _comment = e.Value?.ToString() ?? string.Empty" />
+                <button type="button" class="btn btn-quiet" disabled="@Workspace.IsBusy" @onclick="Workspace.Discard">Discard</button>
+                <button type="button" class="btn btn-primary" disabled="@(!Workspace.CanPublish)" @onclick="PublishAsync">
+                    @(Workspace.IsBusy ? "Publishing…" : "Publish")
+                </button>
+            </div>
+        }
+    </div>
+}
+
+@if (Workspace.HasConflict)
+{
+    <Banner Kind="error" Message="@Workspace.Error">
+        <button type="button" class="btn btn-quiet" @onclick="Workspace.ResolveWithTheirsAsync">Reload theirs</button>
+        <button type="button" class="btn btn-danger" @onclick="Workspace.ResolveWithMineAsync">Publish mine over it</button>
+    </Banner>
+}
+else
+{
+    <Banner Kind="error" Message="@Workspace.Error" OnDismiss="Workspace.ClearError" />
+}
+<Banner Kind="notice" Message="@Workspace.Notice" OnDismiss="Workspace.ClearNotice" />
+
+<HistoryDrawer IsOpen="_historyOpen" OnClose="() => _historyOpen = false" />
+
+@code {
+    private string _comment = string.Empty;
+    private bool _historyOpen;
+
+    protected override void OnInitialized() => Workspace.Changed += OnChanged;
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task PublishAsync()
+    {
+        var comment = _comment;
+        await Workspace.PublishAsync(comment);
+        if (!Workspace.IsDirty && !Workspace.HasConflict) _comment = string.Empty;
+    }
+
+    public void Dispose() => Workspace.Changed -= OnChanged;
+}

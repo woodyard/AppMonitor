@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Trimmer roots for the published WebAssembly build.
+
+  The console deserializes the API contracts with reflection-based System.Text.Json. Blazor publishes with partial
+  trimming, which leaves this app's own assembly alone but trims the framework - and the serializer creates
+  collections through their parameterless constructor, which the trimmer removes when nothing in the app calls it.
+  SettingsDocument only ever constructs its SortedDictionary fields with a comparer, so the first deployment failed
+  on every organization configuration with "DeserializeNoConstructor ... SortedDictionary`2". Keeping the type whole
+  costs a few kilobytes and removes the trap for good.
+
+  Any new contract collection type that the app never news up with its default constructor belongs here too. The
+  production payloads are replayed through the trimmed runtime by the self-test described in ../README.md.
+-->
+<linker>
+  <assembly fullname="System.Collections">
+    <type fullname="System.Collections.Generic.SortedDictionary`2" preserve="all" />
+    <type fullname="System.Collections.Generic.SortedDictionary`2/Enumerator" preserve="all" />
+    <type fullname="System.Collections.Generic.SortedDictionary`2/KeyCollection" preserve="all" />
+    <type fullname="System.Collections.Generic.SortedDictionary`2/ValueCollection" preserve="all" />
+  </assembly>
+</linker>

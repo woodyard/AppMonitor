@@ -168,6 +168,8 @@ public sealed class AuthConfigResponse
     public required string Authority { get; set; }
     public required string Scope { get; set; }
     public string? ApiVersion { get; set; } = CloudRoutes.ApiVersion;
+    /// <summary>Public URL of the browser-based admin console, when the server hosts one; null otherwise.</summary>
+    public string? WebAdminUrl { get; set; }
 }
 
 public sealed class AdminMeResponse

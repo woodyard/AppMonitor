@@ -1,0 +1,26 @@
+@inject ConfigWorkspace Workspace
+@implements IDisposable
+
+@* The left rail. The Applications and Settings entries carry a dot while the shared pending document is dirty. *@
+
+<nav class="rail" aria-label="Pages">
+    <NavLink class="rail-link" href="" Match="NavLinkMatch.All">Overview</NavLink>
+    <NavLink class="rail-link" href="devices">Devices</NavLink>
+    <NavLink class="rail-link" href="inventory">Inventory</NavLink>
+    <NavLink class="rail-link" href="applications">
+        Applications @if (Workspace.IsDirty) { <span class="rail-dot" title="Unpublished changes"></span> }
+    </NavLink>
+    <NavLink class="rail-link" href="settings">
+        Settings @if (Workspace.IsDirty) { <span class="rail-dot" title="Unpublished changes"></span> }
+    </NavLink>
+    <NavLink class="rail-link" href="activity">Activity</NavLink>
+    <NavLink class="rail-link" href="enrollment">Enrollment</NavLink>
+</nav>
+
+@code {
+    protected override void OnInitialized() => Workspace.Changed += OnChanged;
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Workspace.Changed -= OnChanged;
+}

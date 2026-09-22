@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     Deploys the Arkimentum AppMonitor cloud backend: Entra ID app registrations, Azure resources, database schema,
-    the Functions package and the first organization.
+    the Functions package, the browser admin console (Static Web App) and the first organization.
 
 .DESCRIPTION
     The script is idempotent - run it again to update an existing environment. It does the following, in order:
@@ -16,11 +16,18 @@
          The Azure CLI is pre-authorised for the same scope so New-Organization.ps1 and Rotate-EnrollmentKey.ps1
          can call the admin API with `az account get-access-token`.
       4. Assigns AppMonitor.GlobalAdmin to the signed-in operator.
-      5. Deploys cloud/infra/main.bicep.
-      6. Creates the Function App's managed identity as a database user (db_datareader + db_datawriter).
-      7. Applies the EF Core migrations (see -MigrationMode).
-      8. Publishes the Functions project and zip-deploys it.
-      9. Creates the first organization and prints the three registry values the agent needs.
+      5. Deploys cloud/infra/main.bicep (Function App, SQL, Storage, and the Static Web App that hosts the
+         browser admin console).
+      6. Adds the browser console's SPA redirect URIs to the admin console app registration - the Static Web App
+         hostname is only known once step 5 has run. The desktop console's public-client redirect is left alone.
+      7. Creates the Function App's managed identity as a database user (db_datareader + db_datawriter).
+      8. Applies the EF Core migrations (see -MigrationMode).
+      9. Publishes the Functions project and zip-deploys it.
+     10. Publishes the Blazor WebAssembly admin console, writes its one deployment-time setting
+         (wwwroot/appsettings.json -> ApiBaseUrl) and uploads it to the Static Web App with the SWA CLI
+         (npx @azure/static-web-apps-cli). The deployment token is read with `az staticwebapp secrets list`
+         and never printed.
+     11. Creates the first organization and prints the three registry values the agent needs.
 
     Nothing is deployed from a machine without Azure credentials: every step goes through the signed-in az CLI.
 
@@ -54,7 +61,19 @@
     Reuse existing app registrations without patching them.
 
 .PARAMETER SkipPublish
-    Do not build or deploy the Functions package.
+    Do not build or deploy the Functions package (this also skips the web admin console).
+
+.PARAMETER SkipWebPublish
+    Deploy the Static Web App resource but do not build or upload the browser admin console into it.
+
+.PARAMETER StaticWebAppLocation
+    Region for the Static Web App. The Free SKU only exists in westus2, centralus, eastus2, westeurope and
+    eastasia, so this is deliberately separate from -Location. Default: westeurope.
+
+.PARAMETER AdditionalWebOrigins
+    Extra browser origins allowed to call the API and registered as SPA redirect URIs on the admin console app
+    registration, e.g. https://localhost:7200 for local development of the web console. Full origins, no
+    trailing slash; the /authentication/login-callback path is appended for you.
 
 .PARAMETER UseFlexConsumption
     Deploy on a Flex Consumption (FC1, Linux) plan. Use -UseFlexConsumption:$false for classic Consumption (Y1).
@@ -86,6 +105,9 @@ param(
 
     [switch] $SkipAppRegistrations,
     [switch] $SkipPublish,
+    [switch] $SkipWebPublish,
+    [string] $StaticWebAppLocation = 'westeurope',
+    [string[]] $AdditionalWebOrigins = @(),
     [bool]   $UseFlexConsumption = $true,
     [switch] $WhatIfDeployment
 )
@@ -101,7 +123,9 @@ $AzureCliClientId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'   # well-known Micros
 
 $CloudRoot  = Split-Path -Parent $PSScriptRoot                                              # <repo>\cloud
 $ApiProject = Join-Path $CloudRoot 'api\Arkimentum.AppMonitor.Api\Arkimentum.AppMonitor.Api.csproj'
+$WebProject = Join-Path $CloudRoot 'web\Arkimentum.AppMonitor.Web\Arkimentum.AppMonitor.Web.csproj'
 $BicepFile  = Join-Path $CloudRoot 'infra\main.bicep'
+$LoginCallbackPath = '/authentication/login-callback'          # MSAL.NET/Blazor WebAssembly convention
 $OutputRoot = Join-Path (Split-Path -Parent $CloudRoot) ('artifacts\cloud\' + $Environment)   # <repo>\artifacts\cloud\{env}
 
 # ---------------------------------------------------------------------------------------------------- helpers
@@ -167,6 +191,22 @@ function Invoke-Graph {
 
 function Test-Command([string] $Name) {
     return [bool] (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Get-OptionalProperty([object] $Object, [string] $Name) {
+    <# Reads a property that may not exist. Set-StrictMode would throw on plain dotted access. #>
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Get-DeploymentOutput([object] $Outputs, [string] $Name) {
+    <# Deployment outputs are {"name": {"type": ..., "value": ...}}; missing ones come back as ''. #>
+    $entry = Get-OptionalProperty $Outputs $Name
+    $value = Get-OptionalProperty $entry 'value'
+    if ($null -eq $value) { return '' }
+    return [string] $value
 }
 
 # ---------------------------------------------------------------------------------------------------- 1. preflight
@@ -352,17 +392,39 @@ $bicepParameters = @(
     "sqlAdminObjectId=$SqlAdminObjectId",
     "sqlAdminLogin=$SqlAdminLogin",
     "sqlAdminPrincipalType=$SqlAdminPrincipalType",
+    "staticWebAppLocation=$StaticWebAppLocation",
+    "deployWebAdmin=true",
     ("useFlexConsumption=" + $UseFlexConsumption.ToString().ToLowerInvariant())
 )
 
-if ($WhatIfDeployment) {
-    & az deployment group what-if -g $ResourceGroup -f $BicepFile -p $bicepParameters
-    Write-Host 'What-if only; stopping here.' -ForegroundColor Yellow
-    return
+# An array parameter cannot travel as key=value: Windows PowerShell 5.1 mangles the embedded double quotes of an
+# inline JSON value on its way to az.cmd. A one-parameter file is passed alongside the overrides instead; az
+# merges them, and later --parameters arguments win.
+$extraDeploymentArguments = @()
+$originsFile = $null
+if ($AdditionalWebOrigins.Count -gt 0) {
+    $originsFile = Write-TempJson @{
+        '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+        contentVersion = '1.0.0.0'
+        parameters     = @{ additionalCorsOrigins = @{ value = @($AdditionalWebOrigins) } }
+    }
+    $extraDeploymentArguments = @('-p', ('@' + $originsFile))
+    Write-Detail ("Extra CORS origins: {0}" -f ($AdditionalWebOrigins -join ', '))
 }
 
-$deployment = Invoke-Az -Arguments (@('deployment', 'group', 'create', '-g', $ResourceGroup, '-n', $deploymentName,
-    '-f', $BicepFile, '-o', 'json', '-p') + $bicepParameters)
+try {
+    if ($WhatIfDeployment) {
+        & az deployment group what-if -g $ResourceGroup -f $BicepFile @extraDeploymentArguments -p $bicepParameters
+        Write-Host 'What-if only; stopping here.' -ForegroundColor Yellow
+        return
+    }
+
+    $deployment = Invoke-Az -Arguments (@('deployment', 'group', 'create', '-g', $ResourceGroup, '-n', $deploymentName,
+        '-f', $BicepFile, '-o', 'json') + $extraDeploymentArguments + @('-p') + $bicepParameters)
+}
+finally {
+    if ($originsFile -and (Test-Path $originsFile)) { Remove-Item $originsFile -Force }
+}
 
 $outputs = $deployment.properties.outputs
 $functionAppName = $outputs.functionAppName.value
@@ -370,13 +432,49 @@ $serverUrl       = $outputs.serverUrl.value
 $sqlServerFqdn   = $outputs.sqlServerFqdn.value
 $sqlDatabaseName = $outputs.sqlDatabaseName.value
 $sqlConnection   = $outputs.sqlConnectionString.value
+$webAdminUrl      = Get-DeploymentOutput $outputs 'webAdminUrl'
+$staticWebAppName = Get-DeploymentOutput $outputs 'staticWebAppName'
 
 Write-Detail ("Function App: {0}" -f $functionAppName)
 Write-Detail ("Plan:         {0}" -f $outputs.hostingPlanKind.value)
 Write-Detail ("SQL:          {0} / {1}" -f $sqlServerFqdn, $sqlDatabaseName)
 Write-Detail ("Server URL:   {0}" -f $serverUrl)
+if (-not [string]::IsNullOrWhiteSpace($webAdminUrl)) {
+    Write-Detail ("Web admin:    {0} ({1}, {2})" -f $webAdminUrl, $staticWebAppName, $StaticWebAppLocation)
+}
 
-# --------------------------------------------------------------------- 6. the managed identity as a database user
+# ------------------------------------------------------------------------- 6. SPA redirect URIs for the console
+
+# The Static Web App hostname only exists after the deployment above, so this cannot be folded into step 3.
+# Only the "spa" block is patched: publicClient.redirectUris (http://localhost, used by the WPF console's
+# interactive MSAL flow) and isFallbackPublicClient stay exactly as step 3 left them.
+$spaRedirectUris = @()
+if (-not [string]::IsNullOrWhiteSpace($webAdminUrl)) {
+    $spaRedirectUris += ($webAdminUrl.TrimEnd('/') + $LoginCallbackPath)
+}
+foreach ($origin in $AdditionalWebOrigins) {
+    if (-not [string]::IsNullOrWhiteSpace($origin)) {
+        $spaRedirectUris += ($origin.TrimEnd('/') + $LoginCallbackPath)
+    }
+}
+$spaRedirectUris = @($spaRedirectUris | Select-Object -Unique)
+
+if ($SkipAppRegistrations) {
+    Write-Step 'Skipping the SPA redirect URIs (-SkipAppRegistrations)'
+    foreach ($uri in $spaRedirectUris) { Write-Detail ("Register by hand: {0}" -f $uri) }
+}
+elseif ($spaRedirectUris.Count -eq 0) {
+    Write-Step 'No SPA redirect URI to register (no Static Web App and no additional origins)'
+}
+else {
+    Write-Step 'Registering the browser console''s SPA redirect URIs'
+    Invoke-Graph -Method PATCH -Uri ("https://graph.microsoft.com/v1.0/applications/{0}" -f $adminApp.id) -Body @{
+        spa = @{ redirectUris = @($spaRedirectUris) }
+    } | Out-Null
+    foreach ($uri in $spaRedirectUris) { Write-Detail $uri }
+}
+
+# --------------------------------------------------------------------- 7. the managed identity as a database user
 
 Write-Step 'Granting the Function App managed identity access to the database'
 
@@ -432,7 +530,7 @@ else {
     Write-Warning ("Run {0} against {1}/{2} yourself (Azure Portal query editor, or sqlcmd -G)." -f $sqlScriptPath, $sqlServerFqdn, $sqlDatabaseName)
 }
 
-# ------------------------------------------------------------------------------------------------ 7. EF migrations
+# ------------------------------------------------------------------------------------------------ 8. EF migrations
 
 Write-Step ("Applying the database schema (mode: {0})" -f $MigrationMode)
 
@@ -468,7 +566,7 @@ else {
     Write-Detail 'Schema is up to date.'
 }
 
-# ------------------------------------------------------------------------------------------------- 8. publish code
+# ------------------------------------------------------------------------------------------------- 9. publish code
 
 if ($SkipPublish) {
     Write-Step 'Skipping the Functions deployment (-SkipPublish)'
@@ -513,7 +611,103 @@ else {
     Write-Detail 'Deployed.'
 }
 
-# -------------------------------------------------------------------------------------------- 9. first organization
+# --------------------------------------------------------------------------------------- 10. web admin console
+
+function Get-NpxPath {
+    <# npm ships npx.cmd on Windows and npx elsewhere; either is fine, we only need a launchable path. #>
+    foreach ($candidate in @('npx.cmd', 'npx')) {
+        $command = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($null -ne $command) {
+            if ([string]::IsNullOrWhiteSpace($command.Source)) { return $command.Name }
+            return $command.Source
+        }
+    }
+    return ''
+}
+
+function Write-ManualSwaInstructions([string] $Folder, [string] $SiteName, [string] $Group) {
+    Write-Host ''
+    Write-Host '  Upload the site yourself with Node.js 18+ installed:' -ForegroundColor Yellow
+    Write-Host ("    az staticwebapp secrets list -n {0} -g {1} --query properties.apiKey -o tsv" -f $SiteName, $Group) -ForegroundColor Yellow
+    Write-Host ("    npx --yes @azure/static-web-apps-cli deploy `"{0}`" --deployment-token <token> --env production" -f $Folder) -ForegroundColor Yellow
+    Write-Host ''
+}
+
+if ($SkipPublish -or $SkipWebPublish) {
+    Write-Step 'Skipping the web admin console (-SkipPublish/-SkipWebPublish)'
+}
+elseif ([string]::IsNullOrWhiteSpace($staticWebAppName)) {
+    Write-Step 'Skipping the web admin console (no Static Web App in this deployment)'
+}
+elseif (-not (Test-Path $WebProject)) {
+    Write-Step 'Skipping the web admin console'
+    Write-Warning ("The project {0} does not exist; the Static Web App was created but nothing was uploaded." -f $WebProject)
+}
+else {
+    Write-Step 'Publishing the web admin console'
+
+    $webPublishDir = Join-Path $OutputRoot 'web'
+    if (Test-Path $webPublishDir) { Remove-Item $webPublishDir -Recurse -Force }
+
+    & dotnet publish $WebProject -c Release -o $webPublishDir --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet publish of the web admin console failed.' }
+
+    $webRoot = Join-Path $webPublishDir 'wwwroot'
+    if (-not (Test-Path $webRoot)) { throw ("The published site has no wwwroot: {0}" -f $webRoot) }
+
+    # The site's only deployment-time configuration. Client id, authority and scope are fetched at start-up from
+    # GET /api/v1/public/auth-config, so this one value is all that differs between environments.
+    $webSettingsPath = Join-Path $webRoot 'appsettings.json'
+    $webSettingsJson = @{ ApiBaseUrl = $serverUrl.TrimEnd('/') } | ConvertTo-Json
+    [System.IO.File]::WriteAllText($webSettingsPath, $webSettingsJson, (New-Object System.Text.UTF8Encoding($false)))
+    # dotnet publish precompresses every static asset; the .br/.gz twins of the placeholder must not outlive the rewrite.
+    foreach ($twin in @("$webSettingsPath.br", "$webSettingsPath.gz")) { if (Test-Path $twin) { Remove-Item $twin -Force } }
+    Write-Detail ("ApiBaseUrl: {0}" -f $serverUrl.TrimEnd('/'))
+    Write-Detail ("Site:       {0}" -f $webRoot)
+
+    $secrets = Invoke-Az -Arguments @('staticwebapp', 'secrets', 'list', '-n', $staticWebAppName,
+        '-g', $ResourceGroup, '-o', 'json') -AllowFailure
+    $deploymentToken = [string] (Get-OptionalProperty (Get-OptionalProperty $secrets 'properties') 'apiKey')
+
+    $npx = Get-NpxPath
+
+    if ([string]::IsNullOrWhiteSpace($deploymentToken)) {
+        Write-Warning ("Could not read the deployment token for {0}. The site was built but not uploaded." -f $staticWebAppName)
+        Write-ManualSwaInstructions $webRoot $staticWebAppName $ResourceGroup
+    }
+    elseif ([string]::IsNullOrWhiteSpace($npx)) {
+        Write-Warning 'npx was not found on PATH (install Node.js 18+). The site was built but not uploaded.'
+        Write-ManualSwaInstructions $webRoot $staticWebAppName $ResourceGroup
+    }
+    else {
+        # The SWA CLI uploads a pre-built folder; --deployment-token authenticates it, so no az context is used
+        # and nothing about the token is printed here.
+        Write-Detail 'Uploading with the Static Web Apps CLI (npx @azure/static-web-apps-cli)'
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        # npm prints "deprecated" notices for the CLI's own transitive dependencies (Microsoft's to fix, not ours, and
+        # nothing of the CLI ships to the site). Errors only, so a routine run stays readable.
+        $previousNpmLogLevel = $env:npm_config_loglevel
+        $env:npm_config_loglevel = 'error'
+        try {
+            & $npx --yes '@azure/static-web-apps-cli' deploy $webRoot --deployment-token $deploymentToken --env production
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+            $env:npm_config_loglevel = $previousNpmLogLevel
+        }
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning ("The Static Web Apps CLI exited with code {0}; the site may not be up to date." -f $LASTEXITCODE)
+            Write-ManualSwaInstructions $webRoot $staticWebAppName $ResourceGroup
+        }
+        else {
+            Write-Detail ("Deployed to {0}" -f $webAdminUrl)
+        }
+    }
+}
+
+# ------------------------------------------------------------------------------------------- 11. first organization
 
 function Get-AdminToken([string] $ApiAppId) {
     $token = Invoke-Az -Arguments @('account', 'get-access-token', '--resource', ("api://" + $ApiAppId), '-o', 'json') -AllowFailure
@@ -573,6 +767,9 @@ Write-Host '====================================================================
 Write-Host ("  Environment          : {0}" -f $Environment)
 Write-Host ("  Resource group       : {0}" -f $ResourceGroup)
 Write-Host ("  Server URL           : {0}" -f $serverUrl)
+if (-not [string]::IsNullOrWhiteSpace($webAdminUrl)) {
+    Write-Host ("  Web admin console    : {0}" -f $webAdminUrl)
+}
 Write-Host ("  API app id           : {0}" -f $apiClientId)
 Write-Host ("  Admin console app id : {0}" -f $adminClientId)
 Write-Host ("  Admin scope          : api://{0}/AppMonitor.Access" -f $apiClientId)

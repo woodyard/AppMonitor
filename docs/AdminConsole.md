@@ -1,46 +1,213 @@
 # Admin console
 
-`Arkimentum.AppMonitor.Admin.exe` is the graphical front end for the agent's configuration on **one
-machine**. It edits the local preference layer, `HKLM\SOFTWARE\Arkimentum\AppMonitor`, shows what the
-service is doing right now, and turns the result into artefacts you can push to the rest of the fleet:
-a JSON profile, a `.reg` file or a PowerShell script.
+`Arkimentum.AppMonitor.Admin.exe` is the **organization console**: signed in with Entra ID against the
+[cloud service](Cloud.md), it configures a whole organization and shows the devices, the activity and
+the inventory of the fleet. Every setting is managed centrally - you publish a configuration once, and
+every enrolled device collects it on its own.
 
-It is a convenience layer over [`docs/Registry.md`](Registry.md) - everything it writes can also be
-written by hand, by `reg import` or by a script. In this mode it stores nothing of its own: no
-configuration file, no database, no cloud call.
+There is also a **browser-based admin console** hosted next to the API. It manages the same
+organization from any device, with nothing installed, and it is the primary way to administer
+AppMonitor. Where the server hosts one, it advertises it in `/api/v1/public/auth-config`
+(`webAdminUrl`), and this console offers **Open the web admin console** on the Connect page and in the
+navigation rail. See [`Cloud.md`](Cloud.md).
 
-The same executable also has an **[Organization mode](#organization-mode)**: signed in with Entra ID
-against the [cloud service](Cloud.md), it configures a whole organization rather than one machine, and
-shows the devices and the inventory of the fleet. That mode does talk to the cloud - and still changes
-nothing on the machine it runs on.
+The Windows console remains useful where a browser is not an option, or for the enrollment snippets.
+It changes nothing on the machine it runs on: no configuration file, no database, and no write to the
+machine configuration - only this administrator's own remembered server URL, under HKCU.
+
+> **Deprecated: the per-machine pages.** The console used to configure the agent on *one* machine -
+> the local preference layer `HKLM\SOFTWARE\Arkimentum\AppMonitor` - and it can still do so behind the
+> `--local` switch. That mode is deprecated and will be removed; see
+> [Deprecated: local (this machine) mode](#deprecated-local-this-machine-mode---local). Use central
+> management for everything it does.
 
 | | |
 | --- | --- |
 | Executable | `%ProgramFiles%\Arkimentum\AppMonitor\Admin\Arkimentum.AppMonitor.Admin.exe` |
 | Start Menu | All users → `Programs\Arkimentum\Arkimentum AppMonitor Admin` |
-| Edits | `HKLM\SOFTWARE\Arkimentum\AppMonitor` (preferences) |
-| Reads (locked) | `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` (Group Policy / Intune) |
-| Talks to | The service over the named pipe `Arkimentum.AppMonitor.Agent`, as an **admin** client; in organization mode also the cloud API over HTTPS with an Entra ID token |
-| Log | `%ProgramData%\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Admin_yyyyMMdd.log` |
-| Exit codes | `0` success, `1` failure (including "UAC declined") |
+| Runs as | A **standard user**. No UAC prompt, no elevation - organization mode changes nothing on this machine. |
+| Edits | The organization's configuration in the AppMonitor cloud. With `--local` (deprecated) also `HKLM\SOFTWARE\Arkimentum\AppMonitor` (preferences). |
+| Talks to | The cloud API over HTTPS with an Entra ID token. With `--local` (deprecated) also the service over the named pipe `Arkimentum.AppMonitor.Agent`, as an **admin** client. |
+| Log | `%ProgramData%\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Admin_yyyyMMdd.log`, or `%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\` when the process cannot write there (which is the normal, unelevated case) |
+| Exit codes | `0` success, `1` failure (including "UAC declined" for the modes that still need it) |
+
+## Command line
+
+| Switch | Effect |
+| --- | --- |
+| *(none)* | Open the window on the organization pages, starting at **Connect**. A previous sign-in is restored silently and opens **Devices**. |
+| `--local` | **Deprecated.** Also show the "This machine" group, *after* the organization group. Elevates. See [below](#deprecated-local-this-machine-mode---local). |
+| `--export <file> [--policy] [--no-replace-apps]` | **Deprecated.** Headless export of this machine's preference layer. |
+| `--import <file.json> [--merge]` | **Deprecated.** Headless import into this machine's preference layer. |
+| `--user-config` | Testing only: `HKCU` instead of `HKLM`, no elevation, no service control. Combine with `--local` to try the deprecated pages without administrative rights. |
+
+Anything else is reported in the log and ignored, so a typo cannot silently open the window instead of
+exporting.
 
 ## Elevation
 
-The executable is manifested `asInvoker` and elevates **itself** at startup: it relaunches its own
-image with the `runas` verb, which produces the normal UAC prompt, and the first (unelevated)
-instance exits.
+The executable is manifested `asInvoker` and elevates **itself**, but only when it was asked to do
+something to *this* machine:
 
-- Accept the prompt → the elevated instance opens and can write HKLM and control the service.
-- Decline the prompt → a short message explains that administrative rights are required, and the
-  process exits with code **1**. Nothing is changed.
-- The only mode that does not elevate is `--user-config` (see [Headless use](#headless-use)), which is
-  a testing mode against HKCU.
+| Started as | Elevates |
+| --- | --- |
+| *(no switches)* - the organization console | **No.** It opens straight away as a standard user. |
+| `--local` | Yes - the local pages write `HKLM`. |
+| `--export` / `--import` | Yes - they read and write the local preference layer. |
+| `--user-config` (with or without `--local`) | No - everything is bound to `HKCU`. |
 
-Because elevation happens inside the process rather than through a `requireAdministrator` manifest,
-the console can be started from a normal Start Menu shortcut, and the unprivileged testing mode works
-without a UAC prompt at all.
+When it does elevate, it relaunches its own image with the `runas` verb and the first (unelevated)
+instance exits. Declining the prompt shows a short message and exits with code **1**; nothing is
+changed, and the organization console is still one start without `--local` away.
 
-## Pages
+Your Entra account's permissions decide what you can do in organization mode, not membership of the
+local Administrators group.
+
+## Organization mode
+
+This is what the console is for. Pointed at the [cloud service](Cloud.md), it configures an
+organization, and every enrolled device collects the result on its own - no per-device configuration,
+and nothing to keep in step by hand.
+
+The rail is the organization: **Connect**, **Devices**, **Activity**, **Inventory**, **Settings**,
+**Applications** and **Enrollment**. (With `--local` a second, deprecated group appears underneath it.)
+
+### Signing in
+
+Once you have signed in on a machine, the console restores that sign-in by itself the next time it
+opens: it connects to the remembered server, takes the token from the MSAL cache
+(`%LOCALAPPDATA%\Arkimentum\AppMonitor\msal.cache`, protected with DPAPI) and opens the organization's
+Devices page. No browser is opened for that; only when the cache holds nothing usable does the console
+wait for the Sign in button. Sign out clears the cache.
+
+Organization mode signs in with **Entra ID**, not with local administrative rights:
+
+1. You give the console the API's base URL (the same value as `CloudServerUrl`; it offers the one
+   configured on this machine).
+2. The console fetches `/api/v1/public/auth-config` - the Entra client id, the authority and the scope
+   to request. Nothing about the sign-in is hard-coded in the console.
+3. It acquires a token interactively (the normal Entra sign-in window, MFA and Conditional Access
+   included) and calls `/api/v1/admin/me`.
+4. `AdminMeResponse` comes back with your name, your tenant and the organizations you may administer.
+   With more than one, you pick; with one, it opens straight away.
+
+Local elevation is irrelevant here: organization mode changes nothing on this machine, which is why
+the console no longer asks for it. Your Entra account's permissions decide what you can do, not
+membership of the local Administrators group - a standard user who is an AppMonitor administrator in
+Entra ID can run the console and manage the fleet.
+
+Once the server has answered, the page also offers **Open the web admin console** when this deployment
+hosts a browser console (`webAdminUrl` in the sign-in configuration). The same link sits at the bottom
+of the navigation rail.
+
+### Devices
+
+Every enrolled device in the organization: name, last logon user, OS version, agent version, when it
+enrolled, when it was last seen, when it last scanned, the configuration version it has applied,
+pending and failed update counts, and whether its prerequisites are healthy. Sort and filter to find
+the devices that are behind, have failing updates, or have not reported.
+
+Open one for the detail view: its full inventory, its tracked updates with states, deadlines and
+deferral counts, its recent events, and the commands still queued for it.
+
+The four commands an administrator can queue for a device, from the list or the detail view:
+
+| Command | Effect on the device |
+| --- | --- |
+| **Scan now** | A full scan immediately, out of band with the scan interval. |
+| **Report now** | Sends a report from the current state without scanning first. |
+| **Repair prerequisites** | The same winget check and repair as `--prerequisites`. |
+| **Update agent** | Checks the release feed and installs a newer agent, regardless of `AgentAutoUpdate`. |
+
+Commands are **queued, not pushed**: the device picks them up on its next sync, so expect them to run
+within one `CloudSyncIntervalMinutes` (15 by default), and never at all while the device is offline.
+The console shows a command as pending until the device acknowledges it in a report. Nothing here
+opens a connection to the machine.
+
+Deleting a device removes its records from the organization. It does not touch the machine - if the
+agent is still installed and still provisioned, it enrols again on its next sync.
+
+### Inventory
+
+Every application seen across the organization, aggregated: display name, publisher, winget id,
+catalog id, how many devices have it, how many have an update available, the distinct installed
+versions with a device count each, the predominant install context, and when it was last seen.
+
+This is the page that answers "how much of the fleet is on the old version?" without visiting a
+machine. From a row you can start monitoring the application - it is added to the organization's
+applications with the catalog's identity and detection data filled in, and you choose only the
+behaviour (mandatory, deadline, deferrals, processes to close).
+
+### Organization settings and applications
+
+Every global and per-app value in the schema
+(`src\Arkimentum.AppMonitor.Core\Configuration\SettingsSchema.cs`), with the same groups, the same
+ranges and the same "Override" per value as the agent itself - written to the organization's
+configuration rather than to any one machine's registry. This is where settings are managed. Values
+you do not override are simply absent, and each device falls back through its own local preference,
+the catalog and the built-in default.
+
+Changes are staged until you press **Publish**. Publishing writes a new configuration version, records
+who published it and when, and hands it out on each device's next sync. Because the console sent the
+version it started from (`baseConfigVersion`), a publish is rejected with a conflict if someone else
+published while you were editing, rather than quietly overwriting their work - reload and redo your
+change.
+
+Two limits worth knowing:
+
+- The connection values (`CloudServerUrl`, `CloudOrganizationId`, `CloudEnrollmentKey`) cannot be
+  published. Devices ignore them in the cloud layer by design, so the editor does not offer them.
+- A value that a device's Group Policy also sets will not take effect there: policy outranks the
+  organization configuration. The Devices page makes this visible - the device reports the
+  configuration version it applied, and `--show-config` on the device names the winning layer.
+
+Precedence in full, with worked examples: [`Cloud.md`](Cloud.md#precedence).
+
+### Enrollment
+
+The page that hands out the three values a device needs, and generates the snippets that set them:
+
+- the server URL and the organization id, always shown;
+- the enrollment key - shown **once**, when it is created or rotated, and never again (the server keeps
+  only a hash of it);
+- **Rotate key**, for when a device that carried the key is lost. Devices that already enrolled are
+  unaffected: they authenticate with their own per-device key, not with this one.
+
+The provisioning snippets it generates, with your organization's real values filled in (and the key
+replaced by `<enrollment key>` once it can no longer be shown):
+
+| Snippet | Use |
+| --- | --- |
+| **PowerShell** | An idempotent, parameterised script for an Intune platform script, a Win32 app, a GPO startup script or an RMM. It re-launches itself in the 64-bit host when started from a 32-bit agent, so the values never land in `WOW6432Node`. |
+| **`.reg`** | `reg import`, a Group Policy Preferences item, or a double-click. |
+| **Installer command line** | `Install-ArkimentumAppMonitor.ps1` with the three parameters, for a fresh install that enrols on its first start. |
+| **Intune Win32 detection rule** | The registry detection rule that proves the values landed, plus the install, uninstall and install-behaviour settings to go with it. |
+
+Treat all of them as secrets while the key is in them. Full recipes, the Group Policy route and the
+network requirements: [`Cloud.md`](Cloud.md#provisioning-the-three-values).
+
+## Deprecated: local (this machine) mode, `--local`
+
+Everything below configures **this one machine**: the local preference layer,
+`HKLM\SOFTWARE\Arkimentum\AppMonitor`. It is a convenience layer over
+[`docs/Registry.md`](Registry.md) - everything it writes can also be written by hand, by `reg import`
+or by a script.
+
+**It is deprecated.** Settings are meant to be managed centrally, from the organization pages above or
+from the browser console; per-machine configuration does not scale, is invisible to the fleet views,
+and loses to the organization layer anyway wherever both set a value. The pages are kept for the
+transition and will be removed.
+
+```powershell
+& "$env:ProgramFiles\Arkimentum\AppMonitor\Admin\Arkimentum.AppMonitor.Admin.exe" --local
+```
+
+The group appears in the rail **after** the organization group, under the header *This machine
+(deprecated)*, and the console elevates itself as it always did. Without the switch none of it is
+there - and nothing behind it runs either: the local configuration document is never built, the
+registry is never probed for writability, and no connection to the local service is opened. (The
+Connect page still reads this machine's own `CloudServerUrl` to pre-fill the server address; that is
+a read, and it happens in every mode.)
 
 ### Overview
 
@@ -120,123 +287,7 @@ shown, and are converted to subkeys when you save that application.
 Export the current configuration in any of the three formats below, or import a JSON profile
 (**Replace** or **Merge**) produced on another machine.
 
-## Organization mode
-
-Everything above configures **this machine**. Organization mode is the same console pointed at the
-[cloud service](Cloud.md) instead: it configures an organization, and every enrolled device collects
-the result on its own.
-
-Switch with **Organization** in the console's header. Local mode stays exactly as it is - the two do
-not interfere, and the console remains usable on a machine that has no cloud at all.
-
-### Signing in
-
-Once you have signed in on a machine, the console restores that sign-in by itself the next time it
-opens: it connects to the remembered server, takes the token from the MSAL cache
-(`%LOCALAPPDATA%\Arkimentum\AppMonitor\msal.cache`, protected with DPAPI) and opens the organization's
-Devices page. No browser is opened for that; only when the cache holds nothing usable does the console
-wait for the Sign in button. Sign out clears the cache.
-
-Organization mode signs in with **Entra ID**, not with local administrative rights:
-
-1. You give the console the API's base URL (the same value as `CloudServerUrl`; it offers the one
-   configured on this machine).
-2. The console fetches `/api/v1/public/auth-config` - the Entra client id, the authority and the scope
-   to request. Nothing about the sign-in is hard-coded in the console.
-3. It acquires a token interactively (the normal Entra sign-in window, MFA and Conditional Access
-   included) and calls `/api/v1/admin/me`.
-4. `AdminMeResponse` comes back with your name, your tenant and the organizations you may administer.
-   With more than one, you pick; with one, it opens straight away.
-
-Local elevation is irrelevant here: organization mode changes nothing on this machine, so it works
-whether or not the console elevated. Your Entra account's permissions decide what you can do, not
-membership of the local Administrators group.
-
-### Devices
-
-Every enrolled device in the organization: name, last logon user, OS version, agent version, when it
-enrolled, when it was last seen, when it last scanned, the configuration version it has applied,
-pending and failed update counts, and whether its prerequisites are healthy. Sort and filter to find
-the devices that are behind, have failing updates, or have not reported.
-
-Open one for the detail view: its full inventory, its tracked updates with states, deadlines and
-deferral counts, its recent events, and the commands still queued for it.
-
-The four commands an administrator can queue for a device, from the list or the detail view:
-
-| Command | Effect on the device |
-| --- | --- |
-| **Scan now** | A full scan immediately, out of band with the scan interval. |
-| **Report now** | Sends a report from the current state without scanning first. |
-| **Repair prerequisites** | The same winget check and repair as `--prerequisites`. |
-| **Update agent** | Checks the release feed and installs a newer agent, regardless of `AgentAutoUpdate`. |
-
-Commands are **queued, not pushed**: the device picks them up on its next sync, so expect them to run
-within one `CloudSyncIntervalMinutes` (15 by default), and never at all while the device is offline.
-The console shows a command as pending until the device acknowledges it in a report. Nothing here
-opens a connection to the machine.
-
-Deleting a device removes its records from the organization. It does not touch the machine - if the
-agent is still installed and still provisioned, it enrols again on its next sync.
-
-### Inventory
-
-Every application seen across the organization, aggregated: display name, publisher, winget id,
-catalog id, how many devices have it, how many have an update available, the distinct installed
-versions with a device count each, the predominant install context, and when it was last seen.
-
-This is the page that answers "how much of the fleet is on the old version?" without visiting a
-machine. From a row you can start monitoring the application - it is added to the organization's
-applications with the catalog's identity and detection data filled in, and you choose only the
-behaviour (mandatory, deadline, deferrals, processes to close).
-
-### Organization settings and applications
-
-The same editors as local Settings and Applications - the same schema, the same ranges, the same
-"Override" per value - but writing the organization's configuration instead of this machine's
-registry. Values you do not override are simply absent, and each device falls back through its own
-local preference, the catalog and the built-in default.
-
-Changes are staged until you press **Publish**. Publishing writes a new configuration version, records
-who published it and when, and hands it out on each device's next sync. Because the console sent the
-version it started from (`baseConfigVersion`), a publish is rejected with a conflict if someone else
-published while you were editing, rather than quietly overwriting their work - reload and redo your
-change.
-
-Two limits worth knowing:
-
-- The connection values (`CloudServerUrl`, `CloudOrganizationId`, `CloudEnrollmentKey`) cannot be
-  published. Devices ignore them in the cloud layer by design, so the editor does not offer them.
-- A value that a device's Group Policy also sets will not take effect there: policy outranks the
-  organization configuration. The Devices page makes this visible - the device reports the
-  configuration version it applied, and `--show-config` on the device names the winning layer.
-
-Precedence in full, with worked examples: [`Cloud.md`](Cloud.md#precedence).
-
-### Enrollment
-
-The page that hands out the three values a device needs, and generates the snippets that set them:
-
-- the server URL and the organization id, always shown;
-- the enrollment key - shown **once**, when it is created or rotated, and never again (the server keeps
-  only a hash of it);
-- **Rotate key**, for when a device that carried the key is lost. Devices that already enrolled are
-  unaffected: they authenticate with their own per-device key, not with this one.
-
-The provisioning snippets it generates, with your organization's real values filled in (and the key
-replaced by `<enrollment key>` once it can no longer be shown):
-
-| Snippet | Use |
-| --- | --- |
-| **PowerShell** | An idempotent, parameterised script for an Intune platform script, a Win32 app, a GPO startup script or an RMM. It re-launches itself in the 64-bit host when started from a 32-bit agent, so the values never land in `WOW6432Node`. |
-| **`.reg`** | `reg import`, a Group Policy Preferences item, or a double-click. |
-| **Installer command line** | `Install-ArkimentumAppMonitor.ps1` with the three parameters, for a fresh install that enrols on its first start. |
-| **Intune Win32 detection rule** | The registry detection rule that proves the values landed, plus the install, uninstall and install-behaviour settings to go with it. |
-
-Treat all of them as secrets while the key is in them. Full recipes, the Group Policy route and the
-network requirements: [`Cloud.md`](Cloud.md#provisioning-the-three-values).
-
-## Override, default and policy lock
+### Override, default and policy lock
 
 Three states per value:
 
@@ -259,7 +310,7 @@ Three states per value:
   for the deployment artefacts only - they generate a file that writes the Policies key on **other**
   machines. See [Relation to the ADMX policy layer](#relation-to-the-admx-policy-layer).
 
-## Export formats
+### Export formats
 
 All three are generated by
 `src\Arkimentum.AppMonitor.Core\Configuration\SettingsExporter.cs` from the same
@@ -271,7 +322,7 @@ All three are generated by
 | Registration entries | `.reg` | `reg import`, Group Policy Preferences, RMM one-liners, a double-click on a technician's machine. |
 | PowerShell script | `.ps1` | Intune platform scripts, Intune Win32 apps, GPO startup scripts, any RMM that runs PowerShell. |
 
-### JSON profile
+#### JSON profile
 
 Schema `arkimentum-appmonitor-settings/1` (`SettingsDocument.cs`). Global values and per-app values in
 natural JSON types, plus provenance (`exportedUtc`, `exportedBy`, `exportedFrom`, `productVersion`,
@@ -302,7 +353,7 @@ anything is written).
 }
 ```
 
-### .reg file
+#### .reg file
 
 `Windows Registry Editor Version 5.00`, written for the **64-bit** view. With *replace applications*
 on (the default) the file starts with
@@ -318,7 +369,7 @@ adds and overwrites.
 
 The root can be the preference key or `...\Policies\Arkimentum\AppMonitor` (the `--policy` switch).
 
-### PowerShell script
+#### PowerShell script
 
 Idempotent, `[CmdletBinding(SupportsShouldProcess)]`, exits with 0. Two parameters:
 
@@ -331,7 +382,7 @@ It re-launches itself through `%WINDIR%\SysNative\WindowsPowerShell\v1.0\powersh
 started by a 32-bit agent, so `HKLM\SOFTWARE` is never redirected to `WOW6432Node`. Supports
 `-WhatIf`.
 
-## Merge vs Replace, precisely
+### Merge vs Replace, precisely
 
 | | JSON import **Merge** | JSON import **Replace** |
 | --- | --- | --- |
@@ -360,11 +411,11 @@ If you need a target to be byte-for-byte identical to the source, use the JSON p
 or clear the key first (`Remove-Item 'HKLM:\SOFTWARE\Arkimentum\AppMonitor' -Recurse`) and then
 import.
 
-## Distribution recipes
+### Distribution recipes
 
 Export once on a reference machine, then pick the channel that matches your fleet.
 
-### (a) Intune platform script (the `.ps1`)
+#### (a) Intune platform script (the `.ps1`)
 
 Devices → **Scripts and remediations** → *Platform scripts* → **Add** → Windows 10 and later.
 
@@ -379,7 +430,7 @@ The script is idempotent, so the one-time execution model of platform scripts is
 after a change is what you get by uploading a new version. The service picks the values up within one
 policy tick - no reboot, no service restart.
 
-### (b) Intune Win32 app
+#### (b) Intune Win32 app
 
 Wrap the exported script with `IntuneWinAppUtil.exe` (source folder = the folder containing
 `Settings.ps1`, setup file = `Settings.ps1`).
@@ -407,7 +458,7 @@ example `ScanIntervalMinutes`, or a deliberately versioned setting) each time.
 Win32 apps are preferable to platform scripts when you need detection, requirements, dependencies or
 a supersedence chain; platform scripts are simpler when you just want the values on every device.
 
-### (c) Group Policy
+#### (c) Group Policy
 
 Two ways, both with the `.reg` export:
 
@@ -433,7 +484,7 @@ Two ways, both with the `.reg` export:
 Both write the **preference** key, which Group Policy does not clean up when the GPO is unlinked. For
 settings that must disappear with the policy, use the ADMX template instead (below).
 
-### (d) RMM or one-off
+#### (d) RMM or one-off
 
 ```powershell
 # elevated, 64-bit
@@ -450,7 +501,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\temp\Settings.ps1
 Double-clicking the `.reg` file works too: it prompts for elevation and then for confirmation, and
 imports into the 64-bit view on 64-bit Windows.
 
-### (e) JSON profile on another client
+#### (e) JSON profile on another client
 
 Either through the UI - **Export & Import** → *Import profile* → choose the file → **Replace** or
 **Merge** - or headless:
@@ -462,7 +513,7 @@ Either through the UI - **Export & Import** → *Import profile* → choose the 
 The import is validated first; a profile with unknown value names or out-of-range numbers is rejected
 as a whole and nothing is written.
 
-## Relation to the ADMX policy layer
+### Relation to the ADMX policy layer
 
 | | Preference key | Policies key |
 | --- | --- | --- |
@@ -489,10 +540,15 @@ not the recommended path:
 A sensible split: ADMX/Intune for the handful of settings the organisation mandates, the admin console
 and the preference key for everything else.
 
-## Headless use
+### Headless use
+
+> **Deprecated**, like the rest of this section: it reads and writes this machine's preference layer.
+> The equivalent for a fleet is to publish the organization's configuration once - see
+> [Organization settings and applications](#organization-settings-and-applications).
 
 Every export and import is available on the command line, so a technician's profile can be produced
-in a pipeline and the console never has to be opened. Exit code `0` on success, `1` on failure.
+in a pipeline and the console never has to be opened. These are the only switches other than
+`--local` that still elevate. Exit code `0` on success, `1` on failure.
 
 ```powershell
 $admin = "$env:ProgramFiles\Arkimentum\AppMonitor\Admin\Arkimentum.AppMonitor.Admin.exe"
@@ -525,6 +581,7 @@ $admin = "$env:ProgramFiles\Arkimentum\AppMonitor\Admin\Arkimentum.AppMonitor.Ad
 | `--no-replace-apps` | With `--export`: do not clear `Apps`/`AppList` on the target. |
 | `--import <file.json>` | Import a JSON profile; **Replace** unless `--merge` is given. |
 | `--merge` | With `--import`: merge instead of replace. |
+| `--local` | Interactive, not headless: show the deprecated "This machine" pages in the window. |
 | `--user-config` | Testing only: `HKCU` instead of `HKLM`, no elevation, no service control. |
 
 A headless run still writes to
@@ -541,6 +598,9 @@ without administrative rights; production configuration always lives in HKLM.
 `%ProgramFiles%\Arkimentum\AppMonitor\Admin` next to `Service\` and `Tray\` and creates the all-users
 Start Menu shortcut. `-NoAdminConsole` skips the shortcut (and removes one left by an earlier
 install); the binaries are still copied, so headless use and a manual start keep working.
+
+The shortcut carries no arguments, so it opens the organization console and never prompts for
+elevation. To reach the deprecated per-machine pages, start the executable with `--local`.
 
 `deploy\Uninstall-ArkimentumAppMonitor.ps1` stops the console, removes the shortcut, removes the
 `Programs\Arkimentum` folder when it is empty, and deletes the install folder.

@@ -1004,6 +1004,11 @@ components:
           type: string
           example: api://00000000-0000-0000-0000-000000000000/AppMonitor.Access
         apiVersion: { type: string, nullable: true, example: v1 }
+        webAdminUrl:
+          type: string
+          nullable: true
+          description: Public URL of the browser-based admin console, when one is deployed next to this API.
+          example: https://appmon-prod-web-ab12cd.azurestaticapps.net
 
     AdminMeResponse:
       type: object

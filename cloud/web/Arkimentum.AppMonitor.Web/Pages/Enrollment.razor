@@ -1,0 +1,148 @@
+@page "/enrollment"
+@attribute [Authorize]
+@inherits OrganizationPage
+@inject AdminApiClient Api
+
+@*
+    The three values a device needs to join the organization, and the four shapes an administrator actually deploys
+    them in.
+
+    The server returns the enrollment key only right after it is created or rotated, so a page opened later shows
+    when the key was rotated but not the key itself - the snippets then carry a placeholder, which is the honest
+    thing to put there.
+*@
+
+<PageTitle>Enrollment · AppMonitor admin</PageTitle>
+
+<h1>Enrollment</h1>
+<p class="page-subtitle">How a Windows device joins @Organizations.OrganizationName.</p>
+
+<Banner Kind="error" Message="@Error" OnDismiss="Dismiss" />
+<Banner Kind="notice" Message="@Notice" OnDismiss="Dismiss" />
+
+@if (!HasOrganization)
+{
+    <NoOrganization />
+}
+else if (IsBusy && _info is null)
+{
+    <Spinner />
+}
+else if (_info is { } info)
+{
+    <section class="card">
+        <header class="card-head">
+            <h2>Organization</h2>
+            <button type="button" class="btn btn-danger" disabled="@IsBusy" @onclick="() => _confirmRotate = true">Rotate key</button>
+        </header>
+
+        <dl class="detail-list">
+            <dt>Organization id</dt>
+            <dd class="field-row">
+                <code class="mono">@info.OrganizationId</code>
+                <CopyButton Text="@info.OrganizationId.ToString()" />
+            </dd>
+
+            <dt>Server URL</dt>
+            <dd class="field-row">
+                <code class="mono">@info.ServerUrl</code>
+                <CopyButton Text="@info.ServerUrl" />
+            </dd>
+
+            <dt>Key last rotated</dt>
+            <dd>@TimeFormat.Both(info.KeyRotatedUtc)</dd>
+
+            <dt>Enrollment key</dt>
+            <dd>
+                @if (HasKey)
+                {
+                    <div class="field-row">
+                        <code class="mono key">@(_keyVisible ? info.EnrollmentKey : "••••••••••••••••")</code>
+                        <button type="button" class="btn btn-quiet" @onclick="() => _keyVisible = !_keyVisible">
+                            @(_keyVisible ? "Hide" : "Show")
+                        </button>
+                        <CopyButton Text="@info.EnrollmentKey" />
+                    </div>
+                    <p class="attention">
+                        This is the only time the key is shown. Copy it now - rotating issues a new one and the old
+                        one stops working immediately.
+                    </p>
+                }
+                else
+                {
+                    <span class="muted">
+                        Not shown. The server returns the key only when it is created or rotated; the snippets below
+                        carry <code>@ProvisioningSnippets.KeyPlaceholder</code> until you rotate it.
+                    </span>
+                }
+            </dd>
+        </dl>
+        <p class="muted">
+            Devices already enrolled are unaffected by a rotation - they hold their own per-device key. The snippets
+            write to <code>@ProvisioningSnippets.RegistryPath</code>.
+        </p>
+    </section>
+
+    @foreach (var snippet in Snippets(info))
+    {
+        <section class="card">
+            <header class="card-head">
+                <div>
+                    <h2>@snippet.Heading</h2>
+                    <p class="muted">@snippet.Caption</p>
+                </div>
+                <CopyButton Text="@snippet.Text" />
+            </header>
+            <pre class="snippet">@snippet.Text</pre>
+        </section>
+    }
+
+    <ConfirmDialog IsOpen="_confirmRotate"
+                   Title="Rotate the enrollment key?"
+                   Body="The current key stops working immediately. Any deployment that still carries it will fail to enrol new devices."
+                   Detail="Devices that have already enrolled keep working - they hold their own device key."
+                   ConfirmText="Rotate" Danger="true"
+                   OnConfirm="RotateAsync" OnCancel="() => _confirmRotate = false" />
+}
+
+@code {
+    private EnrollmentInfoResponse? _info;
+    private bool _keyVisible;
+    private bool _confirmRotate;
+
+    private bool HasKey => !string.IsNullOrWhiteSpace(_info?.EnrollmentKey);
+
+    protected override async Task LoadAsync()
+    {
+        if (OrganizationId is not { } id) return;
+        _info = await Api.GetEnrollmentAsync(id);
+        _keyVisible = false;
+    }
+
+    private async Task RotateAsync()
+    {
+        _confirmRotate = false;
+        if (OrganizationId is not { } id) return;
+        await RunAsync(async () =>
+        {
+            _info = await Api.RotateEnrollmentKeyAsync(id);
+            _keyVisible = true;
+            Notice = "A new enrollment key was issued. Copy it now - it is not shown again.";
+        });
+    }
+
+    private sealed record Snippet(string Heading, string Caption, string Text);
+
+    private static IEnumerable<Snippet> Snippets(EnrollmentInfoResponse info)
+    {
+        var key = string.IsNullOrWhiteSpace(info.EnrollmentKey) ? null : info.EnrollmentKey;
+        yield return new Snippet("PowerShell", "Intune platform script, Win32 app install command, GPO startup script or RMM. Idempotent, runs as SYSTEM, re-launches itself 64-bit.",
+            ProvisioningSnippets.PowerShell(info.ServerUrl, info.OrganizationId, key));
+        yield return new Snippet("Registry file", "For reg import, a Group Policy Preference item, or a double-click on a test machine.",
+            ProvisioningSnippets.RegFile(info.ServerUrl, info.OrganizationId, key));
+        yield return new Snippet("Installer command line", "A fresh install that enrols on first start.",
+            ProvisioningSnippets.InstallerCommandLine(info.ServerUrl, info.OrganizationId, key));
+        yield return new Snippet("Intune detection rule", "Proves the enrolment values landed, for a Win32 app deployment.",
+            ProvisioningSnippets.IntuneDetection(info.OrganizationId));
+    }
+}

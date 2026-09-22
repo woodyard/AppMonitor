@@ -17,6 +17,9 @@
     "sqlAutoPauseDelayMinutes": { "value": 120 },
     "useFlexConsumption": { "value": true },
     "maximumInstanceCount": { "value": 40 },
-    "logRetentionDays": { "value": 90 }
+    "logRetentionDays": { "value": 90 },
+    "deployWebAdmin": { "value": true },
+    "staticWebAppLocation": { "value": "westeurope" },
+    "additionalCorsOrigins": { "value": [] }
   }
 }

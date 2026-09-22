@@ -12,7 +12,7 @@ from an **organization configuration delivered by the cloud service**, in which 
 values per device are all you have to deploy.
 
 - .NET 10, Windows x64
-- A Windows service (`LocalSystem`), a per-session WPF tray agent and an elevated admin console
+- A Windows service (`LocalSystem`), a per-session WPF tray agent, a browser-based admin console hosted in the cloud and a WPF organization console
 - Runs stand-alone with no call-home at all, or connected to the optional cloud service
 - **Organization-managed configuration** - publish once, every enrolled device collects it
 - **Device inventory and update reporting** - a fleet view of what is installed and what is behind
@@ -66,7 +66,7 @@ flowchart LR
     end
 
     subgraph AdminBox["Administrator"]
-        ADMIN["Arkimentum.AppMonitor.Admin.exe<br/>admin console (elevated)<br/>local + organization mode"]
+        ADMIN["Admin console<br/>browser (cloud-hosted) or Arkimentum.AppMonitor.Admin.exe<br/>organization mode"]
     end
 
     subgraph Service["Arkimentum.AppMonitor.Service.exe (LocalSystem)"]
@@ -147,28 +147,32 @@ how mandatory, how strict and how forceful an update is always comes from your o
 
 ## Admin console
 
-`Arkimentum.AppMonitor.Admin.exe` is the graphical way to configure a machine: Start Menu →
-Arkimentum → **Arkimentum AppMonitor Admin**. It elevates itself at startup, edits the local
-preference key, and shows values that come from Group Policy or Intune as locked.
+Every setting is managed centrally. The **browser admin console** hosted next to the cloud API is the
+primary way to do it: sign in with Entra ID from any device, with nothing installed. The server
+advertises it in `/api/v1/public/auth-config`.
 
-- **Overview** - service state with Start/Stop/Restart, "Scan now" through the service pipe, pending
-  updates and the effective configuration.
-- **Settings** and **Applications** - every global and per-app value, with "Override" per value and
-  the built-in default when you do not override; "Test detection" runs the real winget or web check
-  for one application.
-- **Export & Import** - a JSON profile, a `.reg` file or an idempotent PowerShell script, ready for
-  Intune (platform script or Win32 app), Group Policy Preferences, an RMM or another technician's
-  machine. `--export` and `--import` also work headless.
+`Arkimentum.AppMonitor.Admin.exe` is the Windows console for the same job: Start Menu → Arkimentum →
+**Arkimentum AppMonitor Admin**. It opens on the organization pages, runs as a **standard user** with
+no UAC prompt, and changes nothing on the machine it runs on.
 
-With the cloud service in use, the same console also has an **Organization** mode: sign in with Entra
-ID and manage the whole fleet - **Devices** (with Scan now, Report now, Repair prerequisites, Update
-agent), **Inventory** across the organization, **Organization settings and applications** with
-*Publish*, and **Enrollment** with ready-made provisioning snippets.
+- **Connect** - point it at the deployment, sign in with Entra ID, pick the organization. A previous
+  sign-in is restored silently. Offers *Open the web admin console* when the server hosts one.
+- **Devices** - every enrolled device, with Scan now, Report now, Repair prerequisites and Update
+  agent queued per device, plus **Activity** across the fleet.
+- **Inventory** - every application seen across the organization, and how much of the fleet is behind.
+- **Settings** and **Applications** - every global and per-app value, with "Override" per value, staged
+  until you press *Publish*; each device collects the new version on its next sync.
+- **Enrollment** - the three provisioning values and ready-made snippets for Intune, Group Policy,
+  a `.reg` file or the installer command line.
 
 Changes take effect within one policy tick (`PolicyTickSeconds`, default 60 s) - no service restart.
 
-Full documentation, including the distribution recipes and Merge/Replace semantics:
-[`docs/AdminConsole.md`](docs/AdminConsole.md).
+> **Deprecated: per-machine configuration.** The console used to configure this one machine's registry
+> (Overview, Settings, Applications, Export & import) and still can behind the `--local` switch, which
+> elevates. So do the headless `--export` / `--import`. Both are deprecated; manage settings centrally
+> instead.
+
+Full documentation: [`docs/AdminConsole.md`](docs/AdminConsole.md).
 
 ## Quick start
 
@@ -212,24 +216,22 @@ Useful switches: `-NoSampleApps`, `-NoAdminConsole`, `-SkipPrerequisites`, `-NoS
 
 ### 3. Configure
 
-There are two ways to run a fleet. Pick one; they use the same settings and the same console.
+There are two ways to run a fleet. **Path B is the one to pick**: settings are meant to be managed
+centrally. Path A is for devices that cannot reach a cloud deployment at all.
 
 #### Path A - stand-alone (every device configured locally)
 
-**Preferred: the admin console.** Start Menu → Arkimentum → **Arkimentum AppMonitor Admin** (it asks
-for elevation). It edits every setting and application, shows the service and the pending updates, and
-exports the result as a JSON profile, a `.reg` file or a deployment script for the rest of the fleet.
-See [`docs/AdminConsole.md`](docs/AdminConsole.md).
-
-Alternatives, all writing the same registry values:
-
 - **Group Policy / Intune** - import `deploy\policy\ArkimentumAppMonitor.admx` and its `en-US\*.adml`
   (Computer Configuration → Administrative Templates → Arkimentum → AppMonitor). Policy wins over
-  everything the console writes, and policy-managed values are shown locked in the console. See
-  [`deploy/policy/README.md`](deploy/policy/README.md). This is the right choice for a managed fleet.
+  everything else. See [`deploy/policy/README.md`](deploy/policy/README.md). This is the right choice
+  for a managed fleet with no cloud deployment.
 - **Registry, scripted** - `deploy\Set-SampleConfiguration.ps1` writes a complete, commented example.
 - **Registry, by hand or by .reg file** - `deploy\Sample-Configuration.reg`, and the full reference in
   [`docs/Registry.md`](docs/Registry.md).
+- **The admin console's deprecated per-machine pages** - start it with `--local` (it then asks for
+  elevation) to edit this machine's settings and applications and export the result as a JSON profile,
+  a `.reg` file or a deployment script. Deprecated; see
+  [`docs/AdminConsole.md`](docs/AdminConsole.md#deprecated-local-this-machine-mode---local).
 
 A minimal application entry:
 
@@ -263,9 +265,10 @@ your real values in it.
 
 The device enrols on its first sync, exchanges the enrollment key for a per-device key (DPAPI-protected
 in `%ProgramData%\Arkimentum\AppMonitor\device.credential`), collects the organization configuration,
-and reports its inventory and update state after each scan. Configure the rest in the admin console's
-**Organization** mode: Devices, Inventory, Organization settings and applications (with *Publish*), and
-Enrollment.
+and reports its inventory and update state after each scan. Configure the rest centrally - in the
+browser admin console, or in `Arkimentum.AppMonitor.Admin.exe`, which opens on exactly those pages:
+Devices, Activity, Inventory, Settings and Applications (with *Publish*), and Enrollment. Neither asks
+for administrative rights on the machine you run it from.
 
 ```powershell
 # on the device, after provisioning
@@ -413,11 +416,12 @@ src\Arkimentum.AppMonitor.Core      shared library: registry reader, models, inv
                                     settings schema/export/import, logging
 src\Arkimentum.AppMonitor.Service   Windows service (worker host)
 src\Arkimentum.AppMonitor.Tray      WPF tray agent
-src\Arkimentum.AppMonitor.Admin     WPF admin console (elevated configuration UI + headless export/import)
+src\Arkimentum.AppMonitor.Admin     WPF organization console (local mode deprecated: --local, headless export/import)
 src\Arkimentum.AppMonitor.UI        shared WPF brand theme, styles and controls
 src\Arkimentum.AppMonitor.Tests     xunit tests
 catalog\catalog.json            application catalog
-cloud\                          optional cloud service: Azure Functions API, Bicep, Deploy-Cloud.ps1
+cloud\                          optional cloud service: Azure Functions API, browser admin console (cloud\web),
+                                Bicep, Deploy-Cloud.ps1
 deploy\                         build, install, uninstall and configuration scripts + ADMX template
 docs\                           registry reference, architecture, admin console, cloud, self-update,
                                 troubleshooting

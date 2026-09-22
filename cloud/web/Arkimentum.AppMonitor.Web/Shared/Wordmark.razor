@@ -1,0 +1,10 @@
+@* The Arkimentum wordmark in Gelasio, with the product name beside it. Used by the header and the splash pages. *@
+
+<span class="wordmark @(Large ? "wordmark-large" : null)">
+    <span class="wordmark-name">Arkimentum</span>
+    <span class="wordmark-product">AppMonitor</span>
+</span>
+
+@code {
+    [Parameter] public bool Large { get; set; }
+}

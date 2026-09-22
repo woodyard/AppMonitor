@@ -26,7 +26,7 @@ param apiClientId string
 @description('Audience the API accepts, normally api://{apiClientId}.')
 param apiAudience string = 'api://${apiClientId}'
 
-@description('Application (client) id of the admin console public client.')
+@description('Application (client) id of the admin console app registration (the browser SPA and the WPF console share it).')
 param adminClientId string
 
 @description('Arkimentum\'s own tenant. AppMonitor.GlobalAdmin is only honoured for tokens from this tenant.')
@@ -91,6 +91,15 @@ param instanceMemoryMB int = 2048
 @maxValue(730)
 param logRetentionDays int = 90
 
+@description('Deploy the browser-based admin console as an Azure Static Web App (Blazor WebAssembly).')
+param deployWebAdmin bool = true
+
+@description('Region for the Static Web App. The Free SKU exists only in westus2, centralus, eastus2, westeurope and eastasia, so it normally differs from "location".')
+param staticWebAppLocation string = 'westeurope'
+
+@description('Extra browser origins allowed to call the API, e.g. https://localhost:7200 for local development of the web admin console. Full origins, no trailing slash.')
+param additionalCorsOrigins array = []
+
 @description('Tags applied to every resource.')
 param tags object = {
   product: 'Arkimentum AppMonitor'
@@ -104,6 +113,7 @@ var storageAccountName = toLower(replace('appmon${environmentName}st${nameSuffix
 var functionAppName = '${prefix}-func-${nameSuffix}'
 var planName = '${prefix}-plan'
 var sqlServerName = '${prefix}-sql-${nameSuffix}'
+var staticWebAppName = '${prefix}-web-${nameSuffix}'
 var sqlDatabaseName = '${prefix}-db'
 var appInsightsName = '${prefix}-ai'
 var workspaceName = '${prefix}-law'
@@ -314,6 +324,35 @@ resource consumptionPlan 'Microsoft.Web/serverfarms@2023-12-01' = if (!useFlexCo
   properties: {}
 }
 
+// ------------------------------------------------------------------------------------------- web admin console
+//
+// The browser admin console is a Blazor WebAssembly site - static files only, no managed functions and no
+// repository link: it is published by Deploy-Cloud.ps1 (SWA CLI) or by .github/workflows/cloud-web.yml.
+// It signs in with MSAL and calls the Function App cross-origin with a bearer token, which is why the Function
+// App's CORS list below contains exactly this origin (plus whatever additionalCorsOrigins adds).
+
+resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' = if (deployWebAdmin) {
+  name: staticWebAppName
+  location: staticWebAppLocation
+  tags: tags
+  sku: {
+    name: 'Free'
+    tier: 'Free'
+  }
+  properties: {
+    stagingEnvironmentPolicy: 'Disabled'       // Free SKU has no staging environments anyway
+    allowConfigFileUpdates: true               // staticwebapp.config.json in the payload decides routing/fallback
+  }
+}
+
+// Safe-dereference: the resource does not exist when deployWebAdmin is false, and the template must still compile.
+var webAdminHost = deployWebAdmin ? (staticWebApp.?properties.?defaultHostname ?? '') : ''
+var webAdminUrl = empty(webAdminHost) ? '' : 'https://${webAdminHost}'
+
+// Exactly the origins that are allowed to call the API from a browser. supportCredentials stays false: the
+// console authenticates with an Authorization header, never with cookies, so no credentialed origin is needed.
+var corsAllowedOrigins = empty(webAdminUrl) ? additionalCorsOrigins : union([webAdminUrl], additionalCorsOrigins)
+
 // ---------------------------------------------------------------------------------------------------- function app
 
 var sqlConnectionString = 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Initial Catalog=${sqlDatabaseName};Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;Connection Timeout=60;'
@@ -373,6 +412,10 @@ var commonAppSettings = [
     value: publicServerUrl
   }
   {
+    name: 'PublicWebAdminUrl'
+    value: webAdminUrl                 // empty when deployWebAdmin is false; /public/auth-config then omits it
+  }
+  {
     name: 'PollIntervalSeconds'
     value: string(pollIntervalSeconds)
   }
@@ -410,8 +453,8 @@ resource flexFunctionApp 'Microsoft.Web/sites@2023-12-01' = if (useFlexConsumpti
       ftpsState: 'Disabled'
       http20Enabled: true
       cors: {
-        allowedOrigins: []                 // the admin console is a desktop app; no browser origin is allowed
-        supportCredentials: false
+        allowedOrigins: corsAllowedOrigins  // the web admin console's origin, plus any extra configured one
+        supportCredentials: false           // bearer tokens only - no cookies, so no credentialed origins
       }
       appSettings: commonAppSettings
     }
@@ -459,7 +502,7 @@ resource consumptionFunctionApp 'Microsoft.Web/sites@2023-12-01' = if (!useFlexC
       netFrameworkVersion: 'v10.0'
       use32BitWorkerProcess: false
       cors: {
-        allowedOrigins: []
+        allowedOrigins: corsAllowedOrigins
         supportCredentials: false
       }
       appSettings: concat(commonAppSettings, consumptionOnlySettings)
@@ -520,6 +563,8 @@ resource metricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 output functionAppName string = functionAppName
 output functionAppPrincipalId string = functionPrincipalId
 output serverUrl string = publicServerUrl
+output webAdminUrl string = webAdminUrl
+output staticWebAppName string = deployWebAdmin ? staticWebAppName : ''
 output sqlServerFqdn string = sqlServer.properties.fullyQualifiedDomainName
 output sqlDatabaseName string = sqlDatabaseName
 output sqlConnectionString string = sqlConnectionString

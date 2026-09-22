@@ -10,5 +10,7 @@
   <Folder Name="/cloud/">
     <Project Path="cloud/api/Arkimentum.AppMonitor.Api/Arkimentum.AppMonitor.Api.csproj" />
     <Project Path="cloud/api/Arkimentum.AppMonitor.Api.Tests/Arkimentum.AppMonitor.Api.Tests.csproj" />
+    <Project Path="cloud/web/Arkimentum.AppMonitor.Web/Arkimentum.AppMonitor.Web.csproj" />
+    <Project Path="cloud/web/Arkimentum.AppMonitor.Web.Tests/Arkimentum.AppMonitor.Web.Tests.csproj" />
   </Folder>
 </Solution>

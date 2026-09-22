@@ -10,6 +10,7 @@ machine it was written on has no Azure credentials.
 cloud/
   api/Arkimentum.AppMonitor.Api          Azure Functions (.NET 10 isolated worker)
   api/Arkimentum.AppMonitor.Api.Tests    xunit: contract, validation, handler and auth tests
+  web/Arkimentum.AppMonitor.Web          the browser admin console (Blazor WebAssembly, static site)
   infra/main.bicep                       resource-group scoped infrastructure
   deploy/Deploy-Cloud.ps1                one-shot, idempotent deployment
   deploy/New-Organization.ps1            create a customer organization
@@ -27,10 +28,12 @@ flowchart LR
         SVC["Arkimentum.AppMonitor.Service<br/>(LocalSystem)"]
     end
     subgraph Operator["Administrators"]
-        CONSOLE["Admin console<br/>(Entra ID public client)"]
+        BROWSER["Browser<br/>web admin console"]
+        WPF["WPF admin console<br/>(organization mode)"]
         OPS["Arkimentum staff<br/>az CLI + scripts"]
     end
     subgraph Azure["Azure - appmon-{env}-..."]
+        SWA["Static Web App<br/>appmon-{env}-web-{suffix}<br/>Blazor WebAssembly, Free SKU"]
         FUNC["Function App<br/>Flex Consumption, .NET 10 isolated"]
         SQL[("Azure SQL<br/>serverless, auto-pause")]
         BLOB[("Blob Storage<br/>raw report archive")]
@@ -39,14 +42,29 @@ flowchart LR
     ENTRA["Entra ID<br/>multi-tenant app registration"]
 
     SVC -- "Authorization: Device {id}:{key}" --> FUNC
-    CONSOLE -- "Bearer (AppMonitor.Access scope + AppMonitor.Admin role)" --> FUNC
+    BROWSER -- "GET the site (static files)" --> SWA
+    BROWSER -- "Bearer, cross-origin (CORS)" --> FUNC
+    WPF -- "Bearer (AppMonitor.Access scope + AppMonitor.Admin role)" --> FUNC
     OPS -- "Bearer (AppMonitor.GlobalAdmin)" --> FUNC
-    CONSOLE -. "sign in" .-> ENTRA
+    BROWSER -. "MSAL sign-in" .-> ENTRA
+    WPF -. "sign in" .-> ENTRA
     FUNC -. "validate JWT (OIDC metadata)" .-> ENTRA
     FUNC -- "managed identity" --> SQL
     FUNC -- "managed identity" --> BLOB
     FUNC --> AI
 ```
+
+The **web admin console** is the primary console: a Blazor WebAssembly site served as static files from an
+Azure Static Web App (Free SKU), with no server side of its own. It signs in with MSAL in the browser and calls
+the Function App **cross-origin** with the same bearer token the WPF console uses - so the API's CORS list has
+to contain exactly that origin, and nothing else has to change on the API. Its only deployment-time
+configuration is `wwwroot/appsettings.json` (`{ "ApiBaseUrl": "<function app url>" }`); client id, authority,
+scope and its own public URL come from `GET /api/v1/public/auth-config` at start-up. See
+[§8 Web admin console](#8-web-admin-console).
+
+The WPF console (`src/Arkimentum.AppMonitor.Admin`) keeps its organization mode; its local "This machine" pages
+are deprecated in favour of the browser console for everything that belongs to an organization (see
+[`docs/AdminConsole.md`](../docs/AdminConsole.md)).
 
 The agent itself is unchanged: it still reads its configuration from the registry. The cloud simply supplies a
 **third configuration layer** - the organization configuration - and a place to report to. Three registry values
@@ -154,10 +172,27 @@ covers the cross-tenant cases directly.
 
 ### Transport and network
 
-HTTPS only, minimum TLS 1.2, FTPS disabled, CORS with an empty origin list (the admin console is a desktop app,
-so no browser origin is ever allowed). Azure SQL is reached through the "allow Azure services" firewall rule
-because a Consumption-plan Function App has no stable outbound address; move to VNet integration plus a private
-endpoint when a customer requires it.
+HTTPS only, minimum TLS 1.2, FTPS disabled. Azure SQL is reached through the "allow Azure services" firewall
+rule because a Consumption-plan Function App has no stable outbound address; move to VNet integration plus a
+private endpoint when a customer requires it.
+
+**CORS.** The API's allowed-origin list is not empty any more, because the web admin console is a browser
+application on a different origin. Bicep builds the list from exactly two things:
+
+| Source | Value |
+| --- | --- |
+| The Static Web App in this deployment | `https://{staticWebApp.defaultHostname}` - computed, never typed in |
+| `additionalCorsOrigins` (`-AdditionalWebOrigins`) | whatever you add, e.g. `https://localhost:7200` for local development, or a custom domain |
+
+There is no wildcard, and `supportCredentials` stays **false** on purpose: the console authenticates with an
+`Authorization: Bearer` header that it attaches itself, never with cookies, so no credentialed cross-origin
+request is needed. Keeping it false also keeps `Access-Control-Allow-Origin: *` semantics off the table and
+means a hostile page cannot ride on an ambient session - there is none. The token lives in MSAL's browser
+storage and is only sent by code that the console itself runs.
+
+Setting `deployWebAdmin: false` deploys no Static Web App, leaves the origin list empty (or with just your
+extras) and leaves `PublicWebAdminUrl` empty, so `/public/auth-config` omits `webAdminUrl` - the pre-web
+behaviour, unchanged.
 
 ---
 
@@ -208,7 +243,7 @@ on every 200, at most 20 at a time.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/api/v1/public/auth-config` | client id, authority, scope - the console only needs the server URL |
+| GET | `/api/v1/public/auth-config` | client id, authority, scope, and `webAdminUrl` (from the `PublicWebAdminUrl` app setting) - a console only needs the server URL to bootstrap |
 | GET | `/api/v1/public/health` | liveness, used by the deploy script |
 
 ### Admin (`Authorization: Bearer <Entra ID token>`)
@@ -400,9 +435,20 @@ cd cloud\deploy
     -CustomerTenantId  22222222-2222-2222-2222-222222222222
 ```
 
-The script is idempotent; run it again to update. It prints the three registry values at the end. Useful
-switches: `-WhatIfDeployment`, `-SkipAppRegistrations`, `-SkipPublish`, `-MigrationMode Bundle|Skip`,
-`-UseFlexConsumption:$false`.
+The script is idempotent; run it again to update. It prints the three registry values and the web admin console
+URL at the end. Useful switches: `-WhatIfDeployment`, `-SkipAppRegistrations`, `-SkipPublish`,
+`-SkipWebPublish` (create the Static Web App but do not build or upload the console into it),
+`-MigrationMode Bundle|Skip`, `-UseFlexConsumption:$false`.
+
+Two parameters belong to the web console: `-StaticWebAppLocation` (default `westeurope`) and
+`-AdditionalWebOrigins` (a string array). The Free Static Web Apps SKU only exists in **westus2, centralus,
+eastus2, westeurope and eastasia**, so the site normally lives in a different region from the rest of the
+environment - that is why it has its own parameter instead of following `-Location`. Every additional origin
+becomes both a CORS origin on the Function App and a SPA redirect URI on the admin console app registration:
+
+```powershell
+.\Deploy-Cloud.ps1 ... -AdditionalWebOrigins 'https://localhost:7200'
+```
 
 It is written for **Windows PowerShell 5.1** and works unchanged in pwsh 7, with one caveat: the step that makes
 the Function App's managed identity a database user uses `System.Data.SqlClient` with an access token, which is
@@ -414,14 +460,25 @@ available it writes `artifacts/cloud/{env}/grant-managed-identity.sql` and tells
 
 1. Checks `az` and `dotnet`, selects the subscription, reads the signed-in operator.
 2. Creates the resource group.
-3. Creates or patches the two app registrations (see §8).
+3. Creates or patches the two app registrations (see §9).
 4. Assigns `AppMonitor.GlobalAdmin` to the signed-in operator.
-5. Deploys `infra/main.bicep`.
-6. `CREATE USER [<function app>] FROM EXTERNAL PROVIDER` + `db_datareader` + `db_datawriter`.
-7. Applies the EF migrations.
-8. `dotnet publish` -> zip -> `az functionapp deployment source config-zip` (falling back to `az functionapp deploy`).
-9. Creates the first organization through the admin API and prints `CloudServerUrl`, `CloudOrganizationId`,
-   `CloudEnrollmentKey`.
+5. Deploys `infra/main.bicep` - including the Static Web App - and reads the `webAdminUrl` and
+   `staticWebAppName` outputs.
+6. Patches the admin console app registration with the SPA redirect URIs
+   (`{webAdminUrl}/authentication/login-callback`, plus one per `-AdditionalWebOrigins`). This cannot happen in
+   step 3: the Static Web App hostname does not exist until step 5. Only the `spa` block is touched -
+   `publicClient.redirectUris` (`http://localhost`, the WPF console's interactive flow) is left as it is.
+   Skipped by `-SkipAppRegistrations`, which then prints the URIs to register by hand.
+7. `CREATE USER [<function app>] FROM EXTERNAL PROVIDER` + `db_datareader` + `db_datawriter`.
+8. Applies the EF migrations.
+9. `dotnet publish` -> zip -> `az functionapp deployment source config-zip` (falling back to `az functionapp deploy`).
+10. Publishes the web console to `artifacts/cloud/{env}/web`, writes `wwwroot/appsettings.json` with the
+    `ApiBaseUrl`, reads the deployment token with `az staticwebapp secrets list` and uploads the folder with
+    `npx --yes @azure/static-web-apps-cli deploy ... --env production`. The token is never printed. Without
+    `npx` on PATH (or without a token) the script warns and prints the exact manual command instead. Skipped by
+    `-SkipPublish` or `-SkipWebPublish`.
+11. Creates the first organization through the admin API and prints `CloudServerUrl`, `CloudOrganizationId`,
+    `CloudEnrollmentKey`.
 
 ### Database migrations - both ways
 
@@ -456,8 +513,9 @@ Function App's identity deliberately has no DDL rights.
 
 | Resource | Name | Notes |
 | --- | --- | --- |
-| Function App | `appmon-{env}-func-{suffix}` | Flex Consumption FC1 (Linux), dotnet-isolated 10.0, system-assigned identity, HTTPS only, TLS 1.2, CORS empty |
+| Function App | `appmon-{env}-func-{suffix}` | Flex Consumption FC1 (Linux), dotnet-isolated 10.0, system-assigned identity, HTTPS only, TLS 1.2, CORS = the Static Web App origin + `additionalCorsOrigins` |
 | Plan | `appmon-{env}-plan` | FC1, or Y1 with `-UseFlexConsumption:$false` |
+| Static Web App | `appmon-{env}-web-{suffix}` | Free SKU, **`staticWebAppLocation`** (default westeurope - the Free SKU has only five regions), no repository link, staging environments disabled, `allowConfigFileUpdates`. Skipped entirely with `deployWebAdmin: false` |
 | Storage | `appmon{env}st{suffix}` | `reports` + `function-releases` containers, shared keys disabled, no public blob access |
 | Azure SQL | `appmon-{env}-sql-{suffix}` / `appmon-{env}-db` | GP_S_Gen5 serverless, auto-pause 60 min, min 0.5 vCore, Entra-only auth |
 | App Insights | `appmon-{env}-ai` | workspace-based |
@@ -465,8 +523,14 @@ Function App's identity deliberately has no DDL rights.
 
 App settings written by the template: `AzureAd__ClientId`, `AzureAd__Audience`, `AzureAd__TenantIdMode`,
 `AdminClientId`, `OperatorTenantId`, `SqlConnection` (managed identity, no password), `SqlProvider`,
-`BlobServiceUri`, `ReportContainer`, `PublicServerUrl`, `PollIntervalSeconds`,
-`APPLICATIONINSIGHTS_CONNECTION_STRING`, `AzureWebJobsStorage__accountName` + `__credential=managedidentity`.
+`BlobServiceUri`, `ReportContainer`, `PublicServerUrl`, **`PublicWebAdminUrl`** (the Static Web App URL, empty
+when `deployWebAdmin: false`; returned as `webAdminUrl` from `/api/v1/public/auth-config`),
+`PollIntervalSeconds`, `APPLICATIONINSIGHTS_CONNECTION_STRING`, `AzureWebJobsStorage__accountName` +
+`__credential=managedidentity`.
+
+Template outputs used by the deploy script: `functionAppName`, `serverUrl`, **`webAdminUrl`**,
+**`staticWebAppName`**, `sqlServerFqdn`, `sqlDatabaseName`, `sqlConnectionString`, `storageAccountName`,
+`blobServiceUri`, `reportContainerName`, `appInsightsName`, `logAnalyticsWorkspaceName`, `hostingPlanKind`.
 
 Role assignments: Storage Blob Data Owner, Storage Queue Data Contributor and Storage Table Data Contributor on
 the storage account (the Functions host needs blob, queue and table for its own bookkeeping, and the API needs
@@ -474,7 +538,132 @@ blob for the report archive), and Monitoring Metrics Publisher on Application In
 
 ---
 
-## 8. Entra ID setup
+## 8. Web admin console
+
+`cloud/web/Arkimentum.AppMonitor.Web` is a **Blazor WebAssembly** application: it compiles to static files and
+is served by the Static Web App with no server of its own. Everything it does, it does from the browser -
+sign-in with MSAL, and calls to the Function App with the resulting bearer token.
+
+### Where it lives
+
+| | |
+| --- | --- |
+| URL | `https://appmon-{env}-web-{suffix}.azurestaticapps.net` - printed by `Deploy-Cloud.ps1`, and in the `webAdminUrl` template output |
+| Resource | `Microsoft.Web/staticSites`, Free SKU, region `staticWebAppLocation` |
+| Also reachable from | `GET /api/v1/public/auth-config` -> `webAdminUrl` (the API knows it through the `PublicWebAdminUrl` app setting), so the WPF console and scripts can link to it |
+
+### How it is configured
+
+Exactly one file, written at deployment time, not at build time:
+
+```json
+wwwroot/appsettings.json
+{ "ApiBaseUrl": "https://appmon-prod-func-ab12cd.azurewebsites.net" }
+```
+
+No trailing slash. Everything else - client id, authority, scope - the site fetches at start-up from
+`GET {ApiBaseUrl}/api/v1/public/auth-config`, so one build of the site can be pointed at any environment, and
+rotating the app registration needs no redeploy of the console.
+
+One thing must come from the **site's own payload**, not from here: a `wwwroot/staticwebapp.config.json` with a
+navigation fallback to `/index.html` (excluding `/_framework/*`, `/css/*` and the other static folders). A
+single-page application is one HTML file and client-side routes; without the fallback, every deep link 404s -
+including `/authentication/login-callback`, which is where Entra ID sends the browser back after sign-in, so
+sign-in itself fails. `allowConfigFileUpdates: true` in the Bicep template is what lets that file take effect
+on each upload.
+
+### Deploying it with the script
+
+`Deploy-Cloud.ps1` does it as step 10, right after the Functions deployment (see §7). Nothing extra is needed
+beyond Node.js on the operator machine: the script publishes the project, writes `appsettings.json`, reads the
+deployment token with `az staticwebapp secrets list` and uploads with the SWA CLI through `npx`. Use
+`-SkipWebPublish` to leave the site alone while redeploying the backend.
+
+To upload a build by hand:
+
+```powershell
+$env:DOTNET_ROOT = "$env:LOCALAPPDATA\Microsoft\dotnet"; $env:PATH = "$env:DOTNET_ROOT;$env:PATH"
+dotnet publish cloud\web\Arkimentum.AppMonitor.Web\Arkimentum.AppMonitor.Web.csproj -c Release -o out
+'{ "ApiBaseUrl": "https://appmon-prod-func-ab12cd.azurewebsites.net" }' | Set-Content out\wwwroot\appsettings.json -Encoding UTF8
+
+$token = az staticwebapp secrets list -n appmon-prod-web-ab12cd -g appmon-prod-rg --query properties.apiKey -o tsv
+npx --yes @azure/static-web-apps-cli deploy out\wwwroot --deployment-token $token --env production
+```
+
+The deployment token is a **write credential for the site**. Do not echo it, do not commit it; regenerate it
+with `az staticwebapp secrets reset-api-key -n <name> -g <rg>` if it leaks.
+
+### Deploying it from GitHub
+
+`.github/workflows/cloud-web.yml` runs on a push to `main` that touches `cloud/web/**`, the API contracts or
+`catalog/catalog.json`, and on `workflow_dispatch`. It publishes the project, writes `appsettings.json` and
+uploads with `Azure/static-web-apps-deploy@v1` (`action: upload`, `skip_app_build: true`, so the .NET SDK on the
+runner does the building, not Oryx). It needs two repository settings, and **skips the deploy step with a
+warning** when either is missing - the build still runs, so the workflow is useful as CI even before the
+secrets exist:
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Variable | `APPMON_API_BASE_URL` | the Function App URL, no trailing slash |
+| Secret | `AZURE_STATIC_WEB_APPS_API_TOKEN` | the Static Web App deployment token |
+
+Set them in the GitHub UI: **Settings -> Secrets and variables -> Actions**, then the *Variables* tab for the
+first and the *Secrets* tab for the second. Get the token with:
+
+```powershell
+az staticwebapp secrets list -n appmon-prod-web-ab12cd -g appmon-prod-rg --query properties.apiKey -o tsv
+```
+
+### Custom domain
+
+Static Web Apps includes free custom domains with managed TLS certificates. Add `console.arkimentum.dk` in the
+portal (or `az staticwebapp hostname set`), point a CNAME at the default hostname, and then **add the new
+origin to the deployment**: re-run `Deploy-Cloud.ps1 -AdditionalWebOrigins 'https://console.arkimentum.dk'`, so
+it becomes both an allowed CORS origin on the API and a SPA redirect URI on the app registration. The site
+itself needs no change - it discovers everything from `auth-config`.
+
+### Local development
+
+Run the API and the site side by side. The dev origin is `https://localhost:7200`, which is what the
+`--cors` flag and the redirect URI below both refer to:
+
+```powershell
+# terminal 1 - the API against SQLite (see §5), with the console's origin allowed
+cd cloud\api\Arkimentum.AppMonitor.Api
+func start --cors https://localhost:7200      # http://localhost:7071
+
+# terminal 2 - the console
+cd cloud\web\Arkimentum.AppMonitor.Web
+dotnet run                                    # https://localhost:7200
+```
+
+`func start` allows no cross-origin call by default, which looks exactly like a broken API from the browser -
+pass `--cors` (or add a `Host.CORS` entry to `local.settings.json`) before you start debugging anything else.
+Use whatever origin the web project's `Properties/launchSettings.json` actually listens on; `https://localhost:7200`
+is the one registered by `-AdditionalWebOrigins` in the examples here, so keep the two in step.
+Point the site at the local API with its own `ApiBaseUrl` (`http://localhost:7071`); with
+`DevBypassAdminAuth=true` the local API accepts `Authorization: Bearer dev:{tenantId}:{upn}:{roles}` and no
+Entra tenant is involved at all.
+
+To sign in for real from `https://localhost:7200` against a **deployed** API, that origin has to be both an
+allowed CORS origin on the Function App and a SPA redirect URI on the app registration - which is what
+`-AdditionalWebOrigins 'https://localhost:7200'` does in one go.
+
+### Which console to use
+
+| | Web console | WPF console |
+| --- | --- | --- |
+| Organization: devices, inventory, configuration, enrollment | **yes** - this is where it happens | still works, deprecated for new work |
+| This machine: local settings, local applications, discovery, export/import | - | yes, but **deprecated** |
+| Needs an install | no, any browser | yes, elevated, on Windows |
+
+The WPF console remains for organization mode and for the local, machine-scoped pages; those local pages are
+being retired in favour of the browser console plus registry/policy provisioning. See
+[`docs/AdminConsole.md`](../docs/AdminConsole.md).
+
+---
+
+## 9. Entra ID setup
 
 ### In the operator (Arkimentum) tenant - done by `Deploy-Cloud.ps1`
 
@@ -492,9 +681,24 @@ blob for the report archive), and Monitoring Metrics Publisher on Application In
 
 **Admin console app registration** - "Arkimentum AppMonitor Admin Console ({env})"
 
+One registration serves both consoles, because they are the same client to Entra ID - only the platform
+differs:
+
 - `signInAudience`: `AzureADMultipleOrgs`
-- Public client (`isFallbackPublicClient: true`), redirect URI `http://localhost` (MSAL interactive)
+- Public client (`isFallbackPublicClient: true`), `publicClient.redirectUris` = `http://localhost` - the WPF
+  console's interactive MSAL flow, unchanged
+- `spa.redirectUris` - the **browser** console, written in step 6 of `Deploy-Cloud.ps1` because the Static Web
+  App hostname is only known after the Bicep deployment:
+  - `https://appmon-{env}-web-{suffix}.azurestaticapps.net/authentication/login-callback`
+  - one per `-AdditionalWebOrigins`, e.g. `https://localhost:7200/authentication/login-callback` for local
+    development and `https://console.arkimentum.dk/authentication/login-callback` for a custom domain
 - Requires the `AppMonitor.Access` scope on the API
+
+The two blocks are independent: a redirect URI registered under `spa` gets the authorization-code + PKCE flow
+with CORS on the token endpoint (what a browser needs), and one registered under `publicClient` gets the
+desktop flow. The script PATCHes `spa` alone and never touches `publicClient` or `isFallbackPublicClient`, so
+running it again cannot break the desktop console. With `-SkipAppRegistrations` it prints the URIs instead, for
+someone to add under **Authentication -> Add a platform -> Single-page application**.
 
 The scope and app-role GUIDs are constants at the top of `Deploy-Cloud.ps1`. **Never change them** once a customer
 tenant has consented - a new id means a new consent.
@@ -543,7 +747,7 @@ whose `tid` is the configured `OperatorTenantId`.
 
 ---
 
-## 9. Cost estimate
+## 10. Cost estimate
 
 West Europe, pay-as-you-go list prices, EUR, per month. A "small" tenancy is ~500 devices reporting every 15
 minutes across all organizations; "medium" is ~5 000.
@@ -554,6 +758,7 @@ minutes across all organizations; "medium" is ~5 000.
 | Azure SQL serverless (GP_S_Gen5, 0.5-2 vCore, auto-pause) | 12 - 25 | 60 - 110 | vCore-seconds while awake. At 15-minute polling the database never pauses; raise `CloudSyncIntervalMinutes` to 60 and it does. Storage ~0.11/GB |
 | Blob Storage (raw report archive) | 1 - 2 | 8 - 15 | ~30 KB per report -> ~1 GB/month at 500 devices, ~10 GB at 5 000. Add a lifecycle rule to cool/archive after 30 days |
 | Application Insights + Log Analytics | 2 - 5 | 10 - 25 | ~2.30/GB ingested after the 5 GB free grant; sampling is on in `host.json` |
+| Static Web App (web admin console) | **0** | **0** | Free SKU: 100 GB bandwidth/month, free managed TLS and custom domains, no per-request charge. The console is a few MB of static files loaded once and cached |
 | **Total** | **~15 - 35** | **~95 - 180** | |
 
 Levers, in order of effect:
@@ -572,7 +777,7 @@ Storage (a few GB per release).
 
 ---
 
-## 10. Recommended contract additions
+## 11. Recommended contract additions
 
 `src/Arkimentum.AppMonitor.Core/Cloud/CloudContracts.cs` is the source of truth and was treated as read-only while
 this backend was written. Five shapes the admin console needs were missing from it; they have since been added to
@@ -627,7 +832,7 @@ Two smaller observations, no change required:
 
 ---
 
-## 11. Operations
+## 12. Operations
 
 | Task | How |
 | --- | --- |
@@ -639,6 +844,8 @@ Two smaller observations, no change required:
 | Find a device's raw reports | Blob `reports/{organizationId}/{deviceId}/{yyyy}/{MM}/*.json` |
 | Trace a failing call | The `traceId` in every `ApiError` is the Application Insights operation id |
 | Publish an agent release | `PUT /api/v1/admin/organizations/{any}/release?channel=stable` as a global admin; devices read it from `GET /api/v1/device/release` |
+| Redeploy the web console only | Push to `main` (or run `cloud-web.yml` by hand), or publish and upload it yourself with the SWA CLI - both in §8 |
+| Rotate the Static Web App deployment token | `az staticwebapp secrets reset-api-key -n <swa> -g <rg>`, then update the `AZURE_STATIC_WEB_APPS_API_TOKEN` repository secret |
 
 Backups: the database has 7 days of point-in-time restore (`sqlBackupRetentionDays`); raise it for production.
 Blob soft-delete is on for 7 days.

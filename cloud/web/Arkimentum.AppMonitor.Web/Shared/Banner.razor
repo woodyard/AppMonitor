@@ -1,0 +1,28 @@
+@* One inline message: an error (terracotta), a notice (olive) or information (sky). Dismissable when asked. *@
+
+@if (!string.IsNullOrWhiteSpace(Message))
+{
+    <div class="banner banner-@Kind" role="@(Kind == "error" ? "alert" : "status")">
+        <span class="banner-text">@Message</span>
+        @if (ChildContent is not null)
+        {
+            <span class="banner-actions">@ChildContent</span>
+        }
+        @if (OnDismiss.HasDelegate)
+        {
+            <button type="button" class="banner-dismiss" title="Dismiss" @onclick="OnDismiss">&times;</button>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>"error", "notice" or "info".</summary>
+    [Parameter] public string Kind { get; set; } = "info";
+
+    [Parameter] public string? Message { get; set; }
+
+    /// <summary>Extra buttons shown inside the banner, e.g. the two answers to a publish conflict.</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    [Parameter] public EventCallback OnDismiss { get; set; }
+}

@@ -11,75 +11,16 @@ using Microsoft.Extensions.Logging;
 
 namespace Arkimentum.AppMonitor.Admin.ViewModels;
 
-/// <summary>Which document, if any, a page edits — and therefore which footer it gets.</summary>
-public enum NavigationScope
-{
-    /// <summary>A page that edits nothing: Overview, Export &amp; import, Connect, Devices, Inventory, Enrollment.</summary>
-    None,
-
-    /// <summary>Edits this machine's configuration: the Apply / Discard footer.</summary>
-    LocalEditor,
-
-    /// <summary>Edits the organization's configuration: the Publish / Discard footer.</summary>
-    OrganizationEditor,
-}
-
-/// <summary>One entry of the left navigation rail — or, with no page, the label of a group of entries.</summary>
-public sealed class NavigationItemViewModel
-{
-    public NavigationItemViewModel(string title, string glyph, object page, NavigationScope scope, bool organization,
-        string? automationName = null)
-    {
-        Title = title;
-        Glyph = glyph;
-        Page = page;
-        Scope = scope;
-        IsOrganization = organization;
-        AutomationName = automationName ?? title;
-    }
-
-    private NavigationItemViewModel(string title)
-    {
-        Title = title;
-        AutomationName = title;
-        Glyph = string.Empty;
-        Page = new object();
-        IsHeader = true;
-    }
-
-    /// <summary>A non-selectable group label in the rail ("This machine", "Organization").</summary>
-    public static NavigationItemViewModel Header(string title) => new(title);
-
-    public string Title { get; }
-
-    /// <summary>
-    /// What a screen reader announces. The two organization editor entries are labelled "Settings" and
-    /// "Applications" in the rail — the group header above them says which — but they must still be
-    /// distinguishable from the local pages of the same name when read on their own.
-    /// </summary>
-    public string AutomationName { get; }
-
-    public string Glyph { get; }
-
-    public object Page { get; }
-
-    public NavigationScope Scope { get; }
-
-    /// <summary>True for the pages that work on the cloud rather than on this machine; drives the scope badge.</summary>
-    public bool IsOrganization { get; }
-
-    public bool IsHeader { get; }
-
-    /// <summary>True for the pages that edit the shared local configuration document and therefore share its footer.</summary>
-    public bool SharesEditor => Scope == NavigationScope.LocalEditor;
-
-    public bool SharesOrganizationEditor => Scope == NavigationScope.OrganizationEditor;
-}
-
 /// <summary>
 /// The shell: the navigation rail, the page host, the testing-mode banner, the scope badge that says which
-/// configuration the current page edits, and the two footers — Apply / Discard for this machine's document,
-/// Publish / Discard for the organization's.
+/// configuration the current page edits, and the two footers — Publish / Discard for the organization's document,
+/// Apply / Discard for the deprecated per-machine one.
+///
+/// <para>
+/// The console is the organization console. The per-machine pages only exist under <c>--local</c>, and nothing
+/// that belongs to them — not their view models, not the local configuration document, not the connection to the
+/// service — is constructed unless that switch was given: an organization-only run must leave this machine alone.
+/// </para>
 /// </summary>
 public sealed class MainViewModel : ObservableObject
 {
@@ -93,6 +34,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly RelayCommand _discardCommand;
     private readonly RelayCommand _scanCommand;
     private readonly RelayCommand _signOutCommand;
+    private readonly RelayCommand _openWebConsoleCommand;
 
     private NavigationItemViewModel _selectedItem;
     private readonly CloudConnectViewModel _connect;
@@ -104,14 +46,9 @@ public sealed class MainViewModel : ObservableObject
         ILogger<MainViewModel> log,
         Dispatcher dispatcher,
         CommandLineOptions options,
-        ConfigurationEditor editor,
         IDialogService dialogs,
         AdminIpcService ipc,
         IServiceProvider services,
-        OverviewViewModel overview,
-        SettingsPageViewModel settings,
-        ApplicationsViewModel applications,
-        ExportImportViewModel exportImport,
         CloudSession session,
         CloudConnectViewModel connect,
         OrganizationDevicesViewModel devices,
@@ -128,18 +65,12 @@ public sealed class MainViewModel : ObservableObject
         _ipc = ipc;
         _services = services;
         _session = session;
-        Editor = editor;
         Organization = organizationConfig;
         TestingMode = options.UserConfig;
+        ShowLocalPages = options.Local;
 
-        NavigationItems =
+        NavigationItemViewModel[] organizationItems =
         [
-            NavigationItemViewModel.Header(Strings.NavGroupLocal),
-            new NavigationItemViewModel(Strings.NavOverview, Strings.GlyphOverview, overview, NavigationScope.None, false),
-            new NavigationItemViewModel(Strings.NavSettings, Strings.GlyphSettings, settings, NavigationScope.LocalEditor, false),
-            new NavigationItemViewModel(Strings.NavApplications, Strings.GlyphApplications, applications, NavigationScope.LocalEditor, false),
-            new NavigationItemViewModel(Strings.NavExportImport, Strings.GlyphExportImport, exportImport, NavigationScope.None, false),
-            NavigationItemViewModel.Header(Strings.NavGroupOrganization),
             new NavigationItemViewModel(Strings.NavConnect, Strings.GlyphConnect, connect, NavigationScope.None, true),
             new NavigationItemViewModel(Strings.NavDevices, Strings.GlyphDevices, devices, NavigationScope.None, true),
             new NavigationItemViewModel(Strings.NavActivity, Strings.GlyphActivity, activity, NavigationScope.None, true),
@@ -150,24 +81,55 @@ public sealed class MainViewModel : ObservableObject
                 NavigationScope.OrganizationEditor, true, Strings.OrganizationApplicationsTitle),
             new NavigationItemViewModel(Strings.NavEnrollment, Strings.GlyphEnrollment, enrollment, NavigationScope.None, true),
         ];
+
+        // Resolved only under --local: touching the container for them is what reads HKLM and builds the local
+        // configuration document, and an organization-only console must do neither.
+        NavigationItemViewModel[]? localItems = null;
+        if (ShowLocalPages)
+        {
+            Editor = _services.GetRequiredService<ConfigurationEditor>();
+            localItems =
+            [
+                new NavigationItemViewModel(Strings.NavOverview, Strings.GlyphOverview,
+                    _services.GetRequiredService<OverviewViewModel>(), NavigationScope.None, false),
+                new NavigationItemViewModel(Strings.NavSettings, Strings.GlyphSettings,
+                    _services.GetRequiredService<SettingsPageViewModel>(), NavigationScope.LocalEditor, false, Strings.LocalSettingsAutomationName),
+                new NavigationItemViewModel(Strings.NavApplications, Strings.GlyphApplications,
+                    _services.GetRequiredService<ApplicationsViewModel>(), NavigationScope.LocalEditor, false, Strings.LocalApplicationsAutomationName),
+                new NavigationItemViewModel(Strings.NavExportImport, Strings.GlyphExportImport,
+                    _services.GetRequiredService<ExportImportViewModel>(), NavigationScope.None, false),
+            ];
+            _log.LogWarning("--local is deprecated: the per-machine pages are shown after the organization pages. " +
+                            "Manage settings centrally instead.");
+        }
+
+        NavigationItems = [.. NavigationRail.Compose(organizationItems, localItems)];
         _selectedItem = NavigationItems.First(i => !i.IsHeader);
 
-        _applyCommand = new RelayCommand(Apply, () => Editor.CanApply);
-        _discardCommand = new RelayCommand(Discard, () => Editor.IsDirty);
+        _applyCommand = new RelayCommand(Apply, () => Editor?.CanApply == true);
+        _discardCommand = new RelayCommand(Discard, () => Editor?.IsDirty == true);
         _connect = connect;
         _devicesItem = NavigationItems.First(i => ReferenceEquals(i.Page, devices));
         _connect.OrganizationChosen += () => SelectedItem = _devicesItem;
 
         _scanCommand = new RelayCommand(RequestScan, () => _ipc.IsConnected);
         _signOutCommand = new RelayCommand(SignOut, () => _session.IsSignedIn);
+        _openWebConsoleCommand = new RelayCommand(OpenWebConsole, () => HasWebAdminConsole);
         AboutCommand = new RelayCommand(ShowAbout);
 
-        Editor.Changed += OnEditorChanged;
+        if (Editor is not null) Editor.Changed += OnEditorChanged;
         _ipc.ConnectionChanged += _ => _dispatcher.BeginInvoke(() => _scanCommand.RaiseCanExecuteChanged());
         _session.Changed += OnSessionChanged;
     }
 
-    public ConfigurationEditor Editor { get; }
+    /// <summary>
+    /// The deprecated per-machine document, or null when the console runs without <c>--local</c>. The Apply /
+    /// Discard footer is hidden in that case, so the bindings against it never resolve.
+    /// </summary>
+    public ConfigurationEditor? Editor { get; }
+
+    /// <summary>True when <c>--local</c> put the deprecated "This machine" group in the rail.</summary>
+    public bool ShowLocalPages { get; }
 
     /// <summary>The organization document, its Publish / Discard footer and its version history.</summary>
     public OrganizationConfigViewModel Organization { get; }
@@ -198,7 +160,7 @@ public sealed class MainViewModel : ObservableObject
             // Group labels are in the same list as the pages; a click or an arrow key must never land on one.
             if (value.IsHeader) { Revert(); return; }
             if (!_reverting && !ConfirmLeaving(value)) { Revert(); return; }
-            if (_selectedItem.SharesEditor && !value.SharesEditor && Editor.IsDirty) Editor.Discard();
+            if (_selectedItem.SharesEditor && !value.SharesEditor && Editor?.IsDirty == true) Editor.Discard();
 
             _selectedItem = value;
             SavedNotice = null;
@@ -220,7 +182,7 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>False when the page being left has unsaved changes the administrator wants to keep.</summary>
     private bool ConfirmLeaving(NavigationItemViewModel next)
     {
-        if (_selectedItem.SharesEditor && !next.SharesEditor && Editor.IsDirty)
+        if (_selectedItem.SharesEditor && !next.SharesEditor && Editor?.IsDirty == true)
             return ConfirmDiscard(Strings.ConfirmDiscardBody);
         if (_selectedItem.SharesOrganizationEditor && !next.SharesOrganizationEditor && Organization.Editor.IsDirty)
             return Organization.ConfirmLeave();
@@ -276,6 +238,26 @@ public sealed class MainViewModel : ObservableObject
 
     public ICommand AboutCommand { get; }
 
+    // ---------------------------------------------------------------- the browser console
+
+    /// <summary>
+    /// The browser-based admin console this deployment hosts, as the server advertises it in
+    /// <c>/public/auth-config</c>. Empty until the console has connected — and for a deployment that hosts none.
+    /// </summary>
+    public string WebAdminUrl => _session.AuthConfig?.WebAdminUrl ?? string.Empty;
+
+    public bool HasWebAdminConsole => ExternalLink.IsBrowsable(WebAdminUrl);
+
+    public string OpenWebConsoleText => Strings.ButtonOpenWebConsole;
+
+    public ICommand OpenWebConsoleCommand => _openWebConsoleCommand;
+
+    private void OpenWebConsole()
+    {
+        if (!ExternalLink.TryOpen(WebAdminUrl, _log))
+            _dialogs.ShowMessage(Strings.ProductName, Strings.WebConsoleOpenFailed(WebAdminUrl), DialogTone.Warning);
+    }
+
     public string ApplyText => Strings.ButtonApply;
 
     public string DiscardText => Strings.ButtonDiscard;
@@ -299,7 +281,7 @@ public sealed class MainViewModel : ObservableObject
     {
         try
         {
-            Editor.Apply();
+            Editor!.Apply();
             SavedNotice = Strings.SavedNotice;
         }
         catch (Exception ex)
@@ -312,7 +294,7 @@ public sealed class MainViewModel : ObservableObject
     private void Discard()
     {
         if (!ConfirmDiscard(Strings.ConfirmDiscardBody)) return;
-        Editor.Discard();
+        Editor!.Discard();
         SavedNotice = null;
     }
 
@@ -339,7 +321,7 @@ public sealed class MainViewModel : ObservableObject
 
     /// <summary>Called by the window before it closes; false keeps it open.</summary>
     public bool ConfirmClose() =>
-        (!Editor.IsDirty || ConfirmDiscard(Strings.ConfirmDiscardCloseBody)) &&
+        (Editor?.IsDirty != true || ConfirmDiscard(Strings.ConfirmDiscardCloseBody)) &&
         (!Organization.Editor.IsDirty || Organization.ConfirmLeave());
 
     private bool ConfirmDiscard(string body) =>
@@ -349,7 +331,7 @@ public sealed class MainViewModel : ObservableObject
     {
         _applyCommand.RaiseCanExecuteChanged();
         _discardCommand.RaiseCanExecuteChanged();
-        if (Editor.IsDirty) SavedNotice = null;
+        if (Editor?.IsDirty == true) SavedNotice = null;
     }
 
     /// <summary>
@@ -367,7 +349,9 @@ public sealed class MainViewModel : ObservableObject
     private void OnSessionChanged()
     {
         _signOutCommand.RaiseCanExecuteChanged();
-        OnPropertyChanged(nameof(IsSignedIn), nameof(SignedInAccount), nameof(ScopeBadge));
+        _openWebConsoleCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(IsSignedIn), nameof(SignedInAccount), nameof(ScopeBadge),
+            nameof(WebAdminUrl), nameof(HasWebAdminConsole));
         // An organization page that is already open starts loading as soon as one is picked.
         Activate(_selectedItem);
     }

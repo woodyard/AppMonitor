@@ -1,0 +1,41 @@
+@* A plain centred dialog. No third-party UI library: a backdrop, a card, Escape to close. *@
+
+@if (IsOpen)
+{
+    <div class="modal-backdrop" @onclick="BackdropAsync">
+        <div class="modal-card @(Wide ? "modal-wide" : null)" role="dialog" aria-modal="true" aria-label="@Title"
+             @onclick:stopPropagation="true">
+            <header class="modal-head">
+                <h2>@Title</h2>
+                <button type="button" class="modal-close" title="Close" @onclick="CloseAsync">&times;</button>
+            </header>
+            <div class="modal-body">
+                @ChildContent
+            </div>
+            @if (Footer is not null)
+            {
+                <footer class="modal-foot">@Footer</footer>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+
+    [Parameter] public string? Title { get; set; }
+
+    /// <summary>Wide dialogs are for lists (add from catalog, history); narrow ones for a question.</summary>
+    [Parameter] public bool Wide { get; set; }
+
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    [Parameter] public RenderFragment? Footer { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>A click outside the card closes the dialog, the way every other dialog on the web does.</summary>
+    private Task BackdropAsync() => CloseAsync();
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+}

@@ -128,6 +128,17 @@
                                 Command="{Binding SignOutCommand}" />
                     </StackPanel>
 
+                    <!-- ==== the browser console, when this deployment hosts one. It manages the same organization
+                         from any device, which is where settings are meant to be managed from. -->
+                    <Button Style="{StaticResource LinkButton}"
+                            HorizontalAlignment="Left"
+                            Margin="0,0,0,12"
+                            MaxWidth="180"
+                            Content="{Binding OpenWebConsoleText}"
+                            ToolTip="{Binding WebAdminUrl}"
+                            Command="{Binding OpenWebConsoleCommand}"
+                            Visibility="{Binding HasWebAdminConsole, Converter={StaticResource BoolToVisibility}}" />
+
                     <Button HorizontalAlignment="Left"
                             Padding="12,6"
                             Command="{Binding AboutCommand}"

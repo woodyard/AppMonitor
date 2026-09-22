@@ -1,0 +1,193 @@
+@page "/inventory"
+@attribute [Authorize]
+@inherits OrganizationPage
+@inject AdminApiClient Api
+@inject ConfigWorkspace Workspace
+@inject NavigationManager Navigation
+
+@*
+    Every application the organization's devices have reported, and a way to put the interesting ones into the
+    organization configuration.
+
+    Adding follows exactly the rule the WPF console's Discover dialog follows: an application the catalog recognises
+    is added by catalog id with nothing but Enabled = 1, so the shipped identity, source and detection data apply;
+    anything else becomes a plain winget application with DisplayName, Source and WingetId. Nothing is sent to the
+    server here - the changes land in the shared pending document and are published from the Applications page.
+*@
+
+<PageTitle>Inventory · AppMonitor admin</PageTitle>
+
+<h1>Inventory</h1>
+<p class="page-subtitle">What is installed across the fleet, aggregated from the latest device reports.</p>
+
+<Banner Kind="error" Message="@Error" OnDismiss="Dismiss" />
+<Banner Kind="notice" Message="@Notice" OnDismiss="Dismiss" />
+
+@if (!HasOrganization)
+{
+    <NoOrganization />
+}
+else
+{
+    <div class="toolbar">
+        <input class="search" type="search" placeholder="Search name, winget id, publisher or catalog id"
+               value="@_search" @oninput="e => { _search = e.Value?.ToString() ?? string.Empty; }" />
+        <label class="check">
+            <input type="checkbox" checked="@_onlyUnmonitored" @onchange="ToggleUnmonitoredAsync" />
+            <span>Only unmonitored</span>
+        </label>
+        <button type="button" class="btn btn-quiet" disabled="@IsBusy" @onclick="ReloadAsync">Refresh</button>
+        <span class="spacer"></span>
+        <span class="muted">@SelectedCount selected</span>
+        <button type="button" class="btn btn-primary" disabled="@(SelectedCount == 0 || IsBusy)" @onclick="AddSelectedAsync">
+            Start monitoring
+        </button>
+    </div>
+
+    @if (IsBusy && _items.Count == 0)
+    {
+        <Spinner />
+    }
+    else if (Filtered.Count == 0)
+    {
+        <p class="muted">Nothing matches. Devices report their inventory on each sync.</p>
+    }
+    else
+    {
+        <div class="table-scroll table-tall">
+            <table class="table table-rows">
+                <thead>
+                    <tr>
+                        <th class="tick"></th>
+                        <th>Application</th>
+                        <th>winget id</th>
+                        <th class="num">Devices</th>
+                        <th class="num">Updatable</th>
+                        <th>Versions</th>
+                        <th>Last seen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in Filtered)
+                    {
+                        var selectable = CanSelect(item);
+                        <tr class="@(selectable ? null : "row-muted")">
+                            <td class="tick">
+                                <input type="checkbox" disabled="@(!selectable)" checked="@_selected.Contains(Key(item))"
+                                       @onchange="e => Toggle(item, e)" title="@(selectable ? "Select" : "Already monitored, or no usable identity")" />
+                            </td>
+                            <td>
+                                <strong>@item.DisplayName</strong>
+                                <span class="sub">
+                                    @Display.OrNone(item.Publisher) · @Display.Context(item.PredominantContext)
+                                    @if (item.MonitoredAppId is { Length: > 0 } monitored)
+                                    {
+                                        <span class="tag tag-ok">Monitored as @monitored</span>
+                                    }
+                                    else if (item.CatalogAppId is { Length: > 0 } catalogId)
+                                    {
+                                        <span class="tag tag-info">In catalog as @catalogId</span>
+                                    }
+                                </span>
+                            </td>
+                            <td class="mono">@(string.IsNullOrWhiteSpace(item.WingetId) ? "No winget package" : item.WingetId!)</td>
+                            <td class="num">@item.DeviceCount</td>
+                            <td class="num">
+                                @if (item.DevicesWithUpdateAvailable > 0)
+                                {
+                                    <span class="tag tag-warn">@item.DevicesWithUpdateAvailable</span>
+                                }
+                                else
+                                {
+                                    <text>–</text>
+                                }
+                            </td>
+                            <td class="wrap">@Versions(item)</td>
+                            <td title="@TimeFormat.Absolute(item.LastSeenUtc)">@TimeFormat.Relative(item.LastSeenUtc)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+@code {
+    private List<OrganizationInventoryItem> _items = [];
+    private readonly HashSet<string> _selected = new(StringComparer.OrdinalIgnoreCase);
+    private string _search = string.Empty;
+    private bool _onlyUnmonitored;
+
+    /// <summary>The server searches these fields too, so a filter typed here finds what its search would find.</summary>
+    private List<OrganizationInventoryItem> Filtered => _items
+        .Where(i => Matches(i, _search))
+        .ToList();
+
+    private int SelectedCount => _selected.Count;
+
+    protected override async Task LoadAsync()
+    {
+        if (OrganizationId is not { } id) return;
+        _items = await Api.GetInventoryAsync(id, null, _onlyUnmonitored);
+        _selected.RemoveWhere(key => !_items.Any(i => Key(i) == key && CanSelect(i)));
+    }
+
+    private async Task ToggleUnmonitoredAsync(ChangeEventArgs args)
+    {
+        _onlyUnmonitored = args.Value is true;
+        await ReloadAsync();
+    }
+
+    /// <summary>Only unmonitored applications with a usable identity can be ticked.</summary>
+    private static bool CanSelect(OrganizationInventoryItem item) =>
+        string.IsNullOrWhiteSpace(item.MonitoredAppId) && ConfigDocumentEditor.SuggestAppId(item) is not null;
+
+    private static string Key(OrganizationInventoryItem item) => $"{item.CatalogAppId}|{item.WingetId}|{item.DisplayName}";
+
+    private void Toggle(OrganizationInventoryItem item, ChangeEventArgs args)
+    {
+        if (!CanSelect(item)) return;
+        if (args.Value is true) _selected.Add(Key(item));
+        else _selected.Remove(Key(item));
+    }
+
+    private static bool Matches(OrganizationInventoryItem item, string filter)
+    {
+        var needle = filter.Trim();
+        if (needle.Length == 0) return true;
+        return Has(item.DisplayName) || Has(item.WingetId) || Has(item.Publisher) || Has(item.CatalogAppId);
+        bool Has(string? value) => value is not null && value.Contains(needle, StringComparison.CurrentCultureIgnoreCase);
+    }
+
+    private static string Versions(OrganizationInventoryItem item) => item.Versions.Count == 0
+        ? "Unknown"
+        : string.Join(", ", item.Versions.OrderByDescending(v => v.DeviceCount).Take(4).Select(v => $"{v.Version} ({v.DeviceCount})"));
+
+    /// <summary>
+    /// Puts the ticked applications into the shared pending document and takes the administrator to the page that
+    /// publishes it. Adding into an editor that has not loaded the server document yet would be lost the moment the
+    /// document arrived, because the load rebuilds every row - so wait for it, and refuse when it is not there.
+    /// </summary>
+    private async Task AddSelectedAsync()
+    {
+        await RunAsync(Workspace.EnsureLoadedAsync);
+        if (!Workspace.HasDocument)
+        {
+            Error = "The organization configuration could not be loaded, so nothing was added.";
+            return;
+        }
+
+        int added = 0, skipped = 0;
+        foreach (var item in _items.Where(i => _selected.Contains(Key(i))).ToList())
+        {
+            if (Workspace.Editor.AddFromInventory(item) is null) skipped++;
+            else added++;
+        }
+        _selected.Clear();
+
+        Notice = skipped == 0
+            ? $"Added {added} application(s) to the pending configuration."
+            : $"Added {added} application(s); skipped {skipped} that were already there.";
+        if (added > 0) Navigation.NavigateTo("applications");
+    }
+}

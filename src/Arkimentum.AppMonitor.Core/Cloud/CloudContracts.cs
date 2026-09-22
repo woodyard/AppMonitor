@@ -210,6 +210,8 @@ public sealed class AuthConfigResponse
     /// <summary>Scope to request, e.g. api://{api-app-id}/AppMonitor.Access.</summary>
     public required string Scope { get; set; }
     public string? ApiVersion { get; set; } = CloudRoutes.ApiVersion;
+    /// <summary>Public URL of the browser-based admin console, when the server hosts one; null otherwise.</summary>
+    public string? WebAdminUrl { get; set; }
 }
 
 public sealed class AdminMeResponse

@@ -444,10 +444,12 @@ registry instead.
 
 ### Admin console command line
 
-`Arkimentum.AppMonitor.Admin.exe` opens its window with no arguments, and otherwise runs headless:
-`--export <file>` (`.json`, `.reg` or `.ps1`, with `--policy` and `--no-replace-apps`),
-`--import <file.json> [--merge]`, and `--user-config` for unprivileged lab use. Exit code 0 on
-success, 1 on failure. Details: [AdminConsole.md](AdminConsole.md).
+`Arkimentum.AppMonitor.Admin.exe` opens its window on the organization pages with no arguments, as a
+standard user and without a UAC prompt. `--local` (deprecated) adds the per-machine "This machine"
+group after them and elevates. It otherwise runs headless, also deprecated and also elevating:
+`--export <file>` (`.json`, `.reg` or `.ps1`, with `--policy` and `--no-replace-apps`) and
+`--import <file.json> [--merge]`. `--user-config` binds everything to HKCU for unprivileged lab use.
+Exit code 0 on success, 1 on failure. Details: [AdminConsole.md](AdminConsole.md).
 
 ## Context resolution
 

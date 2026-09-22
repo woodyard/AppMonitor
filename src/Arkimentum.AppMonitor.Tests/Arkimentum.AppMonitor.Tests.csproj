@@ -15,4 +15,13 @@
     <ProjectReference Include="..\Arkimentum.AppMonitor.Core\Arkimentum.AppMonitor.Core.csproj" />
     <ProjectReference Include="..\Arkimentum.AppMonitor.Service\Arkimentum.AppMonitor.Service.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The admin console cannot be referenced as a project: it is WPF and targets a Windows SDK version this test
+         project does not. Its WPF-free pieces - the command line and the navigation rail - are compiled in here
+         instead, so the console's own logic is covered without dragging PresentationFramework into the test host.
+         Strings.cs comes along because the rail labels the groups from it. -->
+    <Compile Include="..\Arkimentum.AppMonitor.Admin\Infrastructure\CommandLineOptions.cs" Link="Admin\CommandLineOptions.cs" />
+    <Compile Include="..\Arkimentum.AppMonitor.Admin\Resources\Strings.cs" Link="Admin\Strings.cs" />
+    <Compile Include="..\Arkimentum.AppMonitor.Admin\ViewModels\NavigationRail.cs" Link="Admin\NavigationRail.cs" />
+  </ItemGroup>
 </Project>

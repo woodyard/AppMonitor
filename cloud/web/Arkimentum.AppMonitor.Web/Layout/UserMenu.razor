@@ -1,0 +1,22 @@
+@inject NavigationManager Navigation
+@inject OrganizationState Organizations
+
+@* Who is signed in, and the way out. *@
+
+<div class="user-menu">
+    <span class="user-name" title="@AuthState?.User.Identity?.Name">
+        @(Organizations.Me?.DisplayName ?? Organizations.Me?.UserPrincipalName ?? AuthState?.User.Identity?.Name)
+    </span>
+    @if (Organizations.IsGlobalAdmin)
+    {
+        <span class="tag tag-info" title="This account may manage every organization">Global admin</span>
+    }
+    <button type="button" class="btn btn-quiet" @onclick="SignOut">Sign out</button>
+</div>
+
+@code {
+    /// <summary>The authentication state of the surrounding <c>AuthorizeView</c>.</summary>
+    [Parameter] public AuthenticationState? AuthState { get; set; }
+
+    private void SignOut() => Navigation.NavigateToLogout("authentication/logout");
+}

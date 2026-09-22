@@ -21,9 +21,33 @@ public static class AdminAppInfo
     public static string LocalRoot { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Arkimentum", "AppMonitor");
 
-    /// <summary>Where this process writes its log: ProgramData normally, LocalAppData in testing mode.</summary>
-    public static string LogDirectory(bool userConfig) =>
-        userConfig ? Path.Combine(LocalRoot, "Logs") : AgentSettings.DefaultLogDirectory;
+    /// <summary>%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs — the per-user log directory.</summary>
+    public static string UserLogDirectory { get; } = Path.Combine(LocalRoot, "Logs");
+
+    /// <summary>
+    /// Where this process writes its log: the shared <c>%ProgramData%</c> directory when it can, and the
+    /// per-user one otherwise — in <c>--user-config</c> testing mode by definition, and for the organization
+    /// console, which runs unelevated and is not allowed to write under <c>%ProgramData%</c>.
+    /// </summary>
+    public static string LogDirectory(bool userConfig)
+    {
+        if (userConfig) return EnsureWritable(UserLogDirectory) ? UserLogDirectory : Path.GetTempPath();
+        if (EnsureWritable(AgentSettings.DefaultLogDirectory)) return AgentSettings.DefaultLogDirectory;
+        return EnsureWritable(UserLogDirectory) ? UserLogDirectory : Path.GetTempPath();
+    }
+
+    /// <summary>True when the directory exists (or could be created) and this process may add a file to it.</summary>
+    private static bool EnsureWritable(string path)
+    {
+        try
+        {
+            Directory.CreateDirectory(path);
+            var probe = Path.Combine(path, $".write-probe-{Environment.ProcessId}");
+            using (File.Create(probe, 1, FileOptions.DeleteOnClose)) { }
+            return true;
+        }
+        catch { return false; }
+    }
 
     public static bool IsElevated
     {

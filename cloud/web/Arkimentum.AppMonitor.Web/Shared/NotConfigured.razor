@@ -1,0 +1,32 @@
+@inject StartupState Startup
+
+@*
+    The console could not learn where its API is, or the API did not tell it how to sign in. This is rendered
+    instead of the router, because without an authentication provider nothing else can render at all.
+*@
+
+<SplashScreen Message="This console is not configured yet.">
+    <p class="splash-error">@Startup.Error</p>
+
+    <div class="splash-help">
+        <p>
+            The only local setting is <code>ApiBaseUrl</code> in <code>wwwroot/appsettings.json</code>; the cloud
+            deployment script writes it when it publishes this app. Everything else - client id, authority and
+            scope - is read from the API's own
+            <code>@CloudRoutes.AuthConfig</code> endpoint at start-up.
+        </p>
+        @if (!Startup.IsMissingUrl)
+        {
+            <p>
+                Configured server: <code>@Startup.ApiBaseUrl</code>. Check that it is reachable, that it has Entra ID
+                application registrations, and that its CORS settings allow <code>@Origin</code>.
+            </p>
+        }
+    </div>
+</SplashScreen>
+
+@code {
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+
+    private string Origin => new Uri(Navigation.BaseUri).GetLeftPart(UriPartial.Authority);
+}

@@ -125,7 +125,7 @@ public sealed class TrayIconService : IHostedService
         _checkNowItem = new MenuItem
         {
             Header = Strings.TrayMenuCheckNow,
-            Command = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.ScanInProgress),
+            Command = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.IsScanning),
         };
         menu.Items.Add(_checkNowItem);
 
@@ -171,10 +171,15 @@ public sealed class TrayIconService : IHostedService
         return menu;
     }
 
-    private void CheckNow()
+    private async void CheckNow()
     {
         _log.LogInformation("User requested a scan from the tray menu");
-        _ = _ipc.RequestScanAsync();
+        _store.MarkScanRequested();
+        if (!await _ipc.RequestScanAsync().ConfigureAwait(true))
+        {
+            _log.LogWarning("The scan request was not sent: the service pipe is not connected");
+            _store.CancelScanRequest();
+        }
     }
 
     /// <summary>
@@ -245,6 +250,8 @@ public sealed class TrayIconService : IHostedService
             ? Strings.TrayTooltipDisconnected
             : _store.CurrentInstall is { } installing
                 ? Strings.TrayTooltipInstalling(installing.DisplayName)
+                : _store.IsScanning
+                    ? Strings.TrayTooltipChecking
                 : count == 0
                     ? Strings.TrayTooltipUpToDate
                     : Strings.TrayTooltipUpdates(count);

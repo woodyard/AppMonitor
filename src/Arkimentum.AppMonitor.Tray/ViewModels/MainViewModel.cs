@@ -37,7 +37,7 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         _closeApps = closeApps;
         AgentUpdate = agentUpdate;
 
-        _checkNowCommand = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.ScanInProgress);
+        _checkNowCommand = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.IsScanning);
         _updateAllCommand = new RelayCommand(UpdateAll,
             () => _store.IsConnected && !_store.UpdateAllPending && _store.InstallableUpdates.Count > 0);
         OpenLogFolderCommand = new RelayCommand(() => _windows.OpenLogFolder());
@@ -81,14 +81,14 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
 
     public bool ShowDisconnectedBanner => !_store.IsConnected;
 
-    public bool IsScanning => _store.ScanInProgress;
+    public bool IsScanning => _store.IsScanning;
 
     public string StatusLine
     {
         get
         {
             if (!_store.IsConnected) return Strings.StatusDisconnected;
-            if (_store.ScanInProgress) return Strings.Checking;
+            if (_store.IsScanning) return Strings.Checking;
 
             var parts = new List<string>(2);
             parts.Add(_store.LastScanUtc is { } last
@@ -132,8 +132,10 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         if (inProgress.Count == 0)
         {
             _roundKeys.Clear();
-            ShowProgressBanner = false;
-            ProgressText = string.Empty;
+            // A check shows the same banner as an install, so "Check now" visibly does something for the whole
+            // minute a scan can take. Installs keep the banner when both run: they are what the user waits for.
+            ShowProgressBanner = _store.IsConnected && _store.IsScanning;
+            ProgressText = ShowProgressBanner ? Strings.ProgressChecking : string.Empty;
             return;
         }
 
@@ -239,10 +241,16 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         _ = _ipc.RequestStateAsync();
     }
 
-    private void CheckNow()
+    private async void CheckNow()
     {
         _log.LogInformation("User requested a scan");
-        _ = _ipc.RequestScanAsync();
+        // Progress shows at once; the service only reports the scan once its worker loop has picked the request up.
+        _store.MarkScanRequested();
+        if (!await _ipc.RequestScanAsync().ConfigureAwait(true))
+        {
+            _log.LogWarning("The scan request was not sent: the service pipe is not connected");
+            _store.CancelScanRequest();
+        }
     }
 
     /// <summary>

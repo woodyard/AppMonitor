@@ -37,6 +37,7 @@ public static class Strings
 
     /// <summary>Tooltip while an install is running, so the user sees progress without opening the window.</summary>
     public static string TrayTooltipInstalling(string app) => $"{ProductName} — installing {app}…";
+    public const string TrayTooltipChecking = ProductName + " — checking for updates…";
 
     // ---------------------------------------------------------------- main window
     public const string MainWindowTitle = ProductName;
@@ -52,6 +53,8 @@ public static class Strings
     public static string ProgressInstalling(string app) => $"Installing {app}…";
     /// <summary>Headline while updates are queued but none has started yet.</summary>
     public const string ProgressPreparing = "Preparing updates…";
+    /// <summary>Headline while a scan runs and nothing is installing, e.g. after "Check now".</summary>
+    public const string ProgressChecking = "Checking for updates…";
     /// <summary>Headline while the user still has to close an application before the install can start.</summary>
     public const string ProgressWaitingForClose = "Waiting for applications to close…";
 

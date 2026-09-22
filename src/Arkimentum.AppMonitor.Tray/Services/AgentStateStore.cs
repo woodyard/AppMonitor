@@ -28,6 +28,8 @@ public sealed class AgentStateStore : IHostedService
     private readonly Dictionary<string, string> _localStatus = new(StringComparer.Ordinal);
     private readonly HashSet<string> _updateAllKeys = new(StringComparer.Ordinal);
     private DispatcherTimer? _updateAllTimeout;
+    private readonly ScanActivity _scan = new();
+    private DispatcherTimer? _scanRequestTimeout;
 
     private List<PendingUpdate> _updates = [];
 
@@ -51,7 +53,41 @@ public sealed class AgentStateStore : IHostedService
 
     public DateTimeOffset? NextScanUtc { get; private set; }
 
+    /// <summary>What the service reported. The UI uses <see cref="IsScanning"/>, which also covers a request in flight.</summary>
     public bool ScanInProgress { get; private set; }
+
+    /// <summary>
+    /// True while a scan is running or has just been asked for: "Check now" shows progress at once instead of after
+    /// the service has picked the request up. See <see cref="ScanActivity"/>.
+    /// </summary>
+    public bool IsScanning => _scan.IsActive(ScanInProgress, DateTimeOffset.UtcNow);
+
+    /// <summary>Called by both "Check now" entry points just before the request is sent.</summary>
+    public void MarkScanRequested()
+    {
+        _scan.Requested(DateTimeOffset.UtcNow);
+        // One tick after the timeout, so a request the service never took up does not leave the banner showing.
+        _scanRequestTimeout ??= new DispatcherTimer(DispatcherPriority.Background, _dispatcher) { Interval = ScanActivity.RequestTimeout + TimeSpan.FromSeconds(1) };
+        _scanRequestTimeout.Tick -= OnScanRequestTimeout;
+        _scanRequestTimeout.Tick += OnScanRequestTimeout;
+        _scanRequestTimeout.Stop();
+        _scanRequestTimeout.Start();
+        Changed?.Invoke();
+    }
+
+    /// <summary>The request could not be sent after all (no pipe): stop showing it.</summary>
+    public void CancelScanRequest()
+    {
+        _scan.Reset();
+        _scanRequestTimeout?.Stop();
+        Changed?.Invoke();
+    }
+
+    private void OnScanRequestTimeout(object? sender, EventArgs e)
+    {
+        _scanRequestTimeout?.Stop();
+        Changed?.Invoke();
+    }
 
     public string? ServiceVersion { get; private set; }
 
@@ -214,6 +250,8 @@ public sealed class AgentStateStore : IHostedService
         if (!connected)
         {
             ScanInProgress = false;
+            _scan.Reset();
+            _scanRequestTimeout?.Stop();
             // Nothing will confirm the requests now; the button is disabled by IsConnected anyway.
             _updateAllKeys.Clear();
             _updateAllTimeout?.Stop();
@@ -249,6 +287,7 @@ public sealed class AgentStateStore : IHostedService
         LastScanUtc = state.LastScanUtc;
         NextScanUtc = state.NextScanUtc;
         ScanInProgress = state.ScanInProgress;
+        _scan.ServiceReported(state.ScanInProgress);
         ServiceVersion = state.ServiceVersion;
         Settings = state.Settings ?? new SettingsSummary();
         // Null from a service that predates client-initiated self-update; the UI then hides the status and buttons.

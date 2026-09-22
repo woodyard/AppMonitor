@@ -204,6 +204,10 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         _scanRequested = false;
         try
         {
+            // Tell the tray agents now, not after the configuration refresh below: that refresh alone can take up to
+            // 20 seconds, and the agents show a progress banner for as long as a scan is reported as running.
+            await BroadcastStateAsync(ct).ConfigureAwait(false);
+
             if (reason == "requested" && ConfigRefresh is { } refresh)
             {
                 try

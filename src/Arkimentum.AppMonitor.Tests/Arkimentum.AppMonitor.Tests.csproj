@@ -24,4 +24,8 @@
     <Compile Include="..\Arkimentum.AppMonitor.Admin\Resources\Strings.cs" Link="Admin\Strings.cs" />
     <Compile Include="..\Arkimentum.AppMonitor.Admin\ViewModels\NavigationRail.cs" Link="Admin\NavigationRail.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The tray agent is WPF too; its WPF-free rules are compiled in the same way. -->
+    <Compile Include="..\Arkimentum.AppMonitor.Tray\Services\ScanActivity.cs" Link="Tray\ScanActivity.cs" />
+  </ItemGroup>
 </Project>

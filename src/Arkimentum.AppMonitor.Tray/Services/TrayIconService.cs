@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -42,6 +43,7 @@ public sealed class TrayIconService : IHostedService
     private static readonly Typeface BadgeTypeface = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
 
     private TaskbarIcon? _icon;
+    private System.Drawing.Icon? _badgeIcon;
     private MenuItem? _checkNowItem;
     private MenuItem? _updateAllItem;
     private MenuItem? _agentUpdateItem;
@@ -84,6 +86,8 @@ public sealed class TrayIconService : IHostedService
         {
             _icon?.Dispose();
             _icon = null;
+            _badgeIcon?.Dispose();
+            _badgeIcon = null;
         });
         return Task.CompletedTask;
     }
@@ -214,7 +218,25 @@ public sealed class TrayIconService : IHostedService
                 IconVariant.Updates => _updates,
                 _ => _normal,
             };
-            _icon.IconSource = badge > 0 && baseIcon is not null ? WithBadge(baseIcon, badge, _iconSize) : baseIcon;
+            if (badge > 0 && baseIcon is not null)
+            {
+                // The notification-icon library only converts ImageSources that come from a URI (a pack BitmapFrame or
+                // a BitmapImage); a bitmap rendered at runtime made it throw "RenderTargetBitmap is not supported" on
+                // the dispatcher every time the count changed. The badge therefore goes in as a GDI icon, and the
+                // ImageSource is cleared first so that switching back to a plain icon is seen as a change.
+                var previous = _badgeIcon;
+                _badgeIcon = ToGdiIcon(WithBadge(baseIcon, badge, _iconSize));
+                _icon.IconSource = null;
+                _icon.Icon = _badgeIcon;
+                previous?.Dispose();
+            }
+            else
+            {
+                _icon.IconSource = baseIcon;
+                var previous = _badgeIcon;
+                _badgeIcon = null;
+                previous?.Dispose();
+            }
             _log.LogDebug("Tray icon variant is now {Variant} with badge {Badge}", variant, badge);
         }
 
@@ -259,7 +281,7 @@ public sealed class TrayIconService : IHostedService
     /// rendered at exactly the notification area's pixel size (and at 96 dpi, so one drawing unit is one device pixel)
     /// to keep the glyph as crisp as the .ico frame it started from.
     /// </summary>
-    private static ImageSource WithBadge(ImageSource baseIcon, int count, int size)
+    private static BitmapSource WithBadge(ImageSource baseIcon, int count, int size)
     {
         var text = count > 99 ? "99+" : count.ToString(CultureInfo.InvariantCulture);
         var diameter = size * 0.62;
@@ -282,6 +304,31 @@ public sealed class TrayIconService : IHostedService
         bitmap.Freeze();
         return bitmap;
     }
+
+    /// <summary>
+    /// Turns a rendered badge into a <see cref="System.Drawing.Icon"/> the notification area accepts: PNG-encoded,
+    /// decoded by GDI+, then copied into an icon the caller owns (the HICON from <c>GetHicon</c> is destroyed here).
+    /// </summary>
+    private static System.Drawing.Icon ToGdiIcon(BitmapSource bitmap)
+    {
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        stream.Position = 0;
+        using var gdi = new System.Drawing.Bitmap(stream);
+        var handle = gdi.GetHicon();
+        try
+        {
+            using var borrowed = System.Drawing.Icon.FromHandle(handle);
+            return (System.Drawing.Icon)borrowed.Clone();
+        }
+        finally { DestroyIcon(handle); }
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr handle);
 
     private static Brush Freeze(Brush brush)
     {

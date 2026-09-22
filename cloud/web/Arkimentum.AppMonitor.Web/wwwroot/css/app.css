@@ -133,6 +133,7 @@ code, .mono, pre { font-family: var(--font-mono); font-size: .86em; }
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: .35rem; height: 100vh; color: var(--ink-soft);
 }
+.boot-logo { width: 72px; height: 72px; border-radius: 16px; margin-bottom: .75rem; }
 .boot-name { font-family: var(--font-brand); font-size: 2rem; color: var(--ink); }
 .boot-product { text-transform: uppercase; letter-spacing: .18em; font-size: .7rem; }
 .boot-bar { margin-top: 1rem; width: 160px; height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
@@ -161,9 +162,13 @@ code, .mono, pre { font-family: var(--font-mono); font-size: .86em; }
 .shell-brand { display: inline-flex; color: inherit; }
 .shell-brand:hover { text-decoration: none; }
 
-.wordmark { display: inline-flex; align-items: baseline; gap: .5rem; }
+.wordmark { display: inline-flex; align-items: center; gap: .6rem; }
+.wordmark-logo { width: 30px; height: 30px; border-radius: 7px; flex: 0 0 auto; }
+.wordmark-text { display: inline-flex; align-items: baseline; gap: .5rem; }
 .wordmark-name { font-family: var(--font-brand); font-size: 1.3rem; font-weight: 600; color: var(--ink); }
 .wordmark-product { text-transform: uppercase; letter-spacing: .16em; font-size: .66rem; color: var(--ink-soft); }
+.wordmark-large { gap: .9rem; }
+.wordmark-large .wordmark-logo { width: 56px; height: 56px; border-radius: 13px; }
 .wordmark-large .wordmark-name { font-size: 2rem; }
 .wordmark-large .wordmark-product { font-size: .74rem; }
 

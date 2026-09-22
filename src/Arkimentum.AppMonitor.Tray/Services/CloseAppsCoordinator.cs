@@ -119,6 +119,10 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsActions, IC
             _dialogs.Remove(update.Key);
             viewModel.Dispose();
         };
+        // A dialog that was drawn but never rendered (blank window) is invisible in the log without this line: it
+        // says whether WPF got as far as painting the content, which separates a view-model problem from a rendering one.
+        window.ContentRendered += (_, _) => _log.LogInformation("Close-apps dialog for {App} rendered ({Width:F0}x{Height:F0})",
+            update.DisplayName, window.ActualWidth, window.ActualHeight);
         _dialogs[update.Key] = window;
         try
         {

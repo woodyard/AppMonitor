@@ -1,8 +1,12 @@
-@* The Arkimentum wordmark in Gelasio, with the product name beside it. Used by the header and the splash pages. *@
+@* The Arkimentum globe and wordmark in Gelasio, with the product name beside it. Used by the header and the splash
+   pages. logo.png is the 256 px frame of the app icon the service, the tray and the WPF console carry. *@
 
 <span class="wordmark @(Large ? "wordmark-large" : null)">
-    <span class="wordmark-name">Arkimentum</span>
-    <span class="wordmark-product">AppMonitor</span>
+    <img class="wordmark-logo" src="logo.png" alt="" width="256" height="256" />
+    <span class="wordmark-text">
+        <span class="wordmark-name">Arkimentum</span>
+        <span class="wordmark-product">AppMonitor</span>
+    </span>
 </span>
 
 @code {

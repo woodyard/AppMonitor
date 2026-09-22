@@ -63,6 +63,13 @@ public static partial class WingetOutputParser
     /// </summary>
     public const int ExitUpdateInstallTechnologyMismatch = unchecked((int)0x8A15008E);
 
+    /// <summary>
+    /// winget exit code for "multiple packages found matching input criteria" (0x8A150016,
+    /// APPINSTALLER_CLI_ERROR_MULTIPLE_INSTALL_FOUND): more than one installed package matched the query, so winget
+    /// asks for <c>--version</c> or <c>--all-versions</c> instead of picking one.
+    /// </summary>
+    public const int ExitMultiplePackagesFound = unchecked((int)0x8A150016);
+
     /// <summary>winget exit codes meaning "installed, reboot required".</summary>
     public const int ExitRebootRequiredToFinish = unchecked((int)0x8A150109);
     public const int ExitRebootRequiredForInstall = unchecked((int)0x8A15010A);

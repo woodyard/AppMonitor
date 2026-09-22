@@ -333,7 +333,9 @@ Fix: set `WingetReplaceOnMismatch = 1` (DWORD) on that application, in the regis
 application editor ("Replace mismatched installs"). The agent then does what winget's message asks:
 `winget uninstall --id <id> --exact` for the current package, followed by `winget install --id <id>
 --exact` for the new one, both silent and in the same context as the upgrade. Success is judged only
-by the version winget reports afterwards.
+by the version winget reports afterwards. If several versions of the package are registered and winget
+refuses to choose between them (`0x8A150016`, *Multiple versions of this package are installed*), the
+agent retries the uninstall once with `--all-versions` so that every registered version is removed.
 
 Caveat: it is off by default because the uninstall comes first. Between the two steps the application
 is not installed, and if the install then fails the device is left without it until the next scan

@@ -280,6 +280,15 @@ public sealed class WingetProvider : IUpdateProvider
         replaceEnabled && stillOutdated && exitCode == WingetOutputParser.ExitUpdateInstallTechnologyMismatch;
 
     /// <summary>
+    /// Whether the take-over's uninstall is retried with <c>--all-versions</c>. Pure, so the rule is testable: only
+    /// for winget's "multiple versions of this package are installed" refusal (0x8A150016), which asks for either
+    /// <c>--version</c> or <c>--all-versions</c>. Replacing whatever is on the device is the whole point of the
+    /// take-over, so removing every registered version is the intended answer, not picking one of them.
+    /// </summary>
+    internal static bool ShouldUninstallAllVersions(int exitCode) =>
+        exitCode == WingetOutputParser.ExitMultiplePackagesFound;
+
+    /// <summary>
     /// The way out when winget refuses to upgrade a per-user install it did not create. "winget upgrade" compares the
     /// manifest's installers with where and how the product is installed: a manifest that only declares a
     /// machine-scope installer (Perplexity.Comet) can never match a per-user install, and an installer type that
@@ -342,8 +351,10 @@ public sealed class WingetProvider : IUpdateProvider
     /// <c>winget install --force</c> would only add the new package next to the old one, so this does literally what
     /// winget's own message asks: uninstall the current package, then install the new one. The order is therefore
     /// fixed - uninstall first - and that is exactly the risk the setting opts into: between the two steps the
-    /// application is not installed, and if the install fails it stays that way until the next scan. Success is judged
-    /// only by the version winget reports afterwards, never by the exit code.
+    /// application is not installed, and if the install fails it stays that way until the next scan. When several
+    /// versions of the package are registered and winget refuses to choose (0x8A150016) the uninstall is run once more
+    /// with <c>--all-versions</c>, because replacing every registered version is what the take-over is for. Success is
+    /// judged only by the version winget reports afterwards, never by the exit code.
     /// </summary>
     private async Task<InstallResult> ReplaceAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, int refusalExitCode, IProgress<string>? progress, CancellationToken ct)
@@ -351,29 +362,34 @@ public sealed class WingetProvider : IUpdateProvider
         var name = string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName;
         var prefix = $"winget could not upgrade '{wingetId}' ({context.Context} scope): the installed package's technology differs from the manifest's installer.";
 
-        // ---- 1. remove the current install. No --purge (user data is not ours to delete) and no WingetExtraArgs
-        // (those are upgrade arguments); the scope is the one the upgrade used, so we only ever touch our own context.
-        var uninstallArgs = new StringBuilder()
-            .Append("uninstall --id ").Append(Quote(wingetId))
-            .Append(" --exact");
-        AppendSource(uninstallArgs, sourceName);
-        uninstallArgs.Append(" --silent --disable-interactivity")
-            .Append(ScopeArgument(context));
-        AppendExtra(uninstallArgs, _options.WingetGlobalArgs);
-
+        // ---- 1. remove the current install.
         _logger.LogInformation("{AppId}: winget refused to upgrade '{WingetId}' (install technology mismatch, 0x{Code:X8}) and WingetReplaceOnMismatch is set; removing the current install in the {Context} context.",
             app.AppId, wingetId, refusalExitCode, context.Context);
         progress?.Report($"Removing the current install of {name} via winget...");
 
-        var uninstall = await ProcessRunner.RunAsync(_logger, winget, uninstallArgs.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
+        var uninstall = await RunUninstallAsync(winget, wingetId, sourceName, context, allVersions: false, progress, ct).ConfigureAwait(false);
+        var retriedAllVersions = false;
+        if (uninstall.Started && !uninstall.TimedOut && ShouldUninstallAllVersions(uninstall.ExitCode))
+        {
+            _logger.LogInformation("{AppId}: winget found more than one installed version of '{WingetId}' (0x{Code:X8}) and will not choose; removing every registered version with --all-versions.",
+                app.AppId, wingetId, uninstall.ExitCode);
+            progress?.Report($"Removing all installed versions of {name} via winget...");
+            retriedAllVersions = true;
+            uninstall = await RunUninstallAsync(winget, wingetId, sourceName, context, allVersions: true, progress, ct).ConfigureAwait(false);
+        }
+
+        var step = retriedAllVersions ? "winget uninstall --all-versions" : "winget uninstall";
         string? uninstallFailure = null;
         if (!uninstall.Started) uninstallFailure = uninstall.StartFailure;
-        else if (uninstall.TimedOut) uninstallFailure = $"winget uninstall timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.";
-        else if (uninstall.ExitCode != 0) uninstallFailure = $"winget uninstall exited with 0x{uninstall.ExitCode:X8}. {uninstall.LastLines()}".TrimEnd();
+        else if (uninstall.TimedOut) uninstallFailure = $"{step} timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.";
+        else if (uninstall.ExitCode != 0) uninstallFailure = $"{step} exited with 0x{uninstall.ExitCode:X8}. {uninstall.LastLines()}".TrimEnd();
 
         if (uninstallFailure is not null)
         {
-            var message = $"{prefix} Removing the current install with winget failed: {uninstallFailure}";
+            var retryNote = retriedAllVersions
+                ? " More than one version of the package was registered and the retry with --all-versions failed as well:"
+                : string.Empty;
+            var message = $"{prefix} Removing the current install with winget failed:{retryNote} {uninstallFailure}";
             _logger.LogError("{AppId}: {Message}", app.AppId, message);
             return InstallResult.Fail(message, uninstall.Started && !uninstall.TimedOut ? uninstall.ExitCode : -1);
         }
@@ -426,6 +442,27 @@ public sealed class WingetProvider : IUpdateProvider
         _logger.LogInformation("{AppId}: replaced '{WingetId}' via winget uninstall + install (exit 0x{Hex}){Reboot}; installed version now {Version}.", app.AppId, wingetId,
             install.ExitCode.ToString("X8"), result.RebootRequired ? ", reboot required" : string.Empty, newVersion ?? update.AvailableVersion);
         return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
+    }
+
+    /// <summary>
+    /// One <c>winget uninstall</c> attempt for the take-over. No --purge (user data is not ours to delete) and no
+    /// WingetExtraArgs (those are upgrade arguments); the scope is the one the upgrade used, so we only ever touch our
+    /// own context. With <paramref name="allVersions"/> every registered version of the package is removed, which is
+    /// the answer to winget refusing to choose between several of them.
+    /// </summary>
+    private async Task<ProcessRunResult> RunUninstallAsync(string winget, string wingetId, string sourceName, ExecutionContextInfo context,
+        bool allVersions, IProgress<string>? progress, CancellationToken ct)
+    {
+        var args = new StringBuilder()
+            .Append("uninstall --id ").Append(Quote(wingetId))
+            .Append(" --exact");
+        AppendSource(args, sourceName);
+        args.Append(" --silent --disable-interactivity")
+            .Append(ScopeArgument(context));
+        if (allVersions) args.Append(" --all-versions");
+        AppendExtra(args, _options.WingetGlobalArgs);
+
+        return await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>Forwards condensed, de-duplicated winget output lines to the progress reporter.</summary>

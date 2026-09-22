@@ -55,6 +55,31 @@ public class WingetReplaceRuleTests
     }
 
     [Fact]
+    public void Several_registered_versions_make_the_uninstall_retry_with_all_versions()
+    {
+        // winget refuses to choose between them ("Multiple versions of this package are installed"); replacing
+        // whatever is on the device is the point of the take-over, so every registered version goes.
+        Assert.True(WingetProvider.ShouldUninstallAllVersions(WingetOutputParser.ExitMultiplePackagesFound));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(WingetOutputParser.ExitNoInstalledPackageFound)]
+    [InlineData(WingetOutputParser.ExitUpdateInstallTechnologyMismatch)]
+    [InlineData(-1)]
+    public void No_other_uninstall_outcome_is_retried_with_all_versions(int exitCode)
+    {
+        Assert.False(WingetProvider.ShouldUninstallAllVersions(exitCode));
+    }
+
+    [Fact]
+    public void The_multiple_packages_exit_code_is_winget_s()
+    {
+        // APPINSTALLER_CLI_ERROR_MULTIPLE_INSTALL_FOUND, as winget prints it.
+        Assert.Equal(unchecked((int)0x8A150016), WingetOutputParser.ExitMultiplePackagesFound);
+    }
+
+    [Fact]
     public void With_the_flag_set_the_take_over_wins_over_the_reinstall()
     {
         // Same situation, user context: the reinstall rule would also fire here ("winget install --force"), which

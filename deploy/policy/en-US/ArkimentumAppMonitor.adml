@@ -366,6 +366,7 @@ Common names:
   DisplayName=Google Chrome  name shown to the user
   Source=winget              winget (default) or web
   WingetId=Google.Chrome     required for Source=winget
+  WingetReplaceOnMismatch=0  1 uninstalls and reinstalls with winget when the installed package's technology differs from the manifest's installer (exit 0x8A15008E)
   Context=auto               auto (default), system or user
   Mandatory=1                the update is enforced
   DeadlineHours=72           hours until enforcement; 0 = no deadline

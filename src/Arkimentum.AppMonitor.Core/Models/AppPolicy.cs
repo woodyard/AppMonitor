@@ -17,6 +17,12 @@ public sealed record AppPolicy
     public string WingetSourceName { get; init; } = "winget";
     /// <summary>Extra arguments appended to winget upgrade.</summary>
     public string? WingetExtraArgs { get; init; }
+    /// <summary>
+    /// Opt-in: when winget refuses the upgrade because the installed package's technology differs from the
+    /// manifest's installer (exit 0x8A15008E), uninstall the current package with winget and install the new one.
+    /// Behaviour, so it never comes from the catalog.
+    /// </summary>
+    public bool WingetReplaceOnMismatch { get; init; }
 
     // ---- web (official site) ----
     /// <summary>URL whose response body contains the latest version (matched with <see cref="VersionRegex"/>).</summary>

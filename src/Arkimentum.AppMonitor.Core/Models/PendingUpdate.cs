@@ -70,6 +70,8 @@ public sealed class PendingUpdate
     public string? WingetIdAlternatives { get; set; }
     public string? WingetSourceName { get; set; }
     public string? WingetExtraArgs { get; set; }
+    /// <summary>Opt-in take-over (uninstall + install) when winget refuses the upgrade with a technology mismatch.</summary>
+    public bool WingetReplaceOnMismatch { get; set; }
     public string? DownloadUrl { get; set; }
     public string? InstallerArgs { get; set; }
     public InstallerType InstallerType { get; set; }

@@ -123,6 +123,7 @@ public static class SettingsSchema
         new("WingetId", SettingKind.String, AppCategorySource, "winget package id", "Exact package identifier, e.g. 7zip.7zip. Separate alternatives with ; (e.g. Mozilla.Firefox;Mozilla.Firefox.MSIX); the first one that is installed is used."),
         new("WingetSource", SettingKind.String, AppCategorySource, "winget source", "winget source name.", "winget", Advanced: true),
         new("WingetExtraArgs", SettingKind.String, AppCategorySource, "Extra winget upgrade arguments", "Appended to winget upgrade for this app.", Advanced: true),
+        new("WingetReplaceOnMismatch", SettingKind.Bool, AppCategorySource, "Replace mismatched installs", "When winget refuses an upgrade because the installed package's technology differs from the manifest's installer (exit 0x8A15008E), uninstall the current package with winget and install the new one. Off by default.", false, Advanced: true),
         new("VersionUrl", SettingKind.String, AppCategorySource, "Version URL", "Web page or API whose response contains the latest version."),
         new("VersionRegex", SettingKind.String, AppCategorySource, "Version regex", "Regular expression with one capture group (or a group named 'version')."),
         new("DownloadUrl", SettingKind.String, AppCategorySource, "Download URL", "Installer URL; supports {version}, {version_nodots}, {version_underscore}, {version_major}, {version_major_minor}."),

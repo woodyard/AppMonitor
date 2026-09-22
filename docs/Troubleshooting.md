@@ -245,6 +245,27 @@ Then confirm the download URL that the placeholders produce
 vendor moved to a different URL pattern, update `DownloadUrl`, and update `Sha256Url`/`Sha256` if you
 verify hashes.
 
+### The application vanished after switching its source to the vendor web site
+
+Switching an application from winget to `web` is not a way around a winget refusal: the web source
+needs `VersionUrl`, `VersionRegex` and `DownloadUrl` of its own (or a catalog entry that supplies
+them). Without them the configuration reader drops the application on every reload and logs
+
+```text
+[WRN] RegistryConfigurationReader: App JanDeDobbeleer.OhMyPosh uses the web source but lacks VersionUrl/DownloadUrl; skipping
+```
+
+so it is neither scanned nor listed, whatever `Enabled` says. Both admin consoles now refuse to
+publish or save such an application and name the missing fields; fill them in, or set the source back
+to winget. For a package winget refuses because the install technology changed, see
+[winget says the install technology is different](#winget-says-the-install-technology-is-different).
+
+An update that was already scheduled when the application was dropped used to stay in the tray at
+"Preparing updates…" for good: the install flow found no policy to run and left the update scheduled.
+The agent now forgets tracked updates of applications that are no longer configured, enabled or valid,
+both at the next scan and the moment such an install comes up (`... no longer configured; dropping its
+scheduled install` in the service log).
+
 ## Proxy and TLS interception
 
 Web sources use the agent's own HTTP client as LocalSystem, which does **not** pick up a user's
@@ -293,6 +314,33 @@ so it needs no elevation. Success is still judged by the version winget reports 
 never runs as SYSTEM, because a user-scope installer started there would land in SYSTEM's profile;
 a machine-wide install with the same problem keeps the original message and needs the vendor
 installer configured as a web source instead.
+
+## winget says the install technology is different
+
+Symptom: the update fails and winget's output contains
+
+> A newer version was found, but the install technology is different from the current version
+> installed. Please uninstall the package and install the newer version.
+
+(exit code `0x8A15008E`). Oh My Posh (`JanDeDobbeleer.OhMyPosh`) is the typical case: the installed
+build came from the old Inno Setup exe while the current manifest ships an MSIX package.
+
+Cause: the product on the device was installed with a different technology than the one the manifest
+now uses (exe to MSIX, MSI to exe, ...). winget will not upgrade across that line, and no argument
+changes it - `winget install --force` would only put the new package next to the old one.
+
+Fix: set `WingetReplaceOnMismatch = 1` (DWORD) on that application, in the registry or in the
+application editor ("Replace mismatched installs"). The agent then does what winget's message asks:
+`winget uninstall --id <id> --exact` for the current package, followed by `winget install --id <id>
+--exact` for the new one, both silent and in the same context as the upgrade. Success is judged only
+by the version winget reports afterwards.
+
+Caveat: it is off by default because the uninstall comes first. Between the two steps the application
+is not installed, and if the install then fails the device is left without it until the next scan
+repairs it; the error says so explicitly (*The previous install was removed; installing ... failed
+... The application may now be missing on this device.*). The uninstall never passes `--purge`, so
+winget leaves the user's data alone, but a product that keeps its settings inside its install
+directory can still lose them.
 
 ## SYSTEM is refused its own files, or machine-wide installs ask for UAC
 

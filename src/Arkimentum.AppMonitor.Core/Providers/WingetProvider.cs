@@ -216,6 +216,11 @@ public sealed class WingetProvider : IUpdateProvider
         var stillOutdated = newVersion is not null && !VersionComparer.IsUnknown(newVersion) && !string.IsNullOrWhiteSpace(update.AvailableVersion)
                             && VersionComparer.Compare(newVersion, update.AvailableVersion) < 0;
 
+        // The take-over is checked first: when it is enabled it is the configured answer to a technology mismatch,
+        // and "winget install --force" (ReinstallAsync) would leave the old install behind.
+        if (ShouldReplace(run.ExitCode, update.WingetReplaceOnMismatch || app.WingetReplaceOnMismatch, stillOutdated || newVersion is null))
+            return await ReplaceAsync(app, update, context, winget, wingetId, sourceName, run.ExitCode, progress, ct).ConfigureAwait(false);
+
         if (ShouldReinstall(run.ExitCode, context, stillOutdated || newVersion is null))
         {
             var refusal = run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade
@@ -263,6 +268,16 @@ public sealed class WingetProvider : IUpdateProvider
     internal static bool ShouldReinstall(int exitCode, ExecutionContextInfo context, bool stillOutdated) =>
         !context.IsSystem && stillOutdated &&
         exitCode is WingetOutputParser.ExitNoApplicableUpgrade or WingetOutputParser.ExitUpdateInstallTechnologyMismatch;
+
+    /// <summary>
+    /// Whether a refused upgrade is answered with the configured take-over (see <see cref="ReplaceAsync"/>). Pure, so
+    /// the rule is testable: only for the technology-mismatch refusal, only when the application opted in with
+    /// <c>WingetReplaceOnMismatch</c>, and only while the product is in fact still outdated. Unlike
+    /// <see cref="ShouldReinstall"/> this is allowed in both contexts: a product migrated from one installer
+    /// technology to another (MSI to exe, exe to MSIX) is just as common machine-wide as per user.
+    /// </summary>
+    internal static bool ShouldReplace(int exitCode, bool replaceEnabled, bool stillOutdated) =>
+        replaceEnabled && stillOutdated && exitCode == WingetOutputParser.ExitUpdateInstallTechnologyMismatch;
 
     /// <summary>
     /// The way out when winget refuses to upgrade a per-user install it did not create. "winget upgrade" compares the
@@ -317,6 +332,99 @@ public sealed class WingetProvider : IUpdateProvider
 
         _logger.LogInformation("{AppId}: 'winget install --force' finished (exit 0x{Hex}){Reboot}; installed version now {Version}.", app.AppId, run.ExitCode.ToString("X8"),
             result.RebootRequired ? ", reboot required" : string.Empty, newVersion ?? update.AvailableVersion);
+        return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
+    }
+
+    /// <summary>
+    /// The opt-in take-over for winget's "the install technology is different" refusal (0x8A15008E): the product was
+    /// installed with a technology the current manifest no longer uses (Oh My Posh, installed with the old Inno exe
+    /// while the manifest now ships an MSIX). No argument makes <c>winget upgrade</c> cross that line and
+    /// <c>winget install --force</c> would only add the new package next to the old one, so this does literally what
+    /// winget's own message asks: uninstall the current package, then install the new one. The order is therefore
+    /// fixed - uninstall first - and that is exactly the risk the setting opts into: between the two steps the
+    /// application is not installed, and if the install fails it stays that way until the next scan. Success is judged
+    /// only by the version winget reports afterwards, never by the exit code.
+    /// </summary>
+    private async Task<InstallResult> ReplaceAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
+        string wingetId, string sourceName, int refusalExitCode, IProgress<string>? progress, CancellationToken ct)
+    {
+        var name = string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName;
+        var prefix = $"winget could not upgrade '{wingetId}' ({context.Context} scope): the installed package's technology differs from the manifest's installer.";
+
+        // ---- 1. remove the current install. No --purge (user data is not ours to delete) and no WingetExtraArgs
+        // (those are upgrade arguments); the scope is the one the upgrade used, so we only ever touch our own context.
+        var uninstallArgs = new StringBuilder()
+            .Append("uninstall --id ").Append(Quote(wingetId))
+            .Append(" --exact");
+        AppendSource(uninstallArgs, sourceName);
+        uninstallArgs.Append(" --silent --disable-interactivity")
+            .Append(ScopeArgument(context));
+        AppendExtra(uninstallArgs, _options.WingetGlobalArgs);
+
+        _logger.LogInformation("{AppId}: winget refused to upgrade '{WingetId}' (install technology mismatch, 0x{Code:X8}) and WingetReplaceOnMismatch is set; removing the current install in the {Context} context.",
+            app.AppId, wingetId, refusalExitCode, context.Context);
+        progress?.Report($"Removing the current install of {name} via winget...");
+
+        var uninstall = await ProcessRunner.RunAsync(_logger, winget, uninstallArgs.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
+        string? uninstallFailure = null;
+        if (!uninstall.Started) uninstallFailure = uninstall.StartFailure;
+        else if (uninstall.TimedOut) uninstallFailure = $"winget uninstall timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.";
+        else if (uninstall.ExitCode != 0) uninstallFailure = $"winget uninstall exited with 0x{uninstall.ExitCode:X8}. {uninstall.LastLines()}".TrimEnd();
+
+        if (uninstallFailure is not null)
+        {
+            var message = $"{prefix} Removing the current install with winget failed: {uninstallFailure}";
+            _logger.LogError("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, uninstall.Started && !uninstall.TimedOut ? uninstall.ExitCode : -1);
+        }
+
+        // ---- 2. install the new package. No scope argument in the user context: a "--scope user" filter would exclude
+        // an MSIX installer, which has no scope at all (the same reason ReinstallAsync omits it).
+        var installArgs = new StringBuilder()
+            .Append("install --id ").Append(Quote(wingetId))
+            .Append(" --exact");
+        AppendSource(installArgs, sourceName);
+        installArgs.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity");
+        if (context.IsSystem) installArgs.Append(ScopeArgument(context));
+        AppendExtra(installArgs, update.WingetExtraArgs ?? app.WingetExtraArgs);
+        AppendExtra(installArgs, _options.WingetGlobalArgs);
+
+        _logger.LogInformation("{AppId}: the previous install of '{WingetId}' was removed; installing {Version} with winget in the {Context} context.",
+            app.AppId, wingetId, update.AvailableVersion, context.Context);
+        progress?.Report($"Installing {name} {update.AvailableVersion} via winget...");
+
+        var install = await ProcessRunner.RunAsync(_logger, winget, installArgs.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
+        if (!install.Started)
+        {
+            var message = $"{prefix} The previous install was removed; installing {update.AvailableVersion} with winget failed: {install.StartFailure}. The application may now be missing on this device.";
+            _logger.LogError("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, -1);
+        }
+        if (install.TimedOut)
+        {
+            var message = $"{prefix} The previous install was removed; installing {update.AvailableVersion} with winget failed: winget install timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated. The application may now be missing on this device.";
+            _logger.LogError("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, -1);
+        }
+
+        var result = InterpretWingetExitCode(install.ExitCode, install);
+        var newVersion = await ReadVersionAfterAsync(app, context, winget, wingetId, sourceName, ct).ConfigureAwait(false);
+        var stillOutdated = IsStillOutdated(newVersion, update.AvailableVersion);
+
+        // Stricter than the other paths: the old install is gone, so "winget says success but no version can be read"
+        // is not good enough to record a success - the next scan settles what is really on the device.
+        if (!result.Success || newVersion is null || (stillOutdated && !result.RebootRequired))
+        {
+            var detail = !result.Success ? result.Message
+                : newVersion is null ? $"winget reported success (exit 0x{install.ExitCode:X8}) but the installed version could not be verified"
+                : $"winget reported success (exit 0x{install.ExitCode:X8}) but the installed version is still {newVersion}, expected {update.AvailableVersion}";
+            var message = $"{prefix} The previous install was removed; installing {update.AvailableVersion} with winget failed: {detail}. The application may now be missing on this device.";
+            _logger.LogError("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, install.ExitCode);
+        }
+
+        _logger.LogInformation("{AppId}: replaced '{WingetId}' via winget uninstall + install (exit 0x{Hex}){Reboot}; installed version now {Version}.", app.AppId, wingetId,
+            install.ExitCode.ToString("X8"), result.RebootRequired ? ", reboot required" : string.Empty, newVersion ?? update.AvailableVersion);
         return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
     }
 

@@ -17,7 +17,7 @@ public sealed class AppEditorViewModel : ObservableObject
 {
     /// <summary>winget-only fields; hidden when the effective source is the vendor web site.</summary>
     private static readonly HashSet<string> WingetFields =
-        new(StringComparer.OrdinalIgnoreCase) { "WingetId", "WingetSource", "WingetExtraArgs" };
+        new(StringComparer.OrdinalIgnoreCase) { "WingetId", "WingetSource", "WingetExtraArgs", "WingetReplaceOnMismatch" };
 
     /// <summary>Web-only fields; hidden when the effective source is winget.</summary>
     private static readonly HashSet<string> WebFields = new(StringComparer.OrdinalIgnoreCase)
@@ -177,7 +177,34 @@ public sealed class AppEditorViewModel : ObservableObject
         return values;
     }
 
-    public IEnumerable<string> Problems => Rows.Where(r => r.HasError).Select(r => r.Error!);
+    /// <summary>
+    /// Row-level problems plus the one rule that spans rows: a vendor web site source needs its URLs. The agent's
+    /// configuration reader drops a "web" application that has no version URL or download URL, and the version regex
+    /// is what turns the version page into a version, so saving without them silently stops the monitoring.
+    /// </summary>
+    public IEnumerable<string> Problems
+    {
+        get
+        {
+            foreach (var row in Rows.Where(r => r.HasError)) yield return row.Error!;
+            if (!IsEditable) yield break;
+            if (SourceText.Equals("web", StringComparison.OrdinalIgnoreCase) && MissingWebFields().ToList() is { Count: > 0 } missing)
+                yield return $"the vendor web site source needs {Join(missing)}; fill them in or set the update source back to winget. The agent ignores the application until then.";
+        }
+    }
+
+    /// <summary>Titles of the required web-source fields that neither this configuration nor the catalog supplies.</summary>
+    private IEnumerable<string> MissingWebFields() =>
+        RequiredWebFields.Select(Row).Where(row => string.IsNullOrWhiteSpace(EffectiveText(row.Name, CatalogText(row.Name)))).Select(row => row.Title);
+
+    private static readonly string[] RequiredWebFields = ["VersionUrl", "VersionRegex", "DownloadUrl"];
+
+    private static string Join(IReadOnlyList<string> titles) => titles.Count switch
+    {
+        1 => $"a {titles[0]}",
+        2 => $"a {titles[0]} and a {titles[1]}",
+        _ => $"a {string.Join(", a ", titles.Take(titles.Count - 1))} and a {titles[^1]}",
+    };
 
     public void SetCatalogEntry(AppPolicy? entry)
     {

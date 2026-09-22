@@ -168,6 +168,28 @@ public static class PolicyEngine
         return new MergeSummary(added, updated, resolved, removed, newUpdates);
     }
 
+    /// <summary>
+    /// Drops the tracked updates of applications that are no longer among the enabled ones: removed from the
+    /// configuration, disabled, or rejected by the configuration reader (a "web" application without its URLs).
+    /// <see cref="Merge"/> cannot do this: such an application is never checked, so it is neither reported nor among
+    /// the checked keys, and its update would survive every scan. One that was already scheduled then sits at
+    /// "Preparing updates" for good, because the install flow finds no policy and has nothing to run. An install in
+    /// flight is left alone. Returns how many entries were dropped.
+    /// </summary>
+    public static int PruneUnconfigured(IDictionary<string, PendingUpdate> state, IEnumerable<AppPolicy> enabledApps)
+    {
+        var configured = enabledApps.Select(a => a.AppId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var removed = 0;
+        foreach (var key in state.Keys.ToList())
+        {
+            var u = state[key];
+            if (u.State == UpdateState.Installing || configured.Contains(u.AppId)) continue;
+            state.Remove(key);
+            removed++;
+        }
+        return removed;
+    }
+
     private static PendingUpdate CreatePending(ScanOutcome o, DateTimeOffset now)
     {
         var p = new PendingUpdate
@@ -203,6 +225,7 @@ public static class PolicyEngine
         p.WingetIdAlternatives = policy.WingetId;
         p.WingetSourceName = policy.WingetSourceName;
         p.WingetExtraArgs = policy.WingetExtraArgs;
+        p.WingetReplaceOnMismatch = policy.WingetReplaceOnMismatch;
         p.DownloadUrl = r.DownloadUrl;
         p.InstallerArgs = r.InstallerArgs;
         p.InstallerType = r.InstallerType;

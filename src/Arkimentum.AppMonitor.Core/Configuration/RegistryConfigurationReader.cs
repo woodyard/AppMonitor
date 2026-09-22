@@ -243,6 +243,8 @@ public sealed class RegistryConfigurationReader
             WingetId = r.OptString("WingetId") ?? baseline.WingetId,
             WingetSourceName = r.String("WingetSource", baseline.WingetSourceName),
             WingetExtraArgs = r.OptString("WingetExtraArgs") ?? baseline.WingetExtraArgs,
+            // Behaviour, not catalog data: the take-over uninstalls the product, so it is opt-in per application.
+            WingetReplaceOnMismatch = r.Bool("WingetReplaceOnMismatch", false),
             VersionUrl = r.OptString("VersionUrl") ?? baseline.VersionUrl,
             VersionRegex = r.OptString("VersionRegex") ?? baseline.VersionRegex,
             DownloadUrl = r.OptString("DownloadUrl") ?? baseline.DownloadUrl,

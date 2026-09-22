@@ -340,10 +340,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             try
             {
                 summary = PolicyEngine.Merge(_state.Updates, outcomes, checkedKeys, now);
+                var pruned = PolicyEngine.PruneUnconfigured(_state.Updates, apps);
+                if (pruned > 0)
+                    _logger.LogInformation("Dropped {Count} tracked update(s) of applications that are no longer configured, enabled or valid", pruned);
                 RecordPresence(apps, outcomes, now);
                 _state.LastScanUtc = now;
                 _state.NextScanUtc = now + settings.ScanInterval;
-                _state.LastScanSummary = $"{summary.Added} new, {summary.Updated} updated, {summary.Resolved} resolved, {summary.Removed} removed";
+                _state.LastScanSummary = $"{summary.Added} new, {summary.Updated} updated, {summary.Resolved} resolved, {summary.Removed + pruned} removed";
                 _store.Save(settings, _state);
             }
             finally { _policyLock.Release(); }
@@ -700,7 +703,14 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             var u = Get(key);
             if (u is null || u.State is UpdateState.Installing or UpdateState.Installed) return;
             var policy = settings.Apps.FirstOrDefault(a => a.AppId.Equals(u.AppId, StringComparison.OrdinalIgnoreCase));
-            if (policy is null) { _logger.LogWarning("{App}: no longer configured; skipping install", u.DisplayName); return; }
+            if (policy is null)
+            {
+                // Removed, disabled or rejected by the configuration reader since the update was scheduled. Leaving
+                // it scheduled would keep the tray at "Preparing updates" forever; the next scan would prune it too.
+                _logger.LogWarning("{App}: no longer configured; dropping its scheduled install", u.DisplayName);
+                await RemoveAsync(key, ct).ConfigureAwait(false);
+                return;
+            }
 
             await MutateAsync(key, PolicyEngine.MarkInstalling, ct).ConfigureAwait(false);
             u = Get(key)!;
@@ -1071,6 +1081,18 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         try
         {
             if (_state.Updates.TryGetValue(key, out var u)) { mutate(u); _store.Save(_settings.Current, _state); }
+        }
+        finally { _policyLock.Release(); }
+        await BroadcastStateAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Forgets a tracked update (its card disappears from the tray with the broadcast).</summary>
+    private async Task RemoveAsync(string key, CancellationToken ct)
+    {
+        await _policyLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_state.Updates.Remove(key)) _store.Save(_settings.Current, _state);
         }
         finally { _policyLock.Release(); }
         await BroadcastStateAsync(ct).ConfigureAwait(false);

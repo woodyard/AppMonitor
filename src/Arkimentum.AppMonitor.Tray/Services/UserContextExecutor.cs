@@ -353,6 +353,7 @@ public sealed class UserContextExecutor : IHostedService
         WingetId = update.WingetId,
         WingetSourceName = string.IsNullOrWhiteSpace(update.WingetSourceName) ? "winget" : update.WingetSourceName!,
         WingetExtraArgs = update.WingetExtraArgs,
+        WingetReplaceOnMismatch = update.WingetReplaceOnMismatch,
         DownloadUrl = update.DownloadUrl,
         InstallerArgs = update.InstallerArgs,
         InstallerType = update.InstallerType,

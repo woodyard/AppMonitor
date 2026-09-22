@@ -217,6 +217,7 @@ own id and the application is configured entirely from the registry.
 | `WingetId` | SZ | catalog value | winget package id. **Required** for `Source=winget`; the application is skipped with a warning without it. Alternatives may be listed separated by `;` (or `|` inside an `AppList` value), e.g. `Mozilla.Firefox;Mozilla.Firefox.MSIX` for products that exist both as a classic installer and as a Store/MSIX package; the first id that is installed is used. |
 | `WingetSource` | SZ | `winget` | winget source name, e.g. `msstore` or a private REST source. |
 | `WingetExtraArgs` | SZ | catalog value | Extra arguments for this application only, e.g. `--scope user`. |
+| `WingetReplaceOnMismatch` | DWORD | 0 | 1 lets the agent take the application over when `winget upgrade` refuses with *"the install technology is different from the current version installed"* (exit `0x8A15008E`): it runs `winget uninstall` for the package and then `winget install` for the new version. Off by default, because the application is briefly absent between the two steps. Behaviour, so it is never supplied by the catalog. See [Troubleshooting](Troubleshooting.md). |
 
 ### Web source
 
@@ -304,8 +305,9 @@ process names - so the registry only has to say *which* applications to manage a
   `InstallerType`, `InstallerArgs`, `Sha256`, `Sha256Url`, `UserDownloadUrl`, `UserInstallerArgs`,
   the three `Detect*` values, `ProcessNames` and `MinimumVersion`.
 - It never supplies **behaviour**: `Mandatory`, `DeadlineHours`, `MaxDeferrals`, `DeferralOptions`,
-  `AutoInstall`, `CloseGracePeriodMinutes` and `ForceCloseAtDeadline` always come from the
-  application's own registry values, and otherwise from the global `Default...` values. How strict
+  `AutoInstall`, `CloseGracePeriodMinutes`, `ForceCloseAtDeadline` and `WingetReplaceOnMismatch` always come from the
+  application's own registry values, and otherwise from the global `Default...` values
+  (`WingetReplaceOnMismatch` has no global counterpart and is simply off unless the application sets it). How strict
   you are with your users is your policy decision, not the catalog author's.
 - `UseCatalog=0` switches the layer off entirely. Applications that then lack a `WingetId`, or a
   `VersionUrl`/`DownloadUrl`, are skipped with a warning in the log.

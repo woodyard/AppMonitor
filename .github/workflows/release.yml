@@ -18,6 +18,13 @@ on:
 permissions:
   contents: write
 
+# One release at a time: two runs for the same tag (a tag deleted and pushed again while the first run was still
+# going) once uploaded the zip from one build and the manifest from the other, and the agents refused the package
+# because the hashes did not match.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build and publish

@@ -88,7 +88,9 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         get
         {
             if (!_store.IsConnected) return Strings.StatusDisconnected;
-            if (_store.IsScanning) return Strings.Checking;
+            // The banner already says "Checking for updates…"; repeating it here is noise. Only when an install owns
+            // the banner does the header carry the check, so it stays visible somewhere.
+            if (_store.IsScanning && !_bannerShowsCheck) return Strings.Checking;
 
             var parts = new List<string>(2);
             parts.Add(_store.LastScanUtc is { } last
@@ -104,6 +106,9 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     /// <summary>Keys that took part in the current round of installs; the round ends when nothing is in progress.</summary>
     private readonly HashSet<string> _roundKeys = new(StringComparer.Ordinal);
 
+    /// <summary>True while the progress banner is showing a check rather than an install; the header then stays quiet.</summary>
+    private bool _bannerShowsCheck;
+
     /// <summary>True while the service is queueing, waiting for a close or installing something.</summary>
     public bool ShowProgressBanner { get; private set; }
 
@@ -116,6 +121,8 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     /// </summary>
     private void RefreshProgress()
     {
+        _bannerShowsCheck = false;
+
         // The agent replacing itself owns the banner: the service stops and starts this tray, so nothing else can
         // be running at the same time (a request is refused while an application install is in flight).
         if (AgentUpdate.InProgress && AgentUpdate.IsEnabled)
@@ -136,6 +143,7 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
             // minute a scan can take. Installs keep the banner when both run: they are what the user waits for.
             ShowProgressBanner = _store.IsConnected && _store.IsScanning;
             ProgressText = ShowProgressBanner ? Strings.ProgressChecking : string.Empty;
+            _bannerShowsCheck = ShowProgressBanner;
             return;
         }
 

@@ -128,7 +128,11 @@ public static class PolicyEngine
                 // install did not take, so the update is simply still pending.
                 var installKnownIncomplete = !VersionComparer.IsUnknown(existing.InstalledVersion) && !string.IsNullOrWhiteSpace(existing.AvailableVersion)
                                              && VersionComparer.Compare(existing.InstalledVersion, existing.AvailableVersion) < 0;
-                if (installedRecently && sameTarget && !installKnownIncomplete) { existing.LastSeenUtc = now; continue; }
+                // Nor does it apply when the install read the new version back from the very source the scan uses and
+                // no reboot is pending: a lower version now is a real change on the device (someone reinstalled an
+                // older build), so it is a fresh update, not a failure of ours.
+                var realChange = existing.InstallVerified && !existing.RebootPending;
+                if (installedRecently && sameTarget && !installKnownIncomplete && !realChange) { existing.LastSeenUtc = now; continue; }
                 // install did not stick, or a newer version appeared: start a new cycle but remember failures
                 existing.State = UpdateState.Available;
                 existing.InstalledAtUtc = null;
@@ -140,7 +144,9 @@ public static class PolicyEngine
                 existing.LastNotifiedUtc = null;
                 existing.Announced = false;
                 existing.Dismissed = false;
-                if (sameTarget) existing.FailureCount++;
+                if (sameTarget && !realChange) existing.FailureCount++;
+                existing.InstallVerified = false;
+                existing.RebootPending = false;
             }
 
             var versionChanged = !string.Equals(existing.AvailableVersion, r.AvailableVersion, StringComparison.OrdinalIgnoreCase);
@@ -397,6 +403,11 @@ public static class PolicyEngine
         u.BlockingDetails = [];
         if (!string.IsNullOrWhiteSpace(result.InstalledVersion)) u.InstalledVersion = result.InstalledVersion;
         else if (u.AvailableVersion is not null) u.InstalledVersion = u.AvailableVersion;
+        // Verified = the provider read the target version back after installing; an assumed version is not a verification.
+        u.InstallVerified = !string.IsNullOrWhiteSpace(result.InstalledVersion) && !VersionComparer.IsUnknown(result.InstalledVersion)
+                            && !string.IsNullOrWhiteSpace(u.AvailableVersion)
+                            && VersionComparer.Compare(result.InstalledVersion, u.AvailableVersion) >= 0;
+        u.RebootPending = result.RebootRequired;
     }
 
     public static void MarkFailed(PendingUpdate u, string error, DateTimeOffset now)

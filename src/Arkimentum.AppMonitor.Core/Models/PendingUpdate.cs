@@ -33,6 +33,16 @@ public sealed class PendingUpdate
     public DateTimeOffset? ForceCloseRequestedUtc { get; set; }
     public DateTimeOffset? InstalledAtUtc { get; set; }
 
+    /// <summary>
+    /// The install read the new version back from the same source the scan uses (winget listing, Uninstall key or
+    /// version file). A later scan that shows a lower version is then a real change on the device, not a stale reading,
+    /// and the post-install grace period does not apply.
+    /// </summary>
+    public bool InstallVerified { get; set; }
+
+    /// <summary>The installer asked for a reboot; the version on disk may lag until then.</summary>
+    public bool RebootPending { get; set; }
+
     public bool Mandatory { get; set; }
     public int DeferralCount { get; set; }
     public int MaxDeferrals { get; set; }

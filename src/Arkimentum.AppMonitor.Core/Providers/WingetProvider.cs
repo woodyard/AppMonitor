@@ -1,8 +1,12 @@
+using System.Security.Principal;
 using System.Text;
 using Arkimentum.AppMonitor.Install;
+using Arkimentum.AppMonitor.Inventory;
 using Arkimentum.AppMonitor.Models;
 using Arkimentum.AppMonitor.Versioning;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Win32;
 
 namespace Arkimentum.AppMonitor.Providers;
 
@@ -372,7 +376,10 @@ public sealed class WingetProvider : IUpdateProvider
     /// with <c>--all-versions</c>, because replacing every registered version is what the take-over is for. Whether the
     /// removal worked is judged by what winget lists afterwards rather than by its exit code, because winget reports the
     /// whole multi-uninstall as failed (0x8A150066) when one registration resists even though the rest are gone. Success
-    /// is judged only by the version winget reports afterwards, never by the exit code.
+    /// is judged only by the version winget reports afterwards, never by the exit code. When the listing still shows the
+    /// old version the resisting registration is looked at: a Windows Installer entry whose product Windows Installer
+    /// does not have any more can only be cleared by deleting the Uninstall key, which the agent then does itself (see
+    /// <see cref="RemoveStaleMsiRegistrations"/>) before it asks winget once more.
     /// </summary>
     private async Task<InstallResult> ReplaceAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, int refusalExitCode, IProgress<string>? progress, CancellationToken ct)
@@ -427,7 +434,43 @@ public sealed class WingetProvider : IUpdateProvider
             }
             else
             {
-                uninstallFailure = $"{uninstallFailure} Afterwards {listing}.";
+                var stillListed = $"{uninstallFailure} Afterwards {listing}";
+                uninstallFailure = $"{stillListed}.";
+
+                // winget still lists a version. The usual reason winget can do nothing about is a stale Windows
+                // Installer registration: the ARP key is there, but Windows Installer no longer has the product, so
+                // its MsiExec.exe /I{GUID} uninstall string answers 1605 for ever. Clear such a leftover ourselves and
+                // ask winget again.
+                if (versionAfter is not null)
+                {
+                    var cleanup = RemoveStaleMsiRegistrations(app, context, after?.Row?.Name);
+                    if (cleanup.Removed > 0)
+                    {
+                        var cleaned = await ReadInstalledAfterAsync(app, context, winget, wingetId, sourceName, ct).ConfigureAwait(false);
+                        var cleanedVersion = string.IsNullOrWhiteSpace(cleaned?.Row?.Version) ? null : cleaned!.Row!.Version;
+                        var cleanedNotInstalled = cleaned?.NotInstalled == true;
+                        if (RemovalSucceeded(uninstall.ExitCode, cleanedNotInstalled, cleanedVersion, update.InstalledVersion))
+                        {
+                            _logger.LogWarning("{AppId}: {Step} for '{WingetId}' left version {Version} listed, but {Count} stale Windows Installer registration(s) removed; continuing with the install.",
+                                app.AppId, step, wingetId, versionAfter, cleanup.Removed);
+                            uninstallFailure = null;
+                        }
+                        else
+                        {
+                            var afterCleanup = cleaned is null ? "the installed state could not be re-read"
+                                : cleanedVersion is not null ? $"winget still lists version {cleanedVersion}"
+                                : "winget's listing was inconclusive";
+                            uninstallFailure = $"{stillListed}; {cleanup.Removed} stale Windows Installer registration(s) were removed, but {afterCleanup}.";
+                        }
+                    }
+                    else
+                    {
+                        uninstallFailure = $"{stillListed}, and no stale Windows Installer registration found for it.";
+                    }
+
+                    if (uninstallFailure is not null && cleanup.Error is not null)
+                        uninstallFailure = $"{uninstallFailure} {cleanup.Error}";
+                }
             }
         }
 
@@ -510,6 +553,110 @@ public sealed class WingetProvider : IUpdateProvider
         AppendExtra(args, _options.WingetGlobalArgs);
 
         return await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Outcome of the stale-registration cleanup: how many keys were deleted, and why one could not be.</summary>
+    private sealed record StaleCleanup(int Removed, string? Error);
+
+    /// <summary>
+    /// Deletes Uninstall entries that are stale Windows Installer registrations of this package, so that winget's
+    /// listing can catch up. Strictly bounded: only the Uninstall branch of the scope the take-over runs in (HKLM for
+    /// the service, the calling user's own hive for the tray), only entries whose display name is the one winget lists
+    /// for the id (or matches the policy's display-name regex), only entries with an MSI product code, and only when
+    /// <c>MsiQueryProductState</c> says that product is not installed. Everything deleted is logged at Warning.
+    /// </summary>
+    private StaleCleanup RemoveStaleMsiRegistrations(AppPolicy app, ExecutionContextInfo context, string? wingetName)
+    {
+        string? sid = null;
+        if (!context.IsSystem)
+        {
+            sid = context.UserSid ?? CurrentUserSid();
+            if (string.IsNullOrWhiteSpace(sid))
+                return new StaleCleanup(0, "The current user's SID could not be determined, so per-user Uninstall entries were not inspected.");
+        }
+
+        IReadOnlyList<InstalledApp> inventory;
+        try
+        {
+            var scanner = new InstalledAppScanner(NullLogger<InstalledAppScanner>.Instance);
+            inventory = scanner.Scan(includeMachine: context.IsSystem, includeUsers: !context.IsSystem, onlyUserSid: sid);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{AppId}: the Uninstall registry could not be read while looking for stale Windows Installer registrations.", app.AppId);
+            return new StaleCleanup(0, $"The Uninstall registry could not be read: {ex.Message}");
+        }
+
+        var stale = inventory
+            .Where(e => e.Context == context.Context
+                && (context.IsSystem || string.Equals(e.UserSid, sid, StringComparison.OrdinalIgnoreCase))
+                && WindowsInstallerState.IsStaleMsiRegistration(e, wingetName, app, WindowsInstallerState.QueryProductState))
+            .ToList();
+        if (stale.Count == 0) return new StaleCleanup(0, null);
+
+        var removed = 0;
+        string? error = null;
+        foreach (var entry in stale)
+        {
+            WindowsInstallerState.TryGetProductCode(entry, out var productCode);
+            var state = WindowsInstallerState.QueryProductState(productCode);
+            try
+            {
+                DeleteUninstallKey(entry.RegistryKeyPath);
+                removed++;
+                _logger.LogWarning("{AppId}: deleted the stale Windows Installer registration {Key} ('{Name}' {Version}, product code {ProductCode}, MsiQueryProductState = {State}); Windows Installer does not have that product, so winget could never remove the entry.",
+                    app.AppId, entry.RegistryKeyPath, entry.DisplayName, entry.DisplayVersion ?? "no version", productCode, state);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "{AppId}: the stale Windows Installer registration {Key} could not be deleted.", app.AppId, entry.RegistryKeyPath);
+                var note = $"The stale Windows Installer registration {entry.RegistryKeyPath} could not be deleted: {ex.Message}";
+                error = error is null ? note : $"{error} {note}";
+            }
+        }
+        return new StaleCleanup(removed, error);
+    }
+
+    /// <summary>The SID of the process's own user, or null when it cannot be read.</summary>
+    private static string? CurrentUserSid()
+    {
+        try { return WindowsIdentity.GetCurrent().User?.Value; }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Deletes one Uninstall key (the whole subkey tree) addressed by the scanner's <c>RegistryKeyPath</c>. Refuses
+    /// anything that is not an Uninstall key under a hive the scanner reads, so a malformed path can never take out
+    /// something else.
+    /// </summary>
+    private static void DeleteUninstallKey(string registryKeyPath)
+    {
+        if (string.IsNullOrWhiteSpace(registryKeyPath))
+            throw new InvalidOperationException("the registration has no registry path");
+
+        var firstSeparator = registryKeyPath.IndexOf('\\');
+        if (firstSeparator <= 0) throw new InvalidOperationException($"'{registryKeyPath}' is not a registry path");
+        var rootName = registryKeyPath[..firstSeparator];
+        var path = registryKeyPath[(firstSeparator + 1)..];
+
+        if (!path.Contains(@"\CurrentVersion\Uninstall\", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"'{registryKeyPath}' is not an Uninstall key");
+
+        var root = rootName.ToUpperInvariant() switch
+        {
+            "HKEY_LOCAL_MACHINE" => Registry.LocalMachine,
+            "HKEY_USERS" => Registry.Users,
+            "HKEY_CURRENT_USER" => Registry.CurrentUser,
+            _ => null,
+        };
+        if (root is null) throw new InvalidOperationException($"'{rootName}' is not a hive this agent writes to");
+
+        var lastSeparator = path.LastIndexOf('\\');
+        var parentPath = path[..lastSeparator];
+        var leaf = path[(lastSeparator + 1)..];
+        using var parent = root.OpenSubKey(parentPath, writable: true)
+            ?? throw new InvalidOperationException($"'{rootName}\\{parentPath}' could not be opened for writing");
+        parent.DeleteSubKeyTree(leaf, throwOnMissingSubKey: false);
     }
 
     /// <summary>Forwards condensed, de-duplicated winget output lines to the progress reporter.</summary>

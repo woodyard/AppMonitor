@@ -341,6 +341,18 @@ even one registration resists, the agent judges the removal by what winget lists
 package gone, or a different version than the one being replaced - and goes on to the install with a
 warning in the log rather than stopping on the exit code.
 
+If winget still lists the old version after that, the agent looks for the usual reason it cannot be
+removed: a stale Windows Installer registration, an Uninstall key whose product Windows Installer no
+longer has, so its `MsiExec.exe /I{GUID}` uninstall string answers 1605 (*unknown product*) for ever
+and winget reports `0x8A150066`. Only an entry in the scope the take-over runs in (HKLM for the
+service, the user's own hive for the tray) whose display name is the one winget lists for the id (or
+matches `DetectDisplayNameRegex`), that carries an MSI product code, and whose product
+`MsiQueryProductState` reports as *not installed*, qualifies; the agent then deletes that Uninstall key
+and asks winget again, and continues with the install when the package is gone from the listing. Every
+deleted key is logged at Warning with its path, display name, version, product code and the Windows
+Installer state that justified it; when nothing qualifies, the failure says *no stale Windows Installer
+registration found for it*.
+
 Caveat: it is off by default because the uninstall comes first. Between the two steps the application
 is not installed, and if the install then fails the device is left without it until the next scan
 repairs it; the error says so explicitly (*The previous install was removed; installing ... failed

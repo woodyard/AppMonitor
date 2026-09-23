@@ -307,13 +307,18 @@ per-user install (Comet); an exe wrapper in the manifest never matches an ARP en
 per-user MSI (Bing Wallpaper). Those filters are built from the installed package's metadata and no
 `winget upgrade` argument relaxes them.
 
-What the agent does since 1.1.13: in the user's session it retries as `winget install --force`
-without a scope argument. `--force` makes winget skip the installed-package lookup, so no such filter
-is built, and the manifest's installer runs in the user's session just like the original setup did,
-so it needs no elevation. Success is still judged by the version winget reports afterwards. The retry
-never runs as SYSTEM, because a user-scope installer started there would land in SYSTEM's profile;
-a machine-wide install with the same problem keeps the original message and needs the vendor
-installer configured as a web source instead.
+What the agent does: it first tries the plain upgrade with every winget id configured for the
+application (`Mozilla.Firefox;Mozilla.Firefox.MSIX`). Only when all of them refused does it, in the
+user's session, retry as `winget install --force`. `--force` makes winget skip the installed-package
+lookup, so no such filter is built. The retry is always filtered to installers that need no
+administrator rights: `--scope user` first and, when winget has no per-user installer
+(`0x8A150010`, *No applicable installer found*), `--installer-type msix`. When neither exists the
+update fails with *'X' has no per-user or MSIX installer in winget, only a machine-wide one* and
+nothing is started (see [An install asked for administrator rights](#an-install-asked-for-administrator-rights)).
+Success is still judged by the version winget reports afterwards. The retry never runs as SYSTEM,
+because a user-scope installer started there would land in SYSTEM's profile; a machine-wide install
+with the same problem keeps the original message and needs the vendor installer configured as a web
+source instead.
 
 ## winget says the install technology is different
 
@@ -359,6 +364,46 @@ repairs it; the error says so explicitly (*The previous install was removed; ins
 ... The application may now be missing on this device.*). The uninstall never passes `--purge`, so
 winget leaves the user's data alone, but a product that keeps its settings inside its install
 directory can still lose them.
+
+## An install asked for administrator rights
+
+The guarantee: nothing the tray agent starts in a user's session asks for administrator rights.
+Machine-wide installs are the service's job (LocalSystem, session 0, never a prompt).
+
+- **The id winget itself names.** `winget list` shows an installed product under every manifest
+  that matches it, but `winget upgrade` (the listing, fetched once per scan and scope) names the
+  id that can actually upgrade it. When one of the configured ids is in that listing, the scan uses
+  that id and its versions. When none is, the scan keeps the `winget list` match, so products that
+  `winget upgrade` refuses (Perplexity Comet, Bing Wallpaper) are still found.
+- **Every configured winget id before any fallback.** As a backstop, an application with several ids
+  (`Mozilla.Firefox;Mozilla.Firefox.MSIX`) gets the plain `winget upgrade --scope user` for each id in
+  turn. The fallbacks (`winget install --force`, the `WingetReplaceOnMismatch` take-over) only run
+  once every id refused with *no applicable upgrade* (`0x8A15002B`) or *install technology is
+  different* (`0x8A15008E`).
+- **Never a machine-wide installer per user.** The fallbacks' `winget install` runs with
+  `--scope user`, then with `--installer-type msix` (MSIX installs are per user and never elevate),
+  never without a filter. When winget has neither (`0x8A150010`), the update fails without running
+  anything. The take-over checks this with `winget show` before it uninstalls, so it never removes
+  an application it could not put back.
+- **RunAsInvoker for everything the tray starts.** winget, and the installers it or a web source
+  starts, run with `__COMPAT_LAYER=RunAsInvoker`: Windows does not raise a UAC prompt for an
+  installer whose manifest asks for administrator rights; it runs with the user's rights and succeeds
+  per user or fails. This does not stop a program that explicitly asks for elevation, which is why
+  the filter above comes first.
+
+What the user sees instead of a prompt: a failed update with the reason, for example *'Mozilla.Firefox'
+has no per-user or MSIX installer in winget, only a machine-wide one; the agent does not start
+installers that need administrator rights in a user's session.*
+
+Example: a device with both Firefox builds - the MSIX package (listed by winget under both
+`Mozilla.Firefox` and `Mozilla.Firefox.MSIX`) and the classic build in `C:\Program Files\Mozilla
+Firefox`. The scan matched the MSIX build under `Mozilla.Firefox`; `winget upgrade --id
+Mozilla.Firefox --scope user` refused (`0x8A15002B`), and older agents then ran an unscoped
+`winget install --force --id Mozilla.Firefox`, whose only installer is the machine-wide nullsoft
+setup: a UAC prompt. `winget upgrade --scope user` lists exactly one Firefox row, under
+`Mozilla.Firefox.MSIX`, so the scan now picks that id and its MSIX installer upgrades the build
+silently; if the listing is unavailable, the install still tries `Mozilla.Firefox.MSIX` before any
+fallback.
 
 ## SYSTEM is refused its own files, or machine-wide installs ask for UAC
 

@@ -58,6 +58,17 @@ public static partial class WingetOutputParser
     public const int ExitNoApplicableUpgrade = unchecked((int)0x8A15002B);
 
     /// <summary>
+    /// winget exit code for "no applicable installer found" (0x8A150010, APPINSTALLER_CLI_ERROR_NO_APPLICABLE_INSTALLER):
+    /// the manifest has no installer that matches the filters given (for example <c>--scope user</c> for a package that
+    /// only ships a machine-wide installer, or <c>--installer-type msix</c> for one without an MSIX build). winget ran
+    /// nothing. The agent relies on this to never start a machine-wide installer in a user's session.
+    /// </summary>
+    public const int ExitNoApplicableInstaller = unchecked((int)0x8A150010);
+
+    /// <summary>What <c>winget show</c> / <c>winget install</c> print when no installer matches the filters.</summary>
+    public const string NoApplicableInstallerMarker = "No applicable installer found";
+
+    /// <summary>
     /// winget exit code for "the installed package type does not match the installer type" (0x8A15008E): the product was
     /// installed with one technology (a per-user MSI, say) and the manifest only offers another (an exe wrapper).
     /// </summary>

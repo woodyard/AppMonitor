@@ -72,6 +72,36 @@ public class WingetOutputParserTests
         Assert.Equal("winget", rows[3].Source);
     }
 
+    /// <summary>
+    /// Real output of <c>winget upgrade --scope user --accept-source-agreements --disable-interactivity</c> (winget 1.30,
+    /// 2026-09-23, a device with the Firefox MSIX and classic builds), followed by the trailing notes and the second
+    /// "explicit targeting" table winget prints for pinned packages (those lines are synthetic, in winget's format).
+    /// </summary>
+    private const string UserScopeUpgradeSample =
+        "Name            Id                   Version   Available Source\r\n" +
+        "---------------------------------------------------------------\r\n" +
+        "Mozilla Firefox Mozilla.Firefox.MSIX 156.0.0.0 156.0.1   winget\r\n" +
+        "1 upgrades available.\r\n" +
+        "\r\n" +
+        "1 package(s) have version numbers that cannot be determined. Use --include-unknown to see all results.\r\n" +
+        "The following packages have an upgrade available, but require explicit targeting for upgrade:\r\n" +
+        "Name          Id            Version Available Source\r\n" +
+        "----------------------------------------------------\r\n" +
+        "Pinned Thing  Contoso.Pinned 1.0    2.0       winget\r\n";
+
+    [Fact]
+    public void UpgradeListingStopsAtTheFooterAndIgnoresTheExplicitTargetingTable()
+    {
+        var rows = WingetOutputParser.ParseListOutput(UserScopeUpgradeSample);
+
+        var row = Assert.Single(rows);
+        Assert.Equal("Mozilla Firefox", row.Name);
+        Assert.Equal("Mozilla.Firefox.MSIX", row.Id);
+        Assert.Equal("156.0.0.0", row.Version);
+        Assert.Equal("156.0.1", row.Available);
+        Assert.Equal("winget", row.Source);
+    }
+
     [Fact]
     public void FooterCountLineIsNotParsedAsARow()
     {

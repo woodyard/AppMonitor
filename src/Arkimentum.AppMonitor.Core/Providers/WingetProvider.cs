@@ -95,6 +95,21 @@ public sealed class WingetProvider : IUpdateProvider
         if (candidates.Count > 1) _logger.LogDebug("{AppId}: matched winget id '{WingetId}' (of {Count} alternatives).", app.AppId, matchedId, candidates.Count);
 
         var row = lookup.Row!;
+
+        // "winget list" correlates an installed product with every manifest that matches it (the Firefox MSIX build is
+        // listed under both Mozilla.Firefox and Mozilla.Firefox.MSIX), while "winget upgrade" applies the applicability
+        // filters and names the id that can actually upgrade it. So when a configured id is in the upgrade listing,
+        // that id - and its row - wins. When none is, the list-based result stands: products winget upgrade refuses
+        // (Perplexity.Comet, Microsoft.BingWallpaper) are still detected and go to the scoped install fallback.
+        var upgradeRows = await GetUpgradeListingAsync(winget, app.WingetSourceName, context, ct).ConfigureAwait(false);
+        var upgradeRow = PickFromUpgradeListing(upgradeRows, candidates);
+        if (upgradeRow is not null)
+        {
+            if (!string.Equals(upgradeRow.Id, matchedId, StringComparison.OrdinalIgnoreCase))
+                _logger.LogDebug("{AppId}: winget's upgrade listing names '{UpgradeId}' (list matched '{ListId}').", app.AppId, upgradeRow.Id, matchedId);
+            matchedId = candidates.First(c => string.Equals(c, upgradeRow.Id, StringComparison.OrdinalIgnoreCase));
+            row = upgradeRow;
+        }
         var installedVersion = string.IsNullOrWhiteSpace(row.Version) ? null : row.Version;
         var available = string.IsNullOrWhiteSpace(row.Available) ? null : row.Available;
 
@@ -142,10 +157,12 @@ public sealed class WingetProvider : IUpdateProvider
         if (!_options.WingetEnabled)
             return InstallResult.Fail("winget disabled by configuration");
 
-        // Candidate ids: the one found at scan time first, then the other configured alternatives. winget correlates an
-        // installed product with every manifest that matches it (e.g. a Store build shows up under both Mozilla.Firefox
-        // and Mozilla.Firefox.MSIX), but only the manifest with a matching installer type can actually upgrade it, so
-        // "No applicable upgrade found" for one id means: try the next.
+        // Candidate ids: the one found at scan time first, then the other configured alternatives. The scan already takes
+        // the id from winget's upgrade listing when a configured id appears there (see CheckAsync): "winget list"
+        // correlates an installed product with every manifest that matches it (the Firefox MSIX build shows up under
+        // both Mozilla.Firefox and Mozilla.Firefox.MSIX), while "winget upgrade" names the one that can upgrade it. The
+        // ordered retry below is the backstop for when that listing was unavailable or named none of them: a refusal
+        // for one id means try the next, and the fallbacks only run once every id refused.
         var candidates = SplitIds(update.WingetId).Concat(SplitIds(update.WingetIdAlternatives)).Concat(SplitIds(app.WingetId))
             .Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (candidates.Count == 0)
@@ -156,18 +173,92 @@ public sealed class WingetProvider : IUpdateProvider
             return InstallResult.Fail("winget.exe was not found on this machine.");
 
         var sourceName = FirstNonEmpty(update.WingetSourceName, app.WingetSourceName, "winget");
-        InstallResult? last = null;
-        foreach (var wingetId in candidates)
-        {
-            last = await UpgradeOneAsync(app, update, context, winget, wingetId, sourceName, progress, ct).ConfigureAwait(false);
-            if (last.Success || last.ExitCode != WingetOutputParser.ExitNoApplicableUpgrade) return last;
-            if (candidates.Count > 1 && wingetId != candidates[^1])
-                _logger.LogInformation("{AppId}: no applicable upgrade for '{WingetId}'; trying the next configured id.", app.AppId, wingetId);
-        }
-        return last!;
+        var fallbackRan = false;
+        var result = await RunCandidatesAsync(
+            candidates,
+            async wingetId =>
+            {
+                var outcome = await UpgradeOneAsync(app, update, context, winget, wingetId, sourceName, progress, ct).ConfigureAwait(false);
+                if (outcome.Refusal is not null && !string.Equals(wingetId, candidates[^1], StringComparison.OrdinalIgnoreCase))
+                    _logger.LogInformation("{AppId}: winget refused to upgrade '{WingetId}' (0x{Code:X8}); trying the next configured id before any fallback.",
+                        app.AppId, wingetId, outcome.Refusal.ExitCode);
+                return outcome;
+            },
+            async refusal =>
+            {
+                // The take-over is checked first: when it is enabled it is the configured answer to a technology
+                // mismatch, and "winget install --force" (ReinstallAsync) would leave the old install behind.
+                if (ShouldReplace(refusal.ExitCode, update.WingetReplaceOnMismatch || app.WingetReplaceOnMismatch, stillOutdated: true))
+                {
+                    fallbackRan = true;
+                    return await ReplaceAsync(app, update, context, winget, refusal.WingetId, sourceName, refusal.ExitCode, progress, ct).ConfigureAwait(false);
+                }
+                if (ShouldReinstall(refusal.ExitCode, context, stillOutdated: true))
+                {
+                    fallbackRan = true;
+                    var reason = refusal.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade
+                        ? "no applicable upgrade found (the manifest's installer does not match how the product is installed, typically its scope)"
+                        : "the installed package type does not match the installer type";
+                    return await ReinstallAsync(app, update, context, winget, refusal.WingetId, sourceName, reason, refusal.ExitCode, progress, ct).ConfigureAwait(false);
+                }
+                return null;
+            }).ConfigureAwait(false);
+
+        if (!result.Success && !fallbackRan)
+            _logger.LogWarning("{AppId}: {Message}", app.AppId, result.Message);
+        return result;
     }
 
-    private async Task<InstallResult> UpgradeOneAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
+    /// <summary>
+    /// A plain <c>winget upgrade</c> that winget refused (see <see cref="IsRefusal"/>) while the product is still
+    /// outdated or its version could not be read. Carries what the fallbacks need, so the upgrade is not run again.
+    /// </summary>
+    /// <param name="WingetId">The id the upgrade was run for.</param>
+    /// <param name="ExitCode">winget's refusal exit code.</param>
+    /// <param name="VersionAfter">The version winget listed after the refusal, or null when it could not be read.</param>
+    /// <param name="PlainResult">The failure reported when no fallback applies.</param>
+    internal sealed record UpgradeRefusal(string WingetId, int ExitCode, string? VersionAfter, InstallResult PlainResult);
+
+    /// <summary>Either a final result for one id, or the refusal that sends the install on to the next id.</summary>
+    internal sealed record UpgradeOutcome(InstallResult? Result, UpgradeRefusal? Refusal)
+    {
+        public static UpgradeOutcome Final(InstallResult result) => new(result, null);
+        public static UpgradeOutcome Refused(UpgradeRefusal refusal) => new(null, refusal);
+    }
+
+    /// <summary>
+    /// The order in which an install works through the configured ids. Pure apart from the two delegates, so the order
+    /// is testable. First the plain upgrade for every candidate, in order: the first answer that is not a refusal
+    /// (success, "already up to date", or a real failure) is final. Only when every candidate refused are the fallbacks
+    /// (take-over, "install --force") applied to the refusals in candidate order; <paramref name="fallback"/> returns
+    /// null when none applies to a refusal. The first fallback that succeeds, or that fails for a reason other than
+    /// "no applicable installer" (i.e. it ran something), is final. The Firefox case this exists for: the MSIX build is
+    /// listed under both Mozilla.Firefox and Mozilla.Firefox.MSIX; the first id refuses and its fallback would run the
+    /// machine-wide nullsoft installer, while the second id upgrades the MSIX silently.
+    /// </summary>
+    internal static async Task<InstallResult> RunCandidatesAsync(IReadOnlyList<string> candidates,
+        Func<string, Task<UpgradeOutcome>> upgrade, Func<UpgradeRefusal, Task<InstallResult?>> fallback)
+    {
+        var refusals = new List<UpgradeRefusal>();
+        foreach (var id in candidates)
+        {
+            var outcome = await upgrade(id).ConfigureAwait(false);
+            if (outcome.Refusal is null) return outcome.Result!;
+            refusals.Add(outcome.Refusal);
+        }
+
+        InstallResult? firstNoInstaller = null;
+        foreach (var refusal in refusals)
+        {
+            var result = await fallback(refusal).ConfigureAwait(false);
+            if (result is null) continue;
+            if (result.Success || result.ExitCode != WingetOutputParser.ExitNoApplicableInstaller) return result;
+            firstNoInstaller ??= result;
+        }
+        return firstNoInstaller ?? refusals[^1].PlainResult;
+    }
+
+    private async Task<UpgradeOutcome> UpgradeOneAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, IProgress<string>? progress, CancellationToken ct)
     {
         var args = new StringBuilder()
@@ -195,11 +286,12 @@ public sealed class WingetProvider : IUpdateProvider
                 lastProgressLine = condensed;
                 progress?.Report(condensed);
             },
+            environment: ProcessRunner.ChildEnvironment(context),
             ct: ct).ConfigureAwait(false);
 
-        if (!run.Started) return InstallResult.Fail(run.StartFailure!);
+        if (!run.Started) return UpgradeOutcome.Final(InstallResult.Fail(run.StartFailure!));
         if (run.TimedOut)
-            return InstallResult.Fail($"winget upgrade timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1);
+            return UpgradeOutcome.Final(InstallResult.Fail($"winget upgrade timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1));
 
         var result = InterpretWingetExitCode(run.ExitCode, run);
 
@@ -220,49 +312,91 @@ public sealed class WingetProvider : IUpdateProvider
         var stillOutdated = newVersion is not null && !VersionComparer.IsUnknown(newVersion) && !string.IsNullOrWhiteSpace(update.AvailableVersion)
                             && VersionComparer.Compare(newVersion, update.AvailableVersion) < 0;
 
-        // The take-over is checked first: when it is enabled it is the configured answer to a technology mismatch,
-        // and "winget install --force" (ReinstallAsync) would leave the old install behind.
-        if (ShouldReplace(run.ExitCode, update.WingetReplaceOnMismatch || app.WingetReplaceOnMismatch, stillOutdated || newVersion is null))
-            return await ReplaceAsync(app, update, context, winget, wingetId, sourceName, run.ExitCode, progress, ct).ConfigureAwait(false);
-
-        if (ShouldReinstall(run.ExitCode, context, stillOutdated || newVersion is null))
+        // A refusal while the product is still outdated (or its version is unknown) is not final: the caller tries the
+        // other configured ids first and only then the fallbacks (take-over, "install --force"), see RunCandidatesAsync.
+        if (IsRefusal(run.ExitCode) && (stillOutdated || newVersion is null))
         {
-            var refusal = run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade
-                ? "no applicable upgrade found (the manifest's installer does not match how the product is installed, typically its scope)"
-                : "the installed package type does not match the installer type";
-            return await ReinstallAsync(app, update, context, winget, wingetId, sourceName, refusal, run.ExitCode, progress, ct).ConfigureAwait(false);
+            InstallResult plain;
+            if (run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade)
+            {
+                var message = $"winget found no applicable upgrade for '{wingetId}' ({context.Context} scope); installed version is still {newVersion ?? update.InstalledVersion ?? "unknown"}, expected {update.AvailableVersion}. " +
+                              "The installed build (e.g. Store/MSIX) may not match this package id, or the package is managed elsewhere.";
+                plain = InstallResult.Fail(message, run.ExitCode);
+            }
+            else
+            {
+                plain = result;
+            }
+            _logger.LogInformation("{AppId}: winget refused to upgrade '{WingetId}' (0x{Code:X8}); installed version {Version}.",
+                app.AppId, wingetId, run.ExitCode, newVersion ?? "could not be read");
+            return UpgradeOutcome.Refused(new UpgradeRefusal(wingetId, run.ExitCode, newVersion, plain));
         }
 
         if (run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade)
         {
-            if (stillOutdated || newVersion is null)
-            {
-                var message = $"winget found no applicable upgrade for '{wingetId}' ({context.Context} scope); installed version is still {newVersion ?? update.InstalledVersion ?? "unknown"}, expected {update.AvailableVersion}. " +
-                              "The installed build (e.g. Store/MSIX) may not match this package id, or the package is managed elsewhere.";
-                _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
-                return InstallResult.Fail(message, run.ExitCode);
-            }
             _logger.LogInformation("{AppId}: already up to date ({Version}).", app.AppId, newVersion);
-            return InstallResult.Ok("already up to date", run.ExitCode) with { InstalledVersion = newVersion };
+            return UpgradeOutcome.Final(InstallResult.Ok("already up to date", run.ExitCode) with { InstalledVersion = newVersion });
         }
 
         if (!result.Success)
         {
             _logger.LogError("{AppId}: winget upgrade failed - {Message}", app.AppId, result.Message);
-            return result;
+            return UpgradeOutcome.Final(result);
         }
 
         if (stillOutdated && !result.RebootRequired)
         {
             var message = $"winget reported success (exit 0x{run.ExitCode:X8}) but '{wingetId}' is still at {newVersion}, expected {update.AvailableVersion}.";
             _logger.LogError("{AppId}: {Message}", app.AppId, message);
-            return InstallResult.Fail(message, run.ExitCode);
+            return UpgradeOutcome.Final(InstallResult.Fail(message, run.ExitCode));
         }
 
         _logger.LogInformation("{AppId}: winget upgrade finished (exit 0x{Hex}){Reboot}; installed version now {Version}.", app.AppId, run.ExitCode.ToString("X8"),
             result.RebootRequired ? ", reboot required" : string.Empty, newVersion ?? update.AvailableVersion);
-        return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
+        return UpgradeOutcome.Final(result with { InstalledVersion = newVersion ?? update.AvailableVersion });
     }
+
+    /// <summary>
+    /// Whether a plain <c>winget upgrade</c> exit code is a refusal that sends the install on to the next configured id
+    /// (and, once every id refused, to the fallbacks). Pure, so the rule is testable: "no applicable upgrade"
+    /// (0x8A15002B) and "the install technology is different" (0x8A15008E). Anything else - success, a real failure,
+    /// "no applicable installer" - is not a refusal of this kind.
+    /// </summary>
+    internal static bool IsRefusal(int exitCode) =>
+        exitCode is WingetOutputParser.ExitNoApplicableUpgrade or WingetOutputParser.ExitUpdateInstallTechnologyMismatch;
+
+    /// <summary>
+    /// How many <c>winget install</c> attempts the user context makes (see <see cref="UserContextInstallFilter"/>).
+    /// </summary>
+    internal const int UserContextInstallAttempts = 2;
+
+    /// <summary>
+    /// The installer filter for the <paramref name="attempt"/>-th <c>winget install</c> in a user's session. Pure, so
+    /// the rule is testable. Never empty: without a filter winget takes whatever installer the manifest offers, and a
+    /// machine-wide installer then asks for elevation in the user's session (the Firefox incident). First
+    /// <c>--scope user</c>; when winget answers "no applicable installer" (0x8A150010), <c>--installer-type msix</c>
+    /// with no scope, because an MSIX installer declares no scope, is always per user and never elevates. When that is
+    /// refused as well the agent gives up without running anything.
+    /// </summary>
+    internal static string UserContextInstallFilter(int attempt) => attempt switch
+    {
+        0 => " --scope user",
+        1 => " --installer-type msix",
+        _ => throw new ArgumentOutOfRangeException(nameof(attempt), attempt, "The user context makes two install attempts."),
+    };
+
+    /// <summary>
+    /// Whether winget said that no installer matches the filters (exit 0x8A150010, or its "No applicable installer
+    /// found" message). Pure, so the rule is testable. The message counts on its own: <c>winget show</c> (1.30) prints
+    /// it under "Installer:" and still exits 0.
+    /// </summary>
+    internal static bool IsNoApplicableInstaller(int exitCode, string? output) =>
+        exitCode == WingetOutputParser.ExitNoApplicableInstaller
+        || (output?.Contains(WingetOutputParser.NoApplicableInstallerMarker, StringComparison.OrdinalIgnoreCase) ?? false);
+
+    /// <summary>The failure reported when a package only ships a machine-wide installer and the agent runs as the user.</summary>
+    internal static string MachineOnlyMessage(string wingetId) =>
+        $"'{wingetId}' has no per-user or MSIX installer in winget, only a machine-wide one; the agent does not start installers that need administrator rights in a user's session.";
 
     /// <summary>
     /// Whether a refused upgrade is retried as "winget install --force" (see <see cref="ReinstallAsync"/>). Pure, so
@@ -314,37 +448,40 @@ public sealed class WingetProvider : IUpdateProvider
     /// machine-scope installer (Perplexity.Comet) can never match a per-user install, and an installer type that
     /// differs from the technology the ARP entry was created with (Microsoft.BingWallpaper: per-user MSI, exe wrapper
     /// in the manifest) cannot either. Those filters are built from the installed package's metadata and no argument
-    /// relaxes them. "winget install --force" skips the installed-package lookup altogether, so no such filter exists;
-    /// without a --scope argument the manifest's installer is taken as is, and it runs in this user's session exactly
-    /// as the original per-user setup did, which is also why it needs no elevation. Success is still judged by the
-    /// version winget reports afterwards, never by the exit code. User context only: as LocalSystem a user-scope
-    /// installer would land in SYSTEM's own profile.
+    /// relaxes them. "winget install --force" skips the installed-package lookup altogether, so no such filter exists.
+    /// It must never run unfiltered in a user's session, though: without a --scope argument winget takes the
+    /// manifest's installer as is, and when that is a machine-wide installer it requests elevation and Windows shows a
+    /// UAC prompt in the user's session (Mozilla.Firefox, whose manifest only has a machine-scope nullsoft installer).
+    /// So the install runs with <c>--scope user</c> first and <c>--installer-type msix</c> second (see
+    /// <see cref="UserContextInstallFilter"/>); when neither matches an installer the attempt fails without running
+    /// anything. Success is still judged by the version winget reports afterwards, never by the exit code. User
+    /// context only (<see cref="ShouldReinstall"/>): as LocalSystem a user-scope installer would land in SYSTEM's own
+    /// profile.
     /// </summary>
     private async Task<InstallResult> ReinstallAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, string refusal, int refusalExitCode, IProgress<string>? progress, CancellationToken ct)
     {
-        var args = new StringBuilder()
-            .Append("install --id ").Append(Quote(wingetId))
-            .Append(" --exact --force");
-        AppendSource(args, sourceName);
-        args.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity");
-        AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
-        AppendExtra(args, _options.WingetGlobalArgs);
-
         var name = string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName;
         _logger.LogInformation("{AppId}: winget refused to upgrade '{WingetId}' ({Refusal}, 0x{Code:X8}); installing {Version} over it with 'winget install --force' in the {Context} context.",
             app.AppId, wingetId, refusal, refusalExitCode, update.AvailableVersion, context.Context);
         progress?.Report($"Installing {name} {update.AvailableVersion} over the current version via winget...");
 
-        var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
+        var prefix = $"winget could not upgrade '{wingetId}' ({context.Context} scope): {refusal}.";
+        var step = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: true, systemScope: false, progress, ct).ConfigureAwait(false);
+        var run = step.Run;
         if (!run.Started) return InstallResult.Fail(run.StartFailure!);
         if (run.TimedOut)
             return InstallResult.Fail($"winget install timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1);
+        if (step.NoPerUserInstaller)
+        {
+            var message = $"{prefix} {MachineOnlyMessage(wingetId)}";
+            _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, WingetOutputParser.ExitNoApplicableInstaller);
+        }
 
         var result = InterpretWingetExitCode(run.ExitCode, run);
         var newVersion = await ReadVersionAfterAsync(app, context, winget, wingetId, sourceName, ct).ConfigureAwait(false);
         var stillOutdated = IsStillOutdated(newVersion, update.AvailableVersion);
-        var prefix = $"winget could not upgrade '{wingetId}' ({context.Context} scope): {refusal}.";
 
         if (!result.Success || run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade)
         {
@@ -379,13 +516,30 @@ public sealed class WingetProvider : IUpdateProvider
     /// is judged only by the version winget reports afterwards, never by the exit code. When the listing still shows the
     /// old version the resisting registration is looked at: a Windows Installer entry whose product Windows Installer
     /// does not have any more can only be cleared by deleting the Uninstall key, which the agent then does itself (see
-    /// <see cref="RemoveStaleMsiRegistrations"/>) before it asks winget once more.
+    /// <see cref="RemoveStaleMsiRegistrations"/>) before it asks winget once more. In the user context the take-over
+    /// first checks with <c>winget show</c> that a per-user or MSIX installer exists and does not uninstall anything
+    /// when there is none, because the install step never starts a machine-wide installer there.
     /// </summary>
     private async Task<InstallResult> ReplaceAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, int refusalExitCode, IProgress<string>? progress, CancellationToken ct)
     {
         var name = string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName;
         var prefix = $"winget could not upgrade '{wingetId}' ({context.Context} scope): the installed package's technology differs from the manifest's installer.";
+
+        // ---- 0. user context: never remove what cannot be put back without administrator rights. The install step
+        // below only accepts a per-user or MSIX installer, so check that one exists before anything is uninstalled.
+        if (!context.IsSystem)
+        {
+            var availability = await CheckPerUserInstallerAsync(app, winget, wingetId, sourceName, context, ct).ConfigureAwait(false);
+            if (availability != InstallerAvailability.Available)
+            {
+                var message = availability == InstallerAvailability.None
+                    ? $"{prefix} {MachineOnlyMessage(wingetId)} The current install was left in place."
+                    : $"{prefix} Whether winget has a per-user or MSIX installer for '{wingetId}' could not be confirmed, so the current install was left in place (the take-over never removes what it may not be able to reinstall).";
+                _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+                return InstallResult.Fail(message, availability == InstallerAvailability.None ? WingetOutputParser.ExitNoApplicableInstaller : -1);
+            }
+        }
 
         // ---- 1. remove the current install.
         _logger.LogInformation("{AppId}: winget refused to upgrade '{WingetId}' (install technology mismatch, 0x{Code:X8}) and WingetReplaceOnMismatch is set; removing the current install in the {Context} context.",
@@ -484,22 +638,23 @@ public sealed class WingetProvider : IUpdateProvider
             return InstallResult.Fail(message, uninstall.Started && !uninstall.TimedOut ? uninstall.ExitCode : -1);
         }
 
-        // ---- 2. install the new package. No scope argument in the user context: a "--scope user" filter would exclude
-        // an MSIX installer, which has no scope at all (the same reason ReinstallAsync omits it).
-        var installArgs = new StringBuilder()
-            .Append("install --id ").Append(Quote(wingetId))
-            .Append(" --exact");
-        AppendSource(installArgs, sourceName);
-        installArgs.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity");
-        if (context.IsSystem) installArgs.Append(ScopeArgument(context));
-        AppendExtra(installArgs, update.WingetExtraArgs ?? app.WingetExtraArgs);
-        AppendExtra(installArgs, _options.WingetGlobalArgs);
-
+        // ---- 2. install the new package: --scope machine as LocalSystem; in the user context --scope user first and
+        // --installer-type msix second (an MSIX installer declares no scope, so "--scope user" alone would miss it),
+        // never unfiltered, so a machine-wide installer is never started in the user's session.
         _logger.LogInformation("{AppId}: the previous install of '{WingetId}' was removed; installing {Version} with winget in the {Context} context.",
             app.AppId, wingetId, update.AvailableVersion, context.Context);
         progress?.Report($"Installing {name} {update.AvailableVersion} via winget...");
 
-        var install = await ProcessRunner.RunAsync(_logger, winget, installArgs.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
+        var installStep = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: false, systemScope: true, progress, ct).ConfigureAwait(false);
+        var install = installStep.Run;
+        if (install.Started && !install.TimedOut && installStep.NoPerUserInstaller)
+        {
+            // The pre-check found an installer, so this should not happen. Deliberately not reported as "no applicable
+            // installer": the old install is gone, so no further fallback may run for another id.
+            var message = $"{prefix} The previous install was removed; {MachineOnlyMessage(wingetId)} The application may now be missing on this device.";
+            _logger.LogError("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, -1);
+        }
         if (!install.Started)
         {
             var message = $"{prefix} The previous install was removed; installing {update.AvailableVersion} with winget failed: {install.StartFailure}. The application may now be missing on this device.";
@@ -534,6 +689,88 @@ public sealed class WingetProvider : IUpdateProvider
         return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
     }
 
+    /// <summary>Outcome of <see cref="RunInstallStepAsync"/>: the last winget run, and whether it found no permitted installer.</summary>
+    private sealed record InstallStepResult(ProcessRunResult Run, bool NoPerUserInstaller);
+
+    /// <summary>
+    /// Runs <c>winget install</c> for the fallbacks. As LocalSystem once, with <c>--scope machine</c> when
+    /// <paramref name="systemScope"/> is set. In the user context with <see cref="UserContextInstallFilter"/>: up to
+    /// two attempts, the second only after winget answered "no applicable installer" to the first, so an unfiltered
+    /// (possibly machine-wide, elevating) install is never started. <c>NoPerUserInstaller</c> is set when the last
+    /// attempt was refused that way, i.e. winget ran nothing.
+    /// </summary>
+    private async Task<InstallStepResult> RunInstallStepAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
+        string wingetId, string sourceName, bool force, bool systemScope, IProgress<string>? progress, CancellationToken ct)
+    {
+        var attempts = context.IsSystem ? 1 : UserContextInstallAttempts;
+        for (var attempt = 0; ; attempt++)
+        {
+            var filter = context.IsSystem ? (systemScope ? ScopeArgument(context) : string.Empty) : UserContextInstallFilter(attempt);
+            var args = new StringBuilder()
+                .Append("install --id ").Append(Quote(wingetId))
+                .Append(" --exact");
+            if (force) args.Append(" --force");
+            AppendSource(args, sourceName);
+            args.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity")
+                .Append(filter);
+            AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
+            AppendExtra(args, _options.WingetGlobalArgs);
+
+            var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress),
+                environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+            var noInstaller = !context.IsSystem && run.Started && !run.TimedOut && IsNoApplicableInstaller(run.ExitCode, run.CombinedOutput);
+            if (noInstaller && attempt + 1 < attempts)
+            {
+                _logger.LogInformation("{AppId}: winget has no installer for '{WingetId}' matching '{Filter}' (0x{Code:X8}); trying '{Next}'.",
+                    app.AppId, wingetId, filter.Trim(), run.ExitCode, UserContextInstallFilter(attempt + 1).Trim());
+                continue;
+            }
+            return new InstallStepResult(run, noInstaller);
+        }
+    }
+
+    /// <summary>Whether winget offers an installer the user context may run (see <see cref="CheckPerUserInstallerAsync"/>).</summary>
+    private enum InstallerAvailability { Available, None, Unknown }
+
+    /// <summary>
+    /// Asks <c>winget show</c> whether the package has a per-user or an MSIX installer, with the same two filters the
+    /// install step uses. Available when either answers with a manifest; None when both say "no applicable
+    /// installer"; Unknown otherwise (winget failed for another reason), in which case the take-over does not uninstall either.
+    /// </summary>
+    private async Task<InstallerAvailability> CheckPerUserInstallerAsync(AppPolicy app, string winget, string wingetId, string sourceName,
+        ExecutionContextInfo context, CancellationToken ct)
+    {
+        var none = 0;
+        for (var attempt = 0; attempt < UserContextInstallAttempts; attempt++)
+        {
+            var filter = UserContextInstallFilter(attempt);
+            var args = new StringBuilder()
+                .Append("show --id ").Append(Quote(wingetId))
+                .Append(" --exact");
+            AppendSource(args, sourceName);
+            args.Append(filter).Append(" --accept-source-agreements --disable-interactivity");
+            AppendExtra(args, _options.WingetGlobalArgs);
+
+            var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout,
+                environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+            if (!run.Started || run.TimedOut)
+            {
+                _logger.LogWarning("{AppId}: 'winget show' for '{WingetId}' ({Filter}) could not be run: {Reason}", app.AppId, wingetId, filter.Trim(),
+                    run.StartFailure ?? "timed out");
+                continue;
+            }
+            if (IsNoApplicableInstaller(run.ExitCode, run.CombinedOutput)) { none++; continue; }
+            if (run.ExitCode == 0)
+            {
+                _logger.LogDebug("{AppId}: winget has an installer for '{WingetId}' matching '{Filter}'.", app.AppId, wingetId, filter.Trim());
+                return InstallerAvailability.Available;
+            }
+            _logger.LogWarning("{AppId}: 'winget show' for '{WingetId}' ({Filter}) exited with 0x{Code:X8}: {Tail}", app.AppId, wingetId, filter.Trim(),
+                run.ExitCode, run.LastLines(2));
+        }
+        return none == UserContextInstallAttempts ? InstallerAvailability.None : InstallerAvailability.Unknown;
+    }
+
     /// <summary>
     /// One <c>winget uninstall</c> attempt for the take-over. No --purge (user data is not ours to delete) and no
     /// WingetExtraArgs (those are upgrade arguments); the scope is the one the upgrade used, so we only ever touch our
@@ -552,7 +789,8 @@ public sealed class WingetProvider : IUpdateProvider
         if (allVersions) args.Append(" --all-versions");
         AppendExtra(args, _options.WingetGlobalArgs);
 
-        return await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress), ct: ct).ConfigureAwait(false);
+        return await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress),
+            environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>Outcome of the stale-registration cleanup: how many keys were deleted, and why one could not be.</summary>
@@ -729,7 +967,8 @@ public sealed class WingetProvider : IUpdateProvider
             {
                 var args = new StringBuilder().Append("list --accept-source-agreements --disable-interactivity").Append(ScopeArgument(context));
                 AppendExtra(args, _options.WingetGlobalArgs);
-                var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout, ct: ct).ConfigureAwait(false);
+                var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout,
+                    environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
                 rows = run.Started && !run.TimedOut ? WingetOutputParser.ParseListOutput(run.StandardOutput) : [];
                 _logger.LogDebug("Full winget listing for the {Context} scope: {Count} row(s).", context.Context, rows.Count);
                 _fullListCache[context.Context] = rows;
@@ -750,6 +989,67 @@ public sealed class WingetProvider : IUpdateProvider
         return idMatches ? row : null;
     }
 
+    private readonly Dictionary<(InstallContext Context, string Source), IReadOnlyList<WingetRow>> _upgradeListCache = new();
+    private readonly SemaphoreSlim _upgradeListGate = new(1, 1);
+
+    /// <summary>
+    /// The per-scope <c>winget upgrade</c> listing (cached for the lifetime of this provider instance, i.e. once per
+    /// scan and source). Never fails the check: a failed or timed-out fetch yields no rows, which leaves the list-based
+    /// result in place.
+    /// </summary>
+    private async Task<IReadOnlyList<WingetRow>> GetUpgradeListingAsync(string winget, string? sourceName, ExecutionContextInfo context, CancellationToken ct)
+    {
+        var key = (context.Context, (sourceName ?? string.Empty).Trim().ToLowerInvariant());
+        await _upgradeListGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_upgradeListCache.TryGetValue(key, out var cached)) return cached;
+
+            IReadOnlyList<WingetRow> rows = [];
+            try
+            {
+                var args = new StringBuilder().Append("upgrade");
+                AppendSource(args, sourceName);
+                args.Append(" --accept-source-agreements --disable-interactivity").Append(ScopeArgument(context));
+                AppendExtra(args, _options.WingetGlobalArgs);
+                var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout,
+                    environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+                if (run.Started && !run.TimedOut)
+                    rows = WingetOutputParser.ParseListOutput(run.StandardOutput);
+                else
+                    _logger.LogDebug("winget upgrade listing for the {Context} scope could not be read ({Reason}); using the list-based matches.",
+                        context.Context, run.StartFailure ?? "timed out");
+                _logger.LogDebug("winget upgrade listing for the {Context} scope: {Count} row(s).", context.Context, rows.Count);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "winget upgrade listing failed for the {Context} scope; using the list-based matches.", context.Context);
+            }
+            _upgradeListCache[key] = rows;
+            return rows;
+        }
+        finally { _upgradeListGate.Release(); }
+    }
+
+    /// <summary>
+    /// The row of winget's upgrade listing for the first configured id (in candidate order) that appears there with an
+    /// available version, or null when none does. Pure, so the rule is testable. Ids are compared case-insensitively
+    /// and exactly: a truncated (ellipsised) Id cell is ignored, because "Mozilla.Firefox…" could stand for either
+    /// alternative, and ignoring it just keeps the list-based match.
+    /// </summary>
+    internal static WingetRow? PickFromUpgradeListing(IReadOnlyList<WingetRow> upgradeRows, IReadOnlyList<string> candidateIds)
+    {
+        if (upgradeRows.Count == 0) return null;
+        foreach (var id in candidateIds)
+        {
+            if (string.IsNullOrWhiteSpace(id)) continue;
+            var row = upgradeRows.FirstOrDefault(r => r.HasAvailable && string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase));
+            if (row is not null) return row;
+        }
+        return null;
+    }
+
     private async Task<ListLookup> ListAsync(string winget, AppPolicy app, ExecutionContextInfo context, TimeSpan timeout, CancellationToken ct)
     {
         var args = new StringBuilder()
@@ -760,7 +1060,8 @@ public sealed class WingetProvider : IUpdateProvider
             .Append(ScopeArgument(context));
         AppendExtra(args, _options.WingetGlobalArgs);
 
-        var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), timeout, ct: ct).ConfigureAwait(false);
+        var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), timeout,
+            environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
 
         if (!run.Started) return new ListLookup(null, false, run.StartFailure);
         if (run.TimedOut)

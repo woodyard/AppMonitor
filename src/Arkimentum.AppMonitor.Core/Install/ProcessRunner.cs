@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Arkimentum.AppMonitor.Models;
 using Microsoft.Extensions.Logging;
 
 namespace Arkimentum.AppMonitor.Install;
@@ -43,6 +44,23 @@ public sealed record ProcessRunResult(
 /// </summary>
 public static class ProcessRunner
 {
+    /// <summary>
+    /// Extra environment variables for every child process the agent starts in the given context, or null for none.
+    /// In a user's session (the tray agent) this sets <c>__COMPAT_LAYER=RunAsInvoker</c>: Windows then does not raise a
+    /// UAC prompt for an executable whose manifest requests administrator rights or that installer detection flags as a
+    /// setup program; it runs with the user's own rights and either succeeds per user or fails, and that failure is
+    /// reported. The variable is inherited by grandchildren, so it also covers the installers winget starts. It does
+    /// NOT stop a process that explicitly asks for elevation (ShellExecute with the "runas" verb), which is why the
+    /// winget provider never starts a machine-wide installer in the user context in the first place; this is the
+    /// second line of defence. Null for LocalSystem: the service is already elevated and must not change how
+    /// installers behave there.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string>? ChildEnvironment(ExecutionContextInfo context) =>
+        context.IsSystem ? null : UserContextEnvironment;
+
+    private static readonly IReadOnlyDictionary<string, string> UserContextEnvironment =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["__COMPAT_LAYER"] = "RunAsInvoker" };
+
     /// <summary>
     /// Runs <paramref name="fileName"/> with <paramref name="arguments"/> and waits for it to exit.
     /// </summary>

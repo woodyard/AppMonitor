@@ -66,6 +66,8 @@ public sealed class InstallerRunner
             _logger, exe, args, timeout,
             onOutputLine: line => { if (!string.IsNullOrWhiteSpace(line)) progress?.Report(line.Trim()); },
             workingDirectory: workingDirectory,
+            // User context: RunAsInvoker, so an installer that asks for administrator rights cannot raise a UAC prompt.
+            environment: ProcessRunner.ChildEnvironment(context),
             ct: ct).ConfigureAwait(false);
 
         if (!run.Started)

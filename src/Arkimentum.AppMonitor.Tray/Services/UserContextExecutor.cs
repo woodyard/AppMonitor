@@ -296,7 +296,7 @@ public sealed class UserContextExecutor : IHostedService
             {
                 var run = await Task.Run(() => ProcessRunner.RunAsync(_log, winget,
                     "list --scope user --accept-source-agreements --disable-interactivity",
-                    PackageListTimeout, ct: _cts.Token), _cts.Token).ConfigureAwait(true);
+                    PackageListTimeout, environment: ProcessRunner.ChildEnvironment(CurrentContext()), ct: _cts.Token), _cts.Token).ConfigureAwait(true);
                 if (run.ExitCode != 0 && !WingetOutputParser.IsNotInstalledOutput(run.CombinedOutput))
                 {
                     error = $"winget list --scope user exited with {run.ExitCode}: {run.LastLines(2)}";

@@ -12,6 +12,7 @@
     "sqlAdminObjectId": { "value": "00000000-0000-0000-0000-000000000000" },
     "sqlAdminLogin": { "value": "AppMonitor SQL Admins" },
     "sqlAdminPrincipalType": { "value": "Group" },
+    "sqlSkuName": { "value": "Basic" },
     "sqlMaxVCores": { "value": 2 },
     "sqlMinVCores": { "value": "0.5" },
     "sqlAutoPauseDelayMinutes": { "value": 60 },

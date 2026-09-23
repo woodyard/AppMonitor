@@ -54,7 +54,17 @@ param sqlAdminLogin string
 ])
 param sqlAdminPrincipalType string = 'Group'
 
-@description('Maximum vCores of the serverless database.')
+@description('Database tier. Basic (5 DTU, 2 GB) is plenty for hundreds of devices and costs a few EUR a month; S0-S2 add headroom. GP_S_Gen5 (serverless) bills vCore-seconds while awake and never pauses while devices poll every 15 minutes, so it costs ~40x Basic.')
+@allowed([
+  'Basic'
+  'S0'
+  'S1'
+  'S2'
+  'GP_S_Gen5'
+])
+param sqlSkuName string = 'Basic'
+
+@description('Maximum vCores of the serverless database (GP_S_Gen5 only).')
 @allowed([
   2
   4
@@ -62,13 +72,13 @@ param sqlAdminPrincipalType string = 'Group'
 ])
 param sqlMaxVCores int = 2
 
-@description('Minimum vCores while the database is awake.')
+@description('Minimum vCores while the serverless database is awake (GP_S_Gen5 only).')
 param sqlMinVCores string = '0.5'
 
-@description('Minutes of inactivity before the serverless database auto-pauses. -1 disables auto-pause.')
+@description('Minutes of inactivity before the serverless database auto-pauses (GP_S_Gen5 only). -1 disables auto-pause.')
 param sqlAutoPauseDelayMinutes int = 60
 
-@description('Days of point-in-time restore kept for the database.')
+@description('Days of point-in-time restore kept for the database. Basic allows at most 7; larger values are capped.')
 @minValue(1)
 @maxValue(35)
 param sqlBackupRetentionDays int = 7
@@ -263,26 +273,55 @@ resource sqlAllowAzure 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' 
   }
 }
 
-resource sqlDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
-  parent: sqlServer
-  name: sqlDatabaseName
-  location: location
-  tags: tags
-  sku: {
+var sqlIsServerless = sqlSkuName == 'GP_S_Gen5'
+var sqlSkus = {
+  Basic: {
+    name: 'Basic'
+    tier: 'Basic'
+    capacity: 5
+  }
+  S0: {
+    name: 'S0'
+    tier: 'Standard'
+    capacity: 10
+  }
+  S1: {
+    name: 'S1'
+    tier: 'Standard'
+    capacity: 20
+  }
+  S2: {
+    name: 'S2'
+    tier: 'Standard'
+    capacity: 50
+  }
+  GP_S_Gen5: {
     name: 'GP_S_Gen5'
     tier: 'GeneralPurpose'
     family: 'Gen5'
     capacity: sqlMaxVCores
   }
-  properties: {
+}
+
+// autoPauseDelay and minCapacity exist only for serverless; the DTU tiers reject them.
+var sqlServerlessProperties = sqlIsServerless ? {
+  autoPauseDelay: sqlAutoPauseDelayMinutes
+  minCapacity: json(sqlMinVCores)
+} : {}
+
+resource sqlDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
+  parent: sqlServer
+  name: sqlDatabaseName
+  location: location
+  tags: tags
+  sku: sqlSkus[sqlSkuName]
+  properties: union({
     collation: 'SQL_Latin1_General_CP1_CI_AS'
-    maxSizeBytes: 34359738368            // 32 GB
-    autoPauseDelay: sqlAutoPauseDelayMinutes
-    minCapacity: json(sqlMinVCores)
+    maxSizeBytes: sqlSkuName == 'Basic' ? 2147483648 : 34359738368   // Basic tops out at 2 GB, else 32 GB
     zoneRedundant: false
     readScale: 'Disabled'
     requestedBackupStorageRedundancy: 'Local'
-  }
+  }, sqlServerlessProperties)
   dependsOn: [
     sqlAadOnly
   ]
@@ -292,7 +331,7 @@ resource sqlBackupPolicy 'Microsoft.Sql/servers/databases/backupShortTermRetenti
   parent: sqlDatabase
   name: 'default'
   properties: {
-    retentionDays: sqlBackupRetentionDays
+    retentionDays: sqlSkuName == 'Basic' ? min(sqlBackupRetentionDays, 7) : sqlBackupRetentionDays
   }
 }
 

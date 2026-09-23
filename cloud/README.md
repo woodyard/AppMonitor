@@ -35,7 +35,7 @@ flowchart LR
     subgraph Azure["Azure - appmon-{env}-..."]
         SWA["Static Web App<br/>appmon-{env}-web-{suffix}<br/>Blazor WebAssembly, Free SKU"]
         FUNC["Function App<br/>Flex Consumption, .NET 10 isolated"]
-        SQL[("Azure SQL<br/>serverless, auto-pause")]
+        SQL[("Azure SQL<br/>Basic, 5 DTU")]
         BLOB[("Blob Storage<br/>raw report archive")]
         AI["Application Insights<br/>+ Log Analytics"]
     end
@@ -517,7 +517,7 @@ Function App's identity deliberately has no DDL rights.
 | Plan | `appmon-{env}-plan` | FC1, or Y1 with `-UseFlexConsumption:$false` |
 | Static Web App | `appmon-{env}-web-{suffix}` | Free SKU, **`staticWebAppLocation`** (default westeurope - the Free SKU has only five regions), no repository link, staging environments disabled, `allowConfigFileUpdates`. Skipped entirely with `deployWebAdmin: false` |
 | Storage | `appmon{env}st{suffix}` | `reports` + `function-releases` containers, shared keys disabled, no public blob access |
-| Azure SQL | `appmon-{env}-sql-{suffix}` / `appmon-{env}-db` | GP_S_Gen5 serverless, auto-pause 60 min, min 0.5 vCore, Entra-only auth |
+| Azure SQL | `appmon-{env}-sql-{suffix}` / `appmon-{env}-db` | **`sqlSkuName`** (default Basic: 5 DTU, 2 GB; S0-S2 for headroom; GP_S_Gen5 serverless still available), Entra-only auth |
 | App Insights | `appmon-{env}-ai` | workspace-based |
 | Log Analytics | `appmon-{env}-law` | 30 days (dev) / 90 days (prod) |
 
@@ -755,22 +755,22 @@ minutes across all organizations; "medium" is ~5 000.
 | Component | Small (500 devices) | Medium (5 000 devices) | Driver |
 | --- | --- | --- | --- |
 | Function App (Flex Consumption) | 0 - 3 | 15 - 30 | ~1.5 M requests/month at 5 000 devices; the free grant covers most of the small case |
-| Azure SQL serverless (GP_S_Gen5, 0.5-2 vCore, auto-pause) | 12 - 25 | 60 - 110 | vCore-seconds while awake. At 15-minute polling the database never pauses; raise `CloudSyncIntervalMinutes` to 60 and it does. Storage ~0.11/GB |
+| Azure SQL (Basic, 5 DTU / Standard S0, 10 DTU) | ~5 | ~15 (S0) | Flat price, no cold start. Basic holds 2 GB; 500 devices use well under 1 GB. Move to S0/S1 when the admin console gets slow or the data outgrows 2 GB (online change, a few seconds of disconnect) |
 | Blob Storage (raw report archive) | 1 - 2 | 8 - 15 | ~30 KB per report -> ~1 GB/month at 500 devices, ~10 GB at 5 000. Add a lifecycle rule to cool/archive after 30 days |
 | Application Insights + Log Analytics | 2 - 5 | 10 - 25 | ~2.30/GB ingested after the 5 GB free grant; sampling is on in `host.json` |
 | Static Web App (web admin console) | **0** | **0** | Free SKU: 100 GB bandwidth/month, free managed TLS and custom domains, no per-request charge. The console is a few MB of static files loaded once and cached |
-| **Total** | **~15 - 35** | **~95 - 180** | |
+| **Total** | **~8 - 15** | **~50 - 85** | |
 
 Levers, in order of effect:
 
-1. **Polling interval.** `CloudSyncIntervalMinutes` drives everything. 15 minutes keeps the serverless database
-   permanently awake; 60 minutes lets it auto-pause overnight and at weekends and roughly halves the SQL bill.
-2. **Report archive retention.** The archive is for forensics, not for queries - a lifecycle rule to Cool at 30
+1. **Database tier.** Do not use serverless (`sqlSkuName: GP_S_Gen5`) for a live fleet. It pauses only after
+   `sqlAutoPauseDelayMinutes` without a single request, which never happens while devices poll every 15 minutes, so
+   it bills its 0.5 vCore floor around the clock: ~200 EUR/month measured on the first production deployment
+   (3 devices, 30 MB of data, CPU peak 1 %). Basic does the same job for ~5 EUR.
+2. **Polling interval.** `CloudSyncIntervalMinutes` drives the Function App and log volume.
+3. **Report archive retention.** The archive is for forensics, not for queries - a lifecycle rule to Cool at 30
    days and Archive at 90 cuts storage by ~80 %.
-3. **Log Analytics retention.** 30 days is plenty for an API this size.
-4. **`sqlAutoPauseDelayMinutes`.** Shorter pause delay saves money but every first request after a pause waits
-   ~30-60 s for the database to resume. `EnableRetryOnFailure` in `Program.cs` covers that, and devices retry
-   anyway, but the admin console will feel it. 60-120 minutes is the sweet spot.
+4. **Log Analytics retention.** 30 days is plenty for an API this size.
 
 Not included: the Entra ID app registrations (free), egress (negligible), and the optional release mirror in Blob
 Storage (a few GB per release).

@@ -267,7 +267,9 @@ public sealed class AgentUpdater : IAgentSelfUpdate
     {
         if (!await _gate.WaitAsync(0, ct).ConfigureAwait(false))
             return new AgentUpdateOutcome(AgentUpdateAction.Blocked, "An agent update is already running");
-        lock (_statusLock) _inProgress = true;
+        // _inProgress is raised by UpdateCoreAsync once the check has found a newer release, not here: a check that ends
+        // "up to date" replaces nothing, and until the feed is read the version being installed is not known yet (the
+        // last outcome may still name an older release, which clients would show as "Updating to <old version>").
         try
         {
             return Remember(await UpdateCoreAsync(reason, targetVersionOverride, ct).ConfigureAwait(false));
@@ -276,8 +278,15 @@ public sealed class AgentUpdater : IAgentSelfUpdate
         {
             // Launched means the installer is running and this service is about to be replaced: the update is still
             // in progress as far as any client is concerned, so the flag stays up until the agent restarts.
-            lock (_statusLock) _inProgress = _lastOutcome?.Action == AgentUpdateAction.Launched;
+            bool cleared;
+            lock (_statusLock)
+            {
+                cleared = _inProgress && _lastOutcome?.Action != AgentUpdateAction.Launched;
+                _inProgress = _lastOutcome?.Action == AgentUpdateAction.Launched;
+            }
             _gate.Release();
+            // A download or verification that failed takes the banner down in every client, not at the next scan.
+            if (cleared) _ = BroadcastStatusAsync();
         }
     }
 
@@ -296,6 +305,15 @@ public sealed class AgentUpdater : IAgentSelfUpdate
             }
             if (File.Exists(MarkerPath) && ReadMarker() is { } pending && DateTimeOffset.UtcNow - pending.StartedUtc < MarkerTimeout)
                 return outcome with { Action = AgentUpdateAction.Blocked, Reason = $"An update to {pending.ToVersion} started {pending.StartedUtc:u} is still in progress" };
+
+            // From here the agent is being replaced: clients see "Updating to <this manifest's version>" straight away.
+            lock (_statusLock)
+            {
+                _lastOutcome = outcome;
+                _lastCheckUtc = DateTimeOffset.UtcNow;
+                _inProgress = true;
+            }
+            _ = BroadcastStatusAsync();
 
             var directory = Path.Combine(UpdatesRoot, SafeName(manifest.Version));
             var zipPath = Path.Combine(directory, $"Arkimentum.AppMonitor-{SafeName(manifest.Version)}.zip");
@@ -362,6 +380,13 @@ public sealed class AgentUpdater : IAgentSelfUpdate
             _logger.LogError(ex, "Agent update failed");
             return new AgentUpdateOutcome(AgentUpdateAction.Failed, ex.Message);
         }
+    }
+
+    /// <summary>Tells every connected client that the status changed; a scheduled or cloud-requested update has no one waiting for an answer.</summary>
+    private async Task BroadcastStatusAsync()
+    {
+        try { await _coordinator.BroadcastStateAsync(CancellationToken.None).ConfigureAwait(false); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Agent update: could not broadcast the status"); }
     }
 
     private async Task<string> DownloadAsync(ReleaseManifest manifest, string zipPath, CancellationToken ct)

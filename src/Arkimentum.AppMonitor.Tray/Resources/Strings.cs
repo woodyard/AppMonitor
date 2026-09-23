@@ -212,6 +212,10 @@ public static class Strings
     // ---------------------------------------------------------------- toasts
     public const string ToastButtonInstallNow = "Install now";
     public const string ToastButtonDetails = "Details";
+    /// <summary>The only button on the "Installing" toast: hides it; the install carries on.</summary>
+    public const string ToastButtonHide = "Hide";
+    /// <summary>Status line under the progress bar of the "Installing" toast.</summary>
+    public const string ToastInstallingStatus = "In progress";
     public const string ToastButtonCloseAndUpdate = "Close apps and update";
 
     public static string ToastButtonDefer(string duration) => $"Defer {duration}";

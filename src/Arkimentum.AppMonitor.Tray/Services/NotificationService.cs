@@ -44,6 +44,15 @@ public sealed class NotificationService : IHostedService
     private DispatcherTimer? _coalesceTimer;
     private readonly List<NotifyMessage> _pendingAvailable = [];
 
+    /// <summary>
+    /// Updates whose "Installing" toast is still on screen. It stays up (reminder scenario) until the install ends, and is
+    /// removed then unless a newer toast for the same update (installed, failed) has already replaced it.
+    /// </summary>
+    private readonly HashSet<string> _installToastKeys = new(StringComparer.Ordinal);
+
+    /// <summary>Windows drops the "Installing" toast after this even if the agent never saw the install end (it was restarted).</summary>
+    private static readonly TimeSpan InstallToastLifetime = TimeSpan.FromHours(2);
+
     public NotificationService(
         ILogger<NotificationService> log,
         IpcClientService ipc,
@@ -63,6 +72,7 @@ public sealed class NotificationService : IHostedService
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _ipc.MessageReceived += OnMessage;
+        _store.Changed += OnStoreChanged;
         try
         {
             // Subscribing registers the COM activator (HKCU\Software\Classes\CLSID\{guid}\LocalServer32).
@@ -81,6 +91,7 @@ public sealed class NotificationService : IHostedService
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _ipc.MessageReceived -= OnMessage;
+        _store.Changed -= OnStoreChanged;
         _dispatcher.Invoke(() =>
         {
             _coalesceTimer?.Stop();
@@ -192,18 +203,61 @@ public sealed class NotificationService : IHostedService
             if (notify.Kind == NotificationKind.CloseApplications && update?.ForceCloseAtUtc is not null)
                 builder.SetToastScenario(ToastScenario.Reminder);
 
+            // "Installing" stays on screen for as long as the install runs: the reminder scenario keeps a toast up until
+            // the user acts on it, and its only button is Hide. It is silent (the reminder sound would be wrong for
+            // progress) and shows an indeterminate bar, because installers report no percentage.
+            var installing = notify.Kind == NotificationKind.Installing && update is not null;
+            if (installing)
+            {
+                builder.AddProgressBar(title: null, value: null, isIndeterminate: true, valueStringOverride: null, status: Strings.ToastInstallingStatus);
+                builder.SetToastScenario(ToastScenario.Reminder);
+                builder.AddAudio(new ToastAudio { Silent = true });
+            }
+
             var tag = TagFor(update?.Key);
             builder.Show(toast =>
             {
                 toast.Tag = tag;
                 toast.Group = ToastGroup;
+                if (installing) toast.ExpirationTime = DateTimeOffset.Now + InstallToastLifetime;
             });
+
+            // Every toast of an update shares its tag, so this one replaced whatever that update showed before.
+            if (update is not null)
+            {
+                if (installing) _installToastKeys.Add(update.Key);
+                else _installToastKeys.Remove(update.Key);
+            }
 
             _log.LogInformation("Showed {Kind} toast for {App}", notify.Kind, update?.DisplayName ?? "-");
         }
         catch (Exception ex)
         {
             _log.LogError(ex, "Failed to show a {Kind} toast", notify.Kind);
+        }
+    }
+
+    /// <summary>
+    /// Takes an "Installing" toast down once its install is no longer running. A success without an "installed" toast
+    /// (the default) would otherwise leave it up until it expires. A result toast that already replaced it has dropped
+    /// the key in <see cref="Show"/>, so this never removes the result.
+    /// </summary>
+    private void OnStoreChanged()
+    {
+        if (_installToastKeys.Count == 0) return;
+        foreach (var key in _installToastKeys.ToList())
+        {
+            if (_store.Find(key) is { State: UpdateState.Installing or UpdateState.Scheduled }) continue;
+            _installToastKeys.Remove(key);
+            try
+            {
+                ToastNotificationManagerCompat.History.Remove(TagFor(key), ToastGroup);
+                _log.LogInformation("Removed the Installing toast for {Key}: the install is no longer running", key);
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "Could not remove the Installing toast for {Key}", key);
+            }
         }
     }
 
@@ -239,6 +293,8 @@ public sealed class NotificationService : IHostedService
                 break;
 
             case NotificationKind.Installing:
+                // Hides the toast only; the install carries on, and its result still gets a toast of its own.
+                builder.AddButton(new ToastButtonDismiss(Strings.ToastButtonHide));
                 break;
 
             default:

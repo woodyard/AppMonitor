@@ -88,10 +88,51 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     {
         var s = _settings.Reload();
         _state = _store.Load(s);
+        BackfillInstallHistory(s);
         ImpersonationGuard.EnableDebugPrivilege(_logger);
         _pipe.Start();
         _logger.LogInformation("{Product} service {Version} started (pid {Pid}, user {User})",
             AgentSettings.ProductName, ServiceVersion, Environment.ProcessId, Environment.UserName);
+    }
+
+    /// <summary>
+    /// Once per device: rebuilds the install history from the service log files that are still on disk, so installs made
+    /// before the history existed (1.1.27) show in the tray and the list does not start empty. A failure leaves the flag
+    /// unset, so the next start tries again; it never stops the service from starting.
+    /// </summary>
+    private void BackfillInstallHistory(AgentSettings settings)
+    {
+        if (_state.InstallHistoryBackfilled) return;
+        try
+        {
+            var files = Directory.Exists(settings.LogDirectory)
+                ? Directory.GetFiles(settings.LogDirectory, "Arkimentum.AppMonitor.Service_*.log")
+                    .OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList()
+                : [];
+            var appIds = settings.Apps
+                .GroupBy(a => string.IsNullOrWhiteSpace(a.DisplayName) ? a.AppId : a.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().AppId, StringComparer.OrdinalIgnoreCase);
+            var found = InstallHistory.ParseServiceLog(files.SelectMany(ReadLinesShared),
+                name => appIds.TryGetValue(name, out var id) ? id : null);
+
+            _state.InstallHistory = InstallHistory.Merge(_state.InstallHistory, found);
+            _state.InstallHistoryBackfilled = true;
+            _store.Save(settings, _state);
+            _logger.LogInformation("Install history rebuilt from {Files} service log file(s): {Count} install(s) found, {Kept} kept",
+                files.Count, found.Count, _state.InstallHistory.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not rebuild the install history from the service log; it will be tried again at the next start");
+        }
+    }
+
+    /// <summary>Reads a log file line by line while the logger may still be writing to it.</summary>
+    private static IEnumerable<string> ReadLinesShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream);
+        while (reader.ReadLine() is { } line) yield return line;
     }
 
     /// <summary>

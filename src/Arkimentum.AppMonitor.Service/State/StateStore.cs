@@ -27,6 +27,12 @@ public sealed class ServiceState
     /// state message is built from it on pipe threads without the policy lock.
     /// </summary>
     public List<InstallHistoryEntry> InstallHistory { get; set; } = [];
+
+    /// <summary>
+    /// Set once the history has been rebuilt from the service log (for installs made before the history existed), so
+    /// the backfill runs a single time per device.
+    /// </summary>
+    public bool InstallHistoryBackfilled { get; set; }
 }
 
 /// <summary>Persists <see cref="ServiceState"/> as JSON (atomic replace) so deadlines and deferrals survive restarts.</summary>

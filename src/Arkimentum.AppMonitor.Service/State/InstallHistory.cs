@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Arkimentum.AppMonitor.Models;
 
 namespace Arkimentum.AppMonitor.Service.State;
@@ -59,6 +61,103 @@ public static class InstallHistory
     /// <summary>A failed install of <paramref name="update"/>; the version is the one it aimed for.</summary>
     public static InstallHistoryEntry Failed(PendingUpdate update, string? message, DateTimeOffset at) =>
         Create(update, false, update.AvailableVersion, Shorten(message), at);
+
+    // ---------------------------------------------------------------- one-time backfill from the service log
+
+    private static readonly Regex LogLine = new(
+        @"^(?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} [+-]\d{2}:\d{2}) \[\w{3}\] UpdateCoordinator: (?<msg>.*)$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex StartLine = new(
+        @"^Installing (?<rest>.+) -> (?<to>\S+) \((?<source>\w+), (?<ctx>System|User|Auto)(?: for (?<sid>\S+))?\)$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Rebuilds install history from the service's own log, for devices that installed updates before the history
+    /// existed (1.1.27). The coordinator logs every install in three fixed forms, and installs run one at a time, so
+    /// each start line pairs with the next result line:
+    /// <c>Installing {App} {From} -> {To} ({Source}, {Context}[ for {Sid}])</c>, then
+    /// <c>Installed {App} {Version}...</c> or <c>Install of {App} failed (exit {Code}): {Message}</c>.
+    /// A start without a result (the service stopped mid-install) is dropped. <paramref name="appIdFor"/> maps the logged
+    /// display name back to an AppId; the display name itself is used when it returns null.
+    /// </summary>
+    public static List<InstallHistoryEntry> ParseServiceLog(IEnumerable<string> lines, Func<string, string?>? appIdFor = null)
+    {
+        var entries = new List<InstallHistoryEntry>();
+        (string App, string? From, string To, InstallContext Context, string? Sid)? open = null;
+
+        foreach (var line in lines)
+        {
+            var m = LogLine.Match(line);
+            if (!m.Success) continue;
+            var msg = m.Groups["msg"].Value;
+
+            var start = StartLine.Match(msg);
+            if (start.Success)
+            {
+                // "{App} {From}": the installed version is the last token and may be empty ("Installing X  -> 2.0").
+                var rest = start.Groups["rest"].Value;
+                var cut = rest.LastIndexOf(' ');
+                var app = cut < 0 ? rest : rest[..cut];
+                var from = cut < 0 ? null : rest[(cut + 1)..];
+                if (!Enum.TryParse<InstallContext>(start.Groups["ctx"].Value, out var context)) context = InstallContext.System;
+                open = (app, string.IsNullOrWhiteSpace(from) ? null : from, start.Groups["to"].Value, context,
+                    start.Groups["sid"].Success ? start.Groups["sid"].Value : null);
+                continue;
+            }
+
+            if (open is not { } o) continue;
+            bool succeeded;
+            string? version;
+            string? message = null;
+            if (msg.StartsWith($"Installed {o.App} ", StringComparison.Ordinal))
+            {
+                succeeded = true;
+                var tail = msg[$"Installed {o.App} ".Length..];
+                var end = tail.IndexOfAny([' ', ':']);
+                version = end < 0 ? tail : tail[..end];
+            }
+            else if (msg.StartsWith($"Install of {o.App} failed", StringComparison.Ordinal))
+            {
+                succeeded = false;
+                version = o.To;
+                var colon = msg.IndexOf("): ", StringComparison.Ordinal);
+                message = Shorten(colon < 0 ? null : msg[(colon + 3)..]);
+            }
+            else continue;
+
+            if (!DateTimeOffset.TryParseExact(m.Groups["ts"].Value, "yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var at)) { open = null; continue; }
+
+            entries.Add(new InstallHistoryEntry
+            {
+                AppId = appIdFor?.Invoke(o.App) ?? o.App,
+                DisplayName = o.App,
+                FromVersion = o.From,
+                ToVersion = string.IsNullOrWhiteSpace(version) ? o.To : version,
+                Succeeded = succeeded,
+                CompletedUtc = at.ToUniversalTime(),
+                Context = o.Context,
+                UserSid = o.Context == InstallContext.User ? o.Sid : null,
+                Message = message,
+            });
+            open = null;
+        }
+        return entries;
+    }
+
+    /// <summary>
+    /// Merges backfilled entries into the current history without duplicating an install that is already there (same
+    /// app, same outcome, completed within the same second), then applies the usual order and cap.
+    /// </summary>
+    public static List<InstallHistoryEntry> Merge(IEnumerable<InstallHistoryEntry>? history, IEnumerable<InstallHistoryEntry> backfill)
+    {
+        var current = (history ?? []).ToList();
+        static string Key(InstallHistoryEntry e) =>
+            $"{e.DisplayName}|{e.Succeeded}|{e.CompletedUtc.ToUniversalTime():yyyyMMddHHmmss}";
+        var seen = current.Select(Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return Normalize(current.Concat(backfill.Where(e => seen.Add(Key(e)))));
+    }
 
     /// <summary>Single line, at most <see cref="MaxMessageLength"/> characters (with an ellipsis when cut).</summary>
     public static string? Shorten(string? message)

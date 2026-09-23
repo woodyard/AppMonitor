@@ -48,6 +48,37 @@ public static class InstallHistory
             .Take(max)
             .ToList();
 
+    /// <summary>
+    /// Gives entries recorded without an icon path (before icons existed, or backfilled from the service log) the one a
+    /// scan found for the same application in the same context and, for a per-user install, the same user. Returns the
+    /// list to swap in, or null when nothing changed; like <see cref="Append"/>, the input and its entries are never edited.
+    /// </summary>
+    public static List<InstallHistoryEntry>? FillIconPaths(IReadOnlyList<InstallHistoryEntry>? history,
+        IEnumerable<(string AppId, InstallContext Context, string? UserSid, string IconPath)> found)
+    {
+        if (history is null || history.Count == 0 || history.All(e => e.IconPath is not null)) return null;
+        var icons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in found) icons.TryAdd(IconKey(f.AppId, f.Context, f.UserSid), f.IconPath);
+        if (icons.Count == 0) return null;
+
+        var changed = false;
+        var result = history.Select(e =>
+        {
+            if (e.IconPath is not null || !icons.TryGetValue(IconKey(e.AppId, e.Context, e.UserSid), out var icon)) return e;
+            changed = true;
+            return new InstallHistoryEntry
+            {
+                AppId = e.AppId, DisplayName = e.DisplayName, FromVersion = e.FromVersion, ToVersion = e.ToVersion,
+                Succeeded = e.Succeeded, CompletedUtc = e.CompletedUtc, Context = e.Context, UserSid = e.UserSid,
+                Message = e.Message, IconPath = icon,
+            };
+        }).ToList();
+        return changed ? result : null;
+    }
+
+    private static string IconKey(string appId, InstallContext context, string? userSid) =>
+        context == InstallContext.User ? $"{appId}|User|{userSid}" : $"{appId}|System";
+
     public static bool IsVisibleTo(InstallHistoryEntry entry, string? userSid) =>
         entry.Context != InstallContext.User || string.Equals(entry.UserSid, userSid, StringComparison.OrdinalIgnoreCase);
 

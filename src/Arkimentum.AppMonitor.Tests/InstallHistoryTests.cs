@@ -24,6 +24,43 @@ public class InstallHistoryTests
     };
 
     [Fact]
+    public void FillIconPaths_gives_entries_without_an_icon_the_one_a_scan_found_for_the_same_app_and_context()
+    {
+        var known = Entry("chrome", T0.AddMinutes(3));
+        known.IconPath = @"C:\old\chrome.exe,0";
+        IReadOnlyList<InstallHistoryEntry> history =
+        [
+            known,
+            Entry("chrome", T0.AddMinutes(2)),
+            Entry("vscode", T0.AddMinutes(1), InstallContext.User, Alice),
+            Entry("vscode", T0, InstallContext.User, Bob),
+        ];
+
+        var filled = InstallHistory.FillIconPaths(history,
+        [
+            ("Chrome", InstallContext.System, null, @"C:\new\chrome.exe,0"),
+            ("vscode", InstallContext.User, Alice, @"C:\Users\alice\Code.exe"),
+        ]);
+
+        Assert.NotNull(filled);
+        Assert.Equal(@"C:\old\chrome.exe,0", filled![0].IconPath);   // a known icon is kept
+        Assert.Equal(@"C:\new\chrome.exe,0", filled[1].IconPath);    // AppId matches case-insensitively
+        Assert.Equal(@"C:\Users\alice\Code.exe", filled[2].IconPath);
+        Assert.Null(filled[3].IconPath);                               // another user's install is not hers
+        Assert.Null(history[1].IconPath);                              // the input is never edited
+        Assert.Same(history[0], filled[0]);
+    }
+
+    [Fact]
+    public void FillIconPaths_returns_null_when_nothing_changes()
+    {
+        IReadOnlyList<InstallHistoryEntry> history = [Entry("chrome", T0)];
+        Assert.Null(InstallHistory.FillIconPaths(history, []));
+        Assert.Null(InstallHistory.FillIconPaths(history, [("firefox", InstallContext.System, null, "firefox.exe")]));
+        Assert.Null(InstallHistory.FillIconPaths(history, [("chrome", InstallContext.User, Alice, "chrome.exe")]));
+    }
+
+    [Fact]
     public void Append_puts_the_new_entry_first()
     {
         var history = InstallHistory.Append([], Entry("a", T0));

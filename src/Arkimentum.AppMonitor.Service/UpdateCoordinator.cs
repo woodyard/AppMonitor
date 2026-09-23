@@ -389,6 +389,12 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 if (pruned > 0)
                     _logger.LogInformation("Dropped {Count} tracked update(s) of applications that are no longer configured, enabled or valid", pruned);
                 RecordPresence(apps, outcomes, now);
+                // History from before icons existed (or backfilled from the log) gets the icon this scan found for the app.
+                if (InstallHistory.FillIconPaths(_state.InstallHistory, outcomes
+                        .Where(o => o.Result.IconPath is not null)
+                        .Select(o => (o.Result.AppId, o.Context, o.Context == InstallContext.User ? o.UserSid : null, o.Result.IconPath!)))
+                    is { } withIcons)
+                    _state.InstallHistory = withIcons;
                 _state.LastScanUtc = now;
                 _state.NextScanUtc = now + settings.ScanInterval;
                 _state.LastScanSummary = $"{summary.Added} new, {summary.Updated} updated, {summary.Resolved} resolved, {summary.Removed + pruned} removed";

@@ -18,6 +18,14 @@ namespace Arkimentum.AppMonitor.Providers;
 /// (Microsoft.VisualStudioCode) only with <c>--scope user</c>; the mismatching scope exits with 0x8A150014
 /// ("No installed package found matching input criteria.").
 /// </para>
+/// <para>
+/// Package ids are resolved generically: the id is the id of the row in winget's own listing whose name passes the
+/// app's identity rule (<see cref="InstalledAppScanner.NameMatches"/>). The configured <c>WingetId</c> (optionally
+/// with <c>;</c>-separated alternatives) is a hint that takes precedence, not a requirement. In order: a configured id
+/// that <c>winget list</c> finds; else the full per-scope listing searched by name; then, once the product is known to
+/// be installed, winget's upgrade listing - a configured id first, else a name match that describes the same install.
+/// The resolved id travels with the pending update and is the first id the install tries.
+/// </para>
 /// </summary>
 public sealed class WingetProvider : IUpdateProvider
 {
@@ -52,6 +60,8 @@ public sealed class WingetProvider : IUpdateProvider
 
         // A WingetId may list alternatives ("Mozilla.Firefox;Mozilla.Firefox.MSIX"): the same product is often published
         // as a classic installer and as a Store/MSIX package with different ids. The first id that is installed wins.
+        // Alternatives are optional hints: when none of them is installed the id is resolved from winget's listing by
+        // the app's identity rule (below).
         var candidates = SplitIds(app.WingetId);
         ListLookup? lookup = null;
         string? matchedId = null;
@@ -82,6 +92,22 @@ public sealed class WingetProvider : IUpdateProvider
             break;
         }
 
+        if (lookup is null && firstError is null)
+        {
+            // Generic resolution: none of the configured ids is installed here, but the product may be installed under
+            // another id of the same vendor (Adobe.Acrobat.Reader.32-bit for a policy that names the 64-bit id, a
+            // per-user Google.Chrome.EXE for Google.Chrome). The id of the row in winget's own listing whose name
+            // passes the app's identity rule is the id winget manages the product by.
+            var byName = await FindByNameInFullListAsync(winget, app, candidates, context, ct).ConfigureAwait(false);
+            if (byName is not null)
+            {
+                _logger.LogInformation("{AppId}: resolved winget id '{WingetId}' from winget's {Context}-scope listing by name ('{Name}'); configured '{Configured}' is not installed here.",
+                    app.AppId, byName.Id, context.Context, byName.Name, string.Join(";", candidates));
+                lookup = new ListLookup(byName, false, null);
+                matchedId = byName.Id;
+            }
+        }
+
         if (lookup is null)
         {
             if (firstError is not null)
@@ -99,15 +125,24 @@ public sealed class WingetProvider : IUpdateProvider
         // "winget list" correlates an installed product with every manifest that matches it (the Firefox MSIX build is
         // listed under both Mozilla.Firefox and Mozilla.Firefox.MSIX), while "winget upgrade" applies the applicability
         // filters and names the id that can actually upgrade it. So when a configured id is in the upgrade listing,
-        // that id - and its row - wins. When none is, the list-based result stands: products winget upgrade refuses
-        // (Perplexity.Comet, Microsoft.BingWallpaper) are still detected and go to the scoped install fallback.
+        // that id - and its row - wins; otherwise a row whose name passes the app's identity rule and that describes the
+        // install just found (see PickFromUpgradeListing). When neither exists, the list-based result stands: products
+        // winget upgrade refuses (Perplexity.Comet, Microsoft.BingWallpaper) are still detected and go to the scoped
+        // install fallback.
         var upgradeRows = await GetUpgradeListingAsync(winget, app.WingetSourceName, context, ct).ConfigureAwait(false);
-        var upgradeRow = PickFromUpgradeListing(upgradeRows, candidates);
+        var upgradeRow = PickFromUpgradeListing(upgradeRows, candidates, app, row);
         if (upgradeRow is not null)
         {
+            var configured = candidates.FirstOrDefault(c => string.Equals(c, upgradeRow.Id, StringComparison.OrdinalIgnoreCase));
             if (!string.Equals(upgradeRow.Id, matchedId, StringComparison.OrdinalIgnoreCase))
-                _logger.LogDebug("{AppId}: winget's upgrade listing names '{UpgradeId}' (list matched '{ListId}').", app.AppId, upgradeRow.Id, matchedId);
-            matchedId = candidates.First(c => string.Equals(c, upgradeRow.Id, StringComparison.OrdinalIgnoreCase));
+            {
+                if (configured is not null)
+                    _logger.LogDebug("{AppId}: winget's upgrade listing names '{UpgradeId}' (list matched '{ListId}').", app.AppId, upgradeRow.Id, matchedId);
+                else
+                    _logger.LogInformation("{AppId}: resolved winget id '{UpgradeId}' from winget's {Context}-scope upgrade listing by name ('{Name}'); the installed product was listed as '{ListId}'.",
+                        app.AppId, upgradeRow.Id, context.Context, upgradeRow.Name, matchedId);
+            }
+            matchedId = configured ?? upgradeRow.Id;
             row = upgradeRow;
         }
         var installedVersion = string.IsNullOrWhiteSpace(row.Version) ? null : row.Version;
@@ -157,12 +192,14 @@ public sealed class WingetProvider : IUpdateProvider
         if (!_options.WingetEnabled)
             return InstallResult.Fail("winget disabled by configuration");
 
-        // Candidate ids: the one found at scan time first, then the other configured alternatives. The scan already takes
-        // the id from winget's upgrade listing when a configured id appears there (see CheckAsync): "winget list"
-        // correlates an installed product with every manifest that matches it (the Firefox MSIX build shows up under
-        // both Mozilla.Firefox and Mozilla.Firefox.MSIX), while "winget upgrade" names the one that can upgrade it. The
-        // ordered retry below is the backstop for when that listing was unavailable or named none of them: a refusal
-        // for one id means try the next, and the fallbacks only run once every id refused.
+        // Candidate ids: the one resolved at scan time first, then the configured ids. The scan resolves the id
+        // generically (see CheckAsync): a configured id winget lists as installed, else the id of the listing row whose
+        // name passes the app's identity rule, and then the id winget's upgrade listing names for that install - so the
+        // resolved id may be one the policy never mentions (Adobe.Acrobat.Reader.32-bit, a per-user Google.Chrome.EXE,
+        // Mozilla.Firefox.MSIX). The ordered retry below is the backstop for when the upgrade listing was unavailable:
+        // a refusal for one id means try the next, an id winget does not list as installed at all is skipped (it is a
+        // configured hint for another build, and installing it would add a second product), and the fallbacks only run
+        // once every id refused.
         var candidates = SplitIds(update.WingetId).Concat(SplitIds(update.WingetIdAlternatives)).Concat(SplitIds(app.WingetId))
             .Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (candidates.Count == 0)
@@ -219,12 +256,28 @@ public sealed class WingetProvider : IUpdateProvider
     /// <param name="PlainResult">The failure reported when no fallback applies.</param>
     internal sealed record UpgradeRefusal(string WingetId, int ExitCode, string? VersionAfter, InstallResult PlainResult);
 
-    /// <summary>Either a final result for one id, or the refusal that sends the install on to the next id.</summary>
-    internal sealed record UpgradeOutcome(InstallResult? Result, UpgradeRefusal? Refusal)
+    /// <summary>
+    /// Either a final result for one id, the refusal that sends the install on to the next id, or the answer that winget
+    /// does not list the id as installed at all (<see cref="IdNotInstalled"/>, which also moves on to the next id but
+    /// never gets a fallback).
+    /// </summary>
+    internal sealed record UpgradeOutcome(InstallResult? Result, UpgradeRefusal? Refusal, bool IdNotInstalled = false)
     {
         public static UpgradeOutcome Final(InstallResult result) => new(result, null);
         public static UpgradeOutcome Refused(UpgradeRefusal refusal) => new(null, refusal);
+        public static UpgradeOutcome NotInstalled(InstallResult result) => new(result, null, true);
     }
+
+    /// <summary>
+    /// Whether a plain <c>winget upgrade</c> answered that no installed package matches the id (0x8A150014, or its
+    /// message with a failing exit code). Pure, so the rule is testable. With generic id resolution the candidates can
+    /// include configured ids for another build of the product (the 64-bit id when the 32-bit one is installed); such an
+    /// id is skipped rather than ending the install, and it never gets a fallback, since "install --force" would put
+    /// that other build next to the installed one.
+    /// </summary>
+    internal static bool IsIdNotInstalled(int exitCode, string? output) =>
+        exitCode == WingetOutputParser.ExitNoInstalledPackageFound
+        || (exitCode != 0 && !IsRefusal(exitCode) && WingetOutputParser.IsNotInstalledOutput(output));
 
     /// <summary>
     /// The order in which an install works through the configured ids. Pure apart from the two delegates, so the order
@@ -234,18 +287,24 @@ public sealed class WingetProvider : IUpdateProvider
     /// null when none applies to a refusal. The first fallback that succeeds, or that fails for a reason other than
     /// "no applicable installer" (i.e. it ran something), is final. The Firefox case this exists for: the MSIX build is
     /// listed under both Mozilla.Firefox and Mozilla.Firefox.MSIX; the first id refuses and its fallback would run the
-    /// machine-wide nullsoft installer, while the second id upgrades the MSIX silently.
+    /// machine-wide nullsoft installer, while the second id upgrades the MSIX silently. An id winget does not list as
+    /// installed (<see cref="UpgradeOutcome.IdNotInstalled"/>) is skipped and gets no fallback; when no id got further
+    /// than that, the first such answer is the result.
     /// </summary>
     internal static async Task<InstallResult> RunCandidatesAsync(IReadOnlyList<string> candidates,
         Func<string, Task<UpgradeOutcome>> upgrade, Func<UpgradeRefusal, Task<InstallResult?>> fallback)
     {
         var refusals = new List<UpgradeRefusal>();
+        InstallResult? firstNotInstalled = null;
         foreach (var id in candidates)
         {
             var outcome = await upgrade(id).ConfigureAwait(false);
+            if (outcome.IdNotInstalled) { firstNotInstalled ??= outcome.Result; continue; }
             if (outcome.Refusal is null) return outcome.Result!;
             refusals.Add(outcome.Refusal);
         }
+        if (refusals.Count == 0)
+            return firstNotInstalled ?? InstallResult.Fail("No winget id to upgrade.");
 
         InstallResult? firstNoInstaller = null;
         foreach (var refusal in refusals)
@@ -332,6 +391,13 @@ public sealed class WingetProvider : IUpdateProvider
             return UpgradeOutcome.Refused(new UpgradeRefusal(wingetId, run.ExitCode, newVersion, plain));
         }
 
+        if (IsIdNotInstalled(run.ExitCode, run.CombinedOutput))
+        {
+            var message = $"winget does not list '{wingetId}' as installed in the {context.Context} scope (exit 0x{run.ExitCode:X8}).";
+            _logger.LogInformation("{AppId}: {Message} Trying the next id, if any.", app.AppId, message);
+            return UpgradeOutcome.NotInstalled(InstallResult.Fail(message, run.ExitCode));
+        }
+
         if (run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade)
         {
             _logger.LogInformation("{AppId}: already up to date ({Version}).", app.AppId, newVersion);
@@ -395,8 +461,9 @@ public sealed class WingetProvider : IUpdateProvider
         || (output?.Contains(WingetOutputParser.NoApplicableInstallerMarker, StringComparison.OrdinalIgnoreCase) ?? false);
 
     /// <summary>The failure reported when a package only ships a machine-wide installer and the agent runs as the user.</summary>
-    internal static string MachineOnlyMessage(string wingetId) =>
-        $"'{wingetId}' has no per-user or MSIX installer in winget, only a machine-wide one; the agent does not start installers that need administrator rights in a user's session.";
+    internal static string MachineOnlyMessage(string wingetId, bool portableSkipped = false) => portableSkipped
+        ? $"'{wingetId}' has no per-user or MSIX installer in winget that updates the installed copy: its user-scope installer is a portable package, which would install a second copy; the agent does not start installers that need administrator rights in a user's session."
+        : $"'{wingetId}' has no per-user or MSIX installer in winget, only a machine-wide one; the agent does not start installers that need administrator rights in a user's session.";
 
     /// <summary>
     /// Whether a refused upgrade is retried as "winget install --force" (see <see cref="ReinstallAsync"/>). Pure, so
@@ -453,8 +520,8 @@ public sealed class WingetProvider : IUpdateProvider
     /// manifest's installer as is, and when that is a machine-wide installer it requests elevation and Windows shows a
     /// UAC prompt in the user's session (Mozilla.Firefox, whose manifest only has a machine-scope nullsoft installer).
     /// So the install runs with <c>--scope user</c> first and <c>--installer-type msix</c> second (see
-    /// <see cref="UserContextInstallFilter"/>); when neither matches an installer the attempt fails without running
-    /// anything. Success is still judged by the version winget reports afterwards, never by the exit code. User
+    /// <see cref="UserContextInstallFilter"/>), skipping a user-scope installer that is a portable package; when neither
+    /// matches an installer the attempt fails without running anything. Success is still judged by the version winget reports afterwards, never by the exit code. User
     /// context only (<see cref="ShouldReinstall"/>): as LocalSystem a user-scope installer would land in SYSTEM's own
     /// profile.
     /// </summary>
@@ -474,7 +541,7 @@ public sealed class WingetProvider : IUpdateProvider
             return InstallResult.Fail($"winget install timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1);
         if (step.NoPerUserInstaller)
         {
-            var message = $"{prefix} {MachineOnlyMessage(wingetId)}";
+            var message = $"{prefix} {MachineOnlyMessage(wingetId, step.PortableSkipped)}";
             _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
             return InstallResult.Fail(message, WingetOutputParser.ExitNoApplicableInstaller);
         }
@@ -689,21 +756,63 @@ public sealed class WingetProvider : IUpdateProvider
         return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
     }
 
-    /// <summary>Outcome of <see cref="RunInstallStepAsync"/>: the last winget run, and whether it found no permitted installer.</summary>
-    private sealed record InstallStepResult(ProcessRunResult Run, bool NoPerUserInstaller);
+    /// <summary>
+    /// The installer type <c>winget show</c> reports for the installer it selected ("Installer Type: portable (zip)",
+    /// "Installer Type: msix"), or null when the output has no such line. Pure, so the parsing is testable. Only the
+    /// line that starts with "Installer Type:" counts, not "Nested Installer Type:".
+    /// </summary>
+    internal static string? ParseInstallerType(string? showOutput)
+    {
+        if (string.IsNullOrWhiteSpace(showOutput)) return null;
+        const string label = "Installer Type:";
+        foreach (var raw in showOutput.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith(label, StringComparison.OrdinalIgnoreCase)) continue;
+            var value = line[label.Length..].Trim();
+            return value.Length == 0 ? null : value;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Whether an installer type (see <see cref="ParseInstallerType"/>) is a portable package ("portable",
+    /// "portable (zip)"). Pure, so the rule is testable. A portable package never updates an installed copy: winget
+    /// unpacks a second, separate copy into the user's profile.
+    /// </summary>
+    internal static bool IsPortable(string? installerType) =>
+        installerType?.Contains("portable", StringComparison.OrdinalIgnoreCase) ?? false;
+
+    /// <summary>Outcome of <see cref="RunInstallStepAsync"/>: the last winget run, whether it found no permitted installer, and whether a portable user-scope installer was skipped.</summary>
+    private sealed record InstallStepResult(ProcessRunResult Run, bool NoPerUserInstaller, bool PortableSkipped = false);
 
     /// <summary>
     /// Runs <c>winget install</c> for the fallbacks. As LocalSystem once, with <c>--scope machine</c> when
     /// <paramref name="systemScope"/> is set. In the user context with <see cref="UserContextInstallFilter"/>: up to
     /// two attempts, the second only after winget answered "no applicable installer" to the first, so an unfiltered
-    /// (possibly machine-wide, elevating) install is never started. <c>NoPerUserInstaller</c> is set when the last
-    /// attempt was refused that way, i.e. winget ran nothing.
+    /// (possibly machine-wide, elevating) install is never started. Before the <c>--scope user</c> attempt,
+    /// <c>winget show</c> is asked which installer that filter selects: when it is a portable package (Notepad++ and VLC
+    /// only offer a portable zip in user scope) the attempt is skipped, because it would install a second, portable copy
+    /// instead of updating the real one. <c>NoPerUserInstaller</c> is set when the last attempt was refused as "no
+    /// applicable installer", i.e. winget ran nothing.
     /// </summary>
     private async Task<InstallStepResult> RunInstallStepAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, bool force, bool systemScope, IProgress<string>? progress, CancellationToken ct)
     {
         var attempts = context.IsSystem ? 1 : UserContextInstallAttempts;
-        for (var attempt = 0; ; attempt++)
+        var firstAttempt = 0;
+        if (!context.IsSystem)
+        {
+            var show = await RunShowAsync(winget, wingetId, sourceName, context, UserContextInstallFilter(0), ct).ConfigureAwait(false);
+            var installerType = show.Started && !show.TimedOut && show.ExitCode == 0 ? ParseInstallerType(show.CombinedOutput) : null;
+            if (IsPortable(installerType))
+            {
+                _logger.LogInformation("{AppId}: winget's user-scope installer for '{WingetId}' is portable ('{Type}') and would install a second copy instead of updating this one; skipping '{Filter}' and trying '{Next}'.",
+                    app.AppId, wingetId, installerType, UserContextInstallFilter(0).Trim(), UserContextInstallFilter(1).Trim());
+                firstAttempt = 1;
+            }
+        }
+        for (var attempt = firstAttempt; ; attempt++)
         {
             var filter = context.IsSystem ? (systemScope ? ScopeArgument(context) : string.Empty) : UserContextInstallFilter(attempt);
             var args = new StringBuilder()
@@ -725,8 +834,25 @@ public sealed class WingetProvider : IUpdateProvider
                     app.AppId, wingetId, filter.Trim(), run.ExitCode, UserContextInstallFilter(attempt + 1).Trim());
                 continue;
             }
-            return new InstallStepResult(run, noInstaller);
+            return new InstallStepResult(run, noInstaller, firstAttempt > 0);
         }
+    }
+
+    /// <summary>
+    /// One <c>winget show</c> for the package with an installer filter (<see cref="UserContextInstallFilter"/>): exits 0
+    /// with the selected installer's details, or reports "no applicable installer".
+    /// </summary>
+    private async Task<ProcessRunResult> RunShowAsync(string winget, string wingetId, string sourceName, ExecutionContextInfo context, string filter, CancellationToken ct)
+    {
+        var args = new StringBuilder()
+            .Append("show --id ").Append(Quote(wingetId))
+            .Append(" --exact");
+        AppendSource(args, sourceName);
+        args.Append(filter).Append(" --accept-source-agreements --disable-interactivity");
+        AppendExtra(args, _options.WingetGlobalArgs);
+
+        return await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout,
+            environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>Whether winget offers an installer the user context may run (see <see cref="CheckPerUserInstallerAsync"/>).</summary>
@@ -734,8 +860,10 @@ public sealed class WingetProvider : IUpdateProvider
 
     /// <summary>
     /// Asks <c>winget show</c> whether the package has a per-user or an MSIX installer, with the same two filters the
-    /// install step uses. Available when either answers with a manifest; None when both say "no applicable
-    /// installer"; Unknown otherwise (winget failed for another reason), in which case the take-over does not uninstall either.
+    /// install step uses. Available when either answers with a manifest that is not a portable package; None when both
+    /// say "no applicable installer" or name a portable package (which the install step never runs, see
+    /// <see cref="RunInstallStepAsync"/>); Unknown otherwise (winget failed for another reason), in which case the
+    /// take-over does not uninstall either.
     /// </summary>
     private async Task<InstallerAvailability> CheckPerUserInstallerAsync(AppPolicy app, string winget, string wingetId, string sourceName,
         ExecutionContextInfo context, CancellationToken ct)
@@ -744,15 +872,7 @@ public sealed class WingetProvider : IUpdateProvider
         for (var attempt = 0; attempt < UserContextInstallAttempts; attempt++)
         {
             var filter = UserContextInstallFilter(attempt);
-            var args = new StringBuilder()
-                .Append("show --id ").Append(Quote(wingetId))
-                .Append(" --exact");
-            AppendSource(args, sourceName);
-            args.Append(filter).Append(" --accept-source-agreements --disable-interactivity");
-            AppendExtra(args, _options.WingetGlobalArgs);
-
-            var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout,
-                environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+            var run = await RunShowAsync(winget, wingetId, sourceName, context, filter, ct).ConfigureAwait(false);
             if (!run.Started || run.TimedOut)
             {
                 _logger.LogWarning("{AppId}: 'winget show' for '{WingetId}' ({Filter}) could not be run: {Reason}", app.AppId, wingetId, filter.Trim(),
@@ -760,6 +880,13 @@ public sealed class WingetProvider : IUpdateProvider
                 continue;
             }
             if (IsNoApplicableInstaller(run.ExitCode, run.CombinedOutput)) { none++; continue; }
+            if (run.ExitCode == 0 && IsPortable(ParseInstallerType(run.CombinedOutput)))
+            {
+                _logger.LogInformation("{AppId}: winget's installer for '{WingetId}' matching '{Filter}' is portable ('{Type}'); it would install a second copy, so it does not count as a per-user installer.",
+                    app.AppId, wingetId, filter.Trim(), ParseInstallerType(run.CombinedOutput));
+                none++;
+                continue;
+            }
             if (run.ExitCode == 0)
             {
                 _logger.LogDebug("{AppId}: winget has an installer for '{WingetId}' matching '{Filter}'.", app.AppId, wingetId, filter.Trim());
@@ -959,6 +1086,88 @@ public sealed class WingetProvider : IUpdateProvider
     /// <summary>Looks a package id up in the unfiltered per-scope listing (cached for the lifetime of this provider instance).</summary>
     private async Task<WingetRow?> FindInFullListAsync(string winget, string id, ExecutionContextInfo context, CancellationToken ct)
     {
+        var rows = await GetFullListAsync(winget, context, ct).ConfigureAwait(false);
+        if (rows is null) return null;
+
+        var row = WingetOutputParser.FindById(rows, id);
+        // Only trust rows that carry a real source; sourceless rows are unmapped ARP entries.
+        if (row is null || string.IsNullOrWhiteSpace(row.Source)) return null;
+        var idMatches = row.Id.Equals(id, StringComparison.OrdinalIgnoreCase) || row.Id.EndsWith(WingetOutputParser.Ellipsis);
+        return idMatches ? row : null;
+    }
+
+    /// <summary>
+    /// Searches the unfiltered per-scope listing (the same cached one as <see cref="FindInFullListAsync"/>) for the row
+    /// whose name passes the app's identity rule (see <see cref="ResolveByName"/>), or null when there is none.
+    /// </summary>
+    private async Task<WingetRow?> FindByNameInFullListAsync(string winget, AppPolicy app, IReadOnlyList<string> configuredIds, ExecutionContextInfo context, CancellationToken ct)
+    {
+        var rows = await GetFullListAsync(winget, context, ct).ConfigureAwait(false);
+        return rows is null ? null : ResolveByName(rows, app, configuredIds);
+    }
+
+    /// <summary>
+    /// The installed-state fallback of the generic id resolution: the row of winget's full per-scope listing whose Name
+    /// passes the app's identity rule (<see cref="InstalledAppScanner.NameMatches"/>). Pure, so the rule is testable.
+    /// Only rows winget can manage count: a real source, a complete (not ellipsised) id, and no pseudo id
+    /// (<c>MSIX\…</c>, <c>ARP\…</c>). Several matches are ordered by <see cref="PickByName"/>.
+    /// </summary>
+    internal static WingetRow? ResolveByName(IReadOnlyList<WingetRow> listRows, AppPolicy app, IReadOnlyList<string> configuredIds) =>
+        PickByName(listRows.Where(r => !string.IsNullOrWhiteSpace(r.Source)), app, configuredIds);
+
+    /// <summary>
+    /// The best row among those whose Name passes the app's identity rule, or null. Pure. Rows with a truncated
+    /// (ellipsised) or pseudo id are never picked. Tie-break, in order: (1) the id sharing the most leading
+    /// dot-separated segments with the first configured id (case-insensitive; <c>Google.Chrome.EXE</c> shares two with
+    /// <c>Google.Chrome</c>, an unrelated vendor's id none); (2) the highest installed version; (3) the id in ordinal,
+    /// case-insensitive order, so the choice is deterministic.
+    /// </summary>
+    internal static WingetRow? PickByName(IEnumerable<WingetRow> rows, AppPolicy app, IReadOnlyList<string> configuredIds)
+    {
+        var hint = configuredIds.FirstOrDefault(id => !string.IsNullOrWhiteSpace(id)) ?? string.Empty;
+        return rows
+            .Where(r => IsResolvableId(r.Id) && InstalledAppScanner.NameMatches(app, r.Name))
+            .OrderByDescending(r => SharedIdSegments(r.Id, hint))
+            .ThenByDescending(r => r.Version, VersionComparer.Instance)
+            .ThenBy(r => r.Id, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
+    /// <summary>A listing id the agent may use as a package id: not empty, not truncated by winget, not a pseudo id.</summary>
+    private static bool IsResolvableId(string? id) =>
+        !string.IsNullOrWhiteSpace(id) && !id.Contains(WingetOutputParser.Ellipsis) && !InstalledAppDiscovery.IsPseudoId(id);
+
+    /// <summary>How many leading dot-separated segments two winget ids share (case-insensitive).</summary>
+    internal static int SharedIdSegments(string a, string b)
+    {
+        var x = a.Split('.');
+        var y = b.Split('.');
+        var n = 0;
+        while (n < x.Length && n < y.Length && x[n].Length > 0 && string.Equals(x[n], y[n], StringComparison.OrdinalIgnoreCase)) n++;
+        return n;
+    }
+
+    /// <summary>
+    /// Whether a row of the upgrade listing describes the same install as the row the lookup found: the same id, the
+    /// same installed version, or the same (complete) name. Guards the name match in the upgrade listing, so a
+    /// related product whose name also passes the rule ("Git Extensions" for <c>^Git\b</c>) cannot take over the
+    /// result of an install that was found and is up to date.
+    /// </summary>
+    internal static bool DescribesSameInstall(WingetRow installed, WingetRow candidate)
+    {
+        if (string.Equals(installed.Id, candidate.Id, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.IsNullOrWhiteSpace(installed.Version) && !string.IsNullOrWhiteSpace(candidate.Version)
+            && !VersionComparer.IsUnknown(installed.Version) && !VersionComparer.IsUnknown(candidate.Version)
+            && string.Equals(VersionComparer.Normalize(installed.Version), VersionComparer.Normalize(candidate.Version), StringComparison.OrdinalIgnoreCase))
+            return true;
+        return !string.IsNullOrWhiteSpace(installed.Name)
+               && !installed.Name.EndsWith(WingetOutputParser.Ellipsis) && !candidate.Name.EndsWith(WingetOutputParser.Ellipsis)
+               && string.Equals(installed.Name.Trim(), candidate.Name.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The unfiltered per-scope <c>winget list</c> rows (cached for the lifetime of this provider instance), or null when the listing failed.</summary>
+    private async Task<IReadOnlyList<WingetRow>?> GetFullListAsync(string winget, ExecutionContextInfo context, CancellationToken ct)
+    {
         IReadOnlyList<WingetRow>? rows;
         await _fullListGate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -981,12 +1190,7 @@ public sealed class WingetProvider : IUpdateProvider
             return null;
         }
         finally { _fullListGate.Release(); }
-
-        var row = WingetOutputParser.FindById(rows, id);
-        // Only trust rows that carry a real source; sourceless rows are unmapped ARP entries.
-        if (row is null || string.IsNullOrWhiteSpace(row.Source)) return null;
-        var idMatches = row.Id.Equals(id, StringComparison.OrdinalIgnoreCase) || row.Id.EndsWith(WingetOutputParser.Ellipsis);
-        return idMatches ? row : null;
+        return rows;
     }
 
     private readonly Dictionary<(InstallContext Context, string Source), IReadOnlyList<WingetRow>> _upgradeListCache = new();
@@ -1033,12 +1237,17 @@ public sealed class WingetProvider : IUpdateProvider
     }
 
     /// <summary>
-    /// The row of winget's upgrade listing for the first configured id (in candidate order) that appears there with an
-    /// available version, or null when none does. Pure, so the rule is testable. Ids are compared case-insensitively
-    /// and exactly: a truncated (ellipsised) Id cell is ignored, because "Mozilla.Firefox…" could stand for either
-    /// alternative, and ignoring it just keeps the list-based match.
+    /// The row of winget's upgrade listing that names the id able to upgrade the product, or null. Pure, so the rule is
+    /// testable. Only rows with an available version count. First the row of the first configured id (in candidate
+    /// order) that appears there; ids are compared case-insensitively and exactly. Otherwise, when
+    /// <paramref name="app"/> is given, a row whose Name passes the app's identity rule
+    /// (<see cref="InstalledAppScanner.NameMatches"/>), chosen by <see cref="PickByName"/> (never a pseudo or truncated
+    /// id) - and, when <paramref name="installed"/> is given, only one that describes that same install
+    /// (<see cref="DescribesSameInstall"/>). A truncated (ellipsised) Id cell is never picked, because
+    /// "Mozilla.Firefox…" could stand for either alternative, and ignoring it just keeps the list-based match.
     /// </summary>
-    internal static WingetRow? PickFromUpgradeListing(IReadOnlyList<WingetRow> upgradeRows, IReadOnlyList<string> candidateIds)
+    internal static WingetRow? PickFromUpgradeListing(IReadOnlyList<WingetRow> upgradeRows, IReadOnlyList<string> candidateIds,
+        AppPolicy? app = null, WingetRow? installed = null)
     {
         if (upgradeRows.Count == 0) return null;
         foreach (var id in candidateIds)
@@ -1047,7 +1256,8 @@ public sealed class WingetProvider : IUpdateProvider
             var row = upgradeRows.FirstOrDefault(r => r.HasAvailable && string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase));
             if (row is not null) return row;
         }
-        return null;
+        if (app is null) return null;
+        return PickByName(upgradeRows.Where(r => r.HasAvailable && (installed is null || DescribesSameInstall(installed, r))), app, candidateIds);
     }
 
     private async Task<ListLookup> ListAsync(string winget, AppPolicy app, ExecutionContextInfo context, TimeSpan timeout, CancellationToken ct)

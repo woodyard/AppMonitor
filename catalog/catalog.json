@@ -63,7 +63,7 @@
     "appId": "chrome",
     "displayName": "Google Chrome",
     "source": "winget",
-    "context": "system",
+    "context": "auto",
     "wingetId": "Google.Chrome",
     "versionUrl": "https://versionhistory.googleapis.com/v1/chrome/platforms/win64/channels/stable/versions/all/releases?filter=endtime%3Dnone,fraction%3E%3D0.5&order_by=version%20desc",
     "versionRegex": "\"version\":\\s*\"([\\d.]+)\"",
@@ -87,7 +87,7 @@
     "userDownloadUrl": "https://update.code.visualstudio.com/latest/win32-x64-user/stable",
     "userInstallerArgs": "/VERYSILENT /NORESTART /MERGETASKS=!runcode",
     "installerType": "exe",
-    "detectDisplayNameRegex": "^Microsoft Visual Studio Code",
+    "detectDisplayNameRegex": "^Microsoft Visual Studio Code( \\(User\\))?$",
     "processNames": [ "Code" ],
     "notes": "Verified 2026-09-14: productVersion 1.137.0; system setup and user setup URLs both return 200 (VSCodeSetup-x64-1.137.0.exe / VSCodeUserSetup-x64-1.137.0.exe)."
   },
@@ -102,7 +102,7 @@
     "downloadUrl": "https://github.com/PowerShell/PowerShell/releases/download/v{version}/PowerShell-{version}-win-x64.msi",
     "installerArgs": "",
     "installerType": "msi",
-    "detectDisplayNameRegex": "^PowerShell 7",
+    "detectDisplayNameRegex": "^PowerShell 7(?!.*preview)",
     "processNames": [ "pwsh" ],
     "notes": "Verified 2026-09-14: tag_name v7.6.6, MSI URL returns 200."
   },
@@ -112,7 +112,7 @@
     "source": "winget",
     "context": "system",
     "wingetId": "Git.Git",
-    "detectDisplayNameRegex": "^Git\\b",
+    "detectDisplayNameRegex": "^Git( version \\d|$)",
     "detectPublisherRegex": "The Git Development Community",
     "processNames": [ "git-bash", "git", "bash" ],
     "notes": "winget only - git-scm.com has no stable machine-readable version endpoint that survives a release rename."
@@ -123,7 +123,7 @@
     "source": "winget",
     "context": "auto",
     "wingetId": "Zoom.Zoom",
-    "detectDisplayNameRegex": "^Zoom\\b",
+    "detectDisplayNameRegex": "^Zoom( Workplace)?( \\((32|64)-bit\\))?$",
     "processNames": [ "Zoom", "Zoom.exe" ],
     "notes": "winget only. Zoom installs per-user by default and machine-wide with the MSI, hence context auto."
   },

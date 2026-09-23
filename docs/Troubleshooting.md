@@ -217,7 +217,9 @@ Common causes:
 - The entry is filtered out on purpose: entries marked `SystemComponent = 1`, with a
   `ReleaseType` of `Update`/`Hotfix`/`Security Update`, or with a `ParentKeyName` are skipped.
 - Web source: `VersionRegex` no longer matches the vendor page (see below).
-- winget source: the `WingetId` is wrong, or winget reports the installed version as "Unknown" (then
+- winget source: the `WingetId` is wrong and no row of `winget list` passes the identity rule either
+  (see [An install asked for administrator rights](#an-install-asked-for-administrator-rights) for how
+  the id is resolved), or winget reports the installed version as "Unknown" (then
   `WingetIncludeUnknown` decides whether it counts).
 - For an application whose registry version is unreliable, point `DetectFilePath` at the installed
   executable and let the file version decide.
@@ -307,8 +309,8 @@ per-user install (Comet); an exe wrapper in the manifest never matches an ARP en
 per-user MSI (Bing Wallpaper). Those filters are built from the installed package's metadata and no
 `winget upgrade` argument relaxes them.
 
-What the agent does: it first tries the plain upgrade with every winget id configured for the
-application (`Mozilla.Firefox;Mozilla.Firefox.MSIX`). Only when all of them refused does it, in the
+What the agent does: it first tries the plain upgrade with the id the scan resolved and then every
+winget id configured for the application. Only when all of them refused does it, in the
 user's session, retry as `winget install --force`. `--force` makes winget skip the installed-package
 lookup, so no such filter is built. The retry is always filtered to installers that need no
 administrator rights: `--scope user` first and, when winget has no per-user installer
@@ -370,21 +372,45 @@ directory can still lose them.
 The guarantee: nothing the tray agent starts in a user's session asks for administrator rights.
 Machine-wide installs are the service's job (LocalSystem, session 0, never a prompt).
 
-- **The id winget itself names.** `winget list` shows an installed product under every manifest
-  that matches it, but `winget upgrade` (the listing, fetched once per scan and scope) names the
-  id that can actually upgrade it. When one of the configured ids is in that listing, the scan uses
-  that id and its versions. When none is, the scan keeps the `winget list` match, so products that
-  `winget upgrade` refuses (Perplexity Comet, Bing Wallpaper) are still found.
-- **Every configured winget id before any fallback.** As a backstop, an application with several ids
-  (`Mozilla.Firefox;Mozilla.Firefox.MSIX`) gets the plain `winget upgrade --scope user` for each id in
-  turn. The fallbacks (`winget install --force`, the `WingetReplaceOnMismatch` take-over) only run
-  once every id refused with *no applicable upgrade* (`0x8A15002B`) or *install technology is
-  different* (`0x8A15008E`).
+- **The id winget itself names, resolved by the app's identity rule.** The scan does not need a
+  curated list of alternative ids. The winget id is the id of the row in winget's own listing whose
+  name passes the application's identity rule (`DetectDisplayNameRegex`, or the `DisplayName` as a
+  whole-word prefix when no regex is set; winget has no publisher column, so `DetectPublisherRegex`
+  plays no part here). Configured ids are hints that take precedence, in this order:
+  1. a configured id that `winget list --id <id> --exact` (or the full per-scope listing) finds;
+  2. otherwise the row of the full per-scope `winget list` whose name passes the rule - the log says
+     *resolved winget id '...' from winget's ... listing by name* (Adobe Reader 32-bit resolves to
+     `Adobe.Acrobat.Reader.32-bit` for a policy naming `Adobe.Acrobat.Reader.64-bit`);
+  3. then `winget upgrade` (the listing, fetched once per scan and scope), which names the id that can
+     actually upgrade the product: a configured id in that listing wins, otherwise a row whose name
+     passes the rule and that describes the same install (same id, installed version or name).
+     `winget list` shows an installed product under every manifest that matches it, so this is how the
+     Firefox MSIX build ends up under `Mozilla.Firefox.MSIX` and a per-user Chrome under
+     `Google.Chrome.EXE` (the only Chrome package with a user-scope installer).
+
+  Rows with a pseudo id (`MSIX\...`, `ARP\...`), a truncated id (`…`) or no source are never used.
+  When several rows pass the rule, the id sharing the most leading dot-separated segments with the
+  first configured id wins, then the highest installed version, then the id in alphabetical order.
+  When the upgrade listing names nothing usable, the scan keeps the `winget list` match, so products
+  that `winget upgrade` refuses (Perplexity Comet, Bing Wallpaper) are still found. The identity rule
+  therefore has to be precise: `^Google Chrome$` does not pick up Chrome Beta, `^Google Chrome` would.
+- **The resolved id first, then the configured ids, before any fallback.** The install tries the id
+  the scan resolved, then each configured id, with the plain `winget upgrade --scope user`. An id
+  winget does not list as installed at all (`0x8A150014`) is skipped: it is a hint for another build
+  of the product. The fallbacks (`winget install --force`, the `WingetReplaceOnMismatch` take-over)
+  only run once every remaining id refused with *no applicable upgrade* (`0x8A15002B`) or *install
+  technology is different* (`0x8A15008E`).
 - **Never a machine-wide installer per user.** The fallbacks' `winget install` runs with
   `--scope user`, then with `--installer-type msix` (MSIX installs are per user and never elevate),
   never without a filter. When winget has neither (`0x8A150010`), the update fails without running
   anything. The take-over checks this with `winget show` before it uninstalls, so it never removes
   an application it could not put back.
+- **Never a portable copy instead of an update.** Before the `--scope user` attempt the agent asks
+  `winget show --scope user` which installer that selects. When it is a portable package (Notepad++
+  and VLC only offer a portable zip in user scope) the attempt is skipped and only the MSIX attempt
+  remains, because a portable install would put a second copy next to the real one instead of
+  updating it. The take-over's pre-check treats a portable user-scope installer as no per-user
+  installer at all.
 - **RunAsInvoker for everything the tray starts.** winget, and the installers it or a web source
   starts, run with `__COMPAT_LAYER=RunAsInvoker`: Windows does not raise a UAC prompt for an
   installer whose manifest asks for administrator rights; it runs with the user's rights and succeeds
@@ -401,9 +427,10 @@ Firefox`. The scan matched the MSIX build under `Mozilla.Firefox`; `winget upgra
 Mozilla.Firefox --scope user` refused (`0x8A15002B`), and older agents then ran an unscoped
 `winget install --force --id Mozilla.Firefox`, whose only installer is the machine-wide nullsoft
 setup: a UAC prompt. `winget upgrade --scope user` lists exactly one Firefox row, under
-`Mozilla.Firefox.MSIX`, so the scan now picks that id and its MSIX installer upgrades the build
-silently; if the listing is unavailable, the install still tries `Mozilla.Firefox.MSIX` before any
-fallback.
+`Mozilla.Firefox.MSIX`, so the scan now picks that id - by id when it is configured, by name
+(*Mozilla Firefox* passes `^Mozilla Firefox`) when it is not - and its MSIX installer upgrades the
+build silently; if the listing is unavailable, the install still tries any configured
+`Mozilla.Firefox.MSIX` before any fallback.
 
 ## SYSTEM is refused its own files, or machine-wide installs ask for UAC
 

@@ -44,19 +44,41 @@ public sealed class InstalledAppScanner
     /// <summary>Finds installed entries matching the app policy's detection rules (display-name / publisher regex).</summary>
     public static IReadOnlyList<InstalledApp> Match(AppPolicy app, IEnumerable<InstalledApp> inventory)
     {
-        Regex? name = TryRegex(app.DetectDisplayNameRegex);
         Regex? pub = TryRegex(app.DetectPublisherRegex);
-        if (name is null && pub is null)
-        {
-            // fall back to the display name (whole-word, case-insensitive)
-            if (string.IsNullOrWhiteSpace(app.DisplayName)) return [];
-            name = new Regex("^" + Regex.Escape(app.DisplayName) + @"(\s|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        }
+        // A policy that identifies its product by publisher alone (no usable display-name regex) is matched on the
+        // publisher only, as before; otherwise the display name must pass the name rule (see NameMatches).
+        var checkName = pub is null || TryRegex(app.DetectDisplayNameRegex) is not null;
+        if (checkName && string.IsNullOrWhiteSpace(app.DetectDisplayNameRegex) && string.IsNullOrWhiteSpace(app.DisplayName)) return [];
         return inventory.Where(i =>
-                (name is null || name.IsMatch(i.DisplayName)) &&
+                (!checkName || NameMatches(app, i.DisplayName)) &&
                 (pub is null || (i.Publisher is not null && pub.IsMatch(i.Publisher))))
             .OrderByDescending(i => i.DisplayVersion, Versioning.VersionComparer.Instance)
             .ToList();
+    }
+
+    /// <summary>
+    /// The name part of the app's identity rule, shared by the registry inventory (<see cref="Match"/>) and the winget
+    /// id resolution: <c>DetectDisplayNameRegex</c> when it is set (case-insensitive; an invalid pattern matches
+    /// nothing), otherwise the app's <c>DisplayName</c> as an anchored whole-word prefix ("Google Chrome" matches
+    /// "Google Chrome" and "Google Chrome 120", not "Google Chromebook"). An app with neither matches nothing.
+    /// winget's listings have no publisher column, so for winget rows this is the whole rule: the publisher regex is
+    /// not applied there.
+    /// </summary>
+    public static bool NameMatches(AppPolicy app, string? displayName)
+    {
+        if (string.IsNullOrWhiteSpace(displayName)) return false;
+        var pattern = !string.IsNullOrWhiteSpace(app.DetectDisplayNameRegex)
+            ? app.DetectDisplayNameRegex
+            : string.IsNullOrWhiteSpace(app.DisplayName) ? null : "^" + Regex.Escape(app.DisplayName.Trim()) + @"(\s|$)";
+        if (pattern is null) return false;
+        try
+        {
+            // The static overload uses the framework's regex cache: the winget resolution runs this for every row of a
+            // listing, for every app.
+            return Regex.IsMatch(displayName, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        }
+        catch (ArgumentException) { return false; }          // invalid pattern
+        catch (RegexMatchTimeoutException) { return false; }
     }
 
     /// <summary>Reads the file version from a configured DetectFilePath, if any.</summary>

@@ -136,13 +136,13 @@ public class JsonCatalogProviderTests
 
         var vscode = Assert.Single(catalog, a => a.AppId == "vscode");
         Assert.Equal("Microsoft.VisualStudioCode", vscode.WingetId);
-        Assert.Equal("^Microsoft Visual Studio Code", vscode.DetectDisplayNameRegex);
+        Assert.Equal(@"^Microsoft Visual Studio Code( \(User\))?$", vscode.DetectDisplayNameRegex);
         Assert.Equal("https://update.code.visualstudio.com/latest/win32-x64-user/stable", vscode.UserDownloadUrl);
         Assert.Contains("/VERYSILENT", vscode.InstallerArgs);
 
         var chrome = Assert.Single(catalog, a => a.AppId == "chrome");
         Assert.Equal(InstallerType.Msi, chrome.InstallerType);
-        Assert.Equal(InstallContext.System, chrome.Context);
+        Assert.Equal(InstallContext.Auto, chrome.Context); // Chrome is often installed per user (Google.Chrome.EXE)
 
         var slack = Assert.Single(catalog, a => a.AppId == "slack");
         Assert.Equal(InstallContext.User, slack.Context);

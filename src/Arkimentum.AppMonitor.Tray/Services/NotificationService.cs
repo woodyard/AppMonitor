@@ -38,6 +38,7 @@ public sealed class NotificationService : IHostedService
     private readonly AgentStateStore _store;
     private readonly IWindowService _windows;
     private readonly CloseAppsCoordinator _closeApps;
+    private readonly AppIconProvider _icons;
     private readonly Dispatcher _dispatcher;
 
     private bool _activationHooked;
@@ -59,6 +60,7 @@ public sealed class NotificationService : IHostedService
         AgentStateStore store,
         IWindowService windows,
         CloseAppsCoordinator closeApps,
+        AppIconProvider icons,
         Dispatcher dispatcher)
     {
         _log = log;
@@ -66,6 +68,7 @@ public sealed class NotificationService : IHostedService
         _store = store;
         _windows = windows;
         _closeApps = closeApps;
+        _icons = icons;
         _dispatcher = dispatcher;
     }
 
@@ -197,6 +200,7 @@ public sealed class NotificationService : IHostedService
             builder.AddText(string.IsNullOrWhiteSpace(notify.Title) ? Strings.ProductName : notify.Title);
             if (!string.IsNullOrWhiteSpace(notify.Body)) builder.AddText(notify.Body);
             builder.AddAttributionText(Strings.ProductName);
+            AddAppLogo(builder, update);
 
             AddButtons(builder, notify, update);
 
@@ -247,6 +251,9 @@ public sealed class NotificationService : IHostedService
     /// </summary>
     private void OnStoreChanged()
     {
+        // Icons are resolved ahead of the toasts that will want them; cached per application, so this is cheap.
+        foreach (var update in _store.Updates) _icons.Prefetch(AppIconRequest.For(update));
+
         if (_installToastKeys.Count == 0) return;
         foreach (var key in _installToastKeys.ToList())
         {
@@ -291,6 +298,27 @@ public sealed class NotificationService : IHostedService
     }
 
     private const string FeedbackTag = "feedback";
+
+    /// <summary>How long a toast waits for an icon that is not cached yet; the next toast of that application has it.</summary>
+    private static readonly TimeSpan AppLogoWait = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>
+    /// Puts the application's own icon on a toast about one update, when the icon cache has a PNG for it. Without one the
+    /// toast keeps the agent's logo; an icon never stops a toast from showing.
+    /// </summary>
+    private void AddAppLogo(ToastContentBuilder builder, PendingUpdate? update)
+    {
+        if (update is null) return;
+        try
+        {
+            if (_icons.ToastLogoPath(AppIconRequest.For(update), AppLogoWait) is { } png)
+                builder.AddAppLogoOverride(new Uri(png), ToastGenericAppLogoCrop.Default);
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "No app logo on the toast for {App}", update.DisplayName);
+        }
+    }
 
     private bool ShouldShow(NotifyMessage notify)
     {

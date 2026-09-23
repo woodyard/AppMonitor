@@ -144,6 +144,8 @@ public sealed class InstalledAppScanner
                     DisplayVersion = (k.GetValue("DisplayVersion") as string)?.Trim(),
                     Publisher = (k.GetValue("Publisher") as string)?.Trim(),
                     InstallLocation = k.GetValue("InstallLocation") as string,
+                    // Unexpanded: a REG_EXPAND_SZ in a user hive names that user's folders, not the reader's.
+                    DisplayIcon = k.GetValue("DisplayIcon", null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string,
                     UninstallString = k.GetValue("UninstallString") as string,
                     QuietUninstallString = k.GetValue("QuietUninstallString") as string,
                     ProductCode = sub.StartsWith('{') ? sub : null,

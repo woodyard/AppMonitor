@@ -79,7 +79,6 @@ public static class Strings
 
     public const string EmptyTitle = "You’re up to date";
     public const string EmptySubtitleNoScan = "No update check has run yet.";
-    /// <summary>Segoe Fluent Icons / Segoe MDL2 Assets glyph "CheckMark".</summary>
     public const string EmptyGlyph = "\uE73E";
 
     public static string EmptySubtitle(string when) => $"All monitored applications were up to date at {when}.";
@@ -127,10 +126,6 @@ public static class Strings
 
     // ---------------------------------------------------------------- recent updates tab
     public const string RecentInstallsEmpty = "No updates installed yet";
-    /// <summary>Segoe Fluent Icons / Segoe MDL2 Assets glyph "CheckMark".</summary>
-    public const string RecentInstallSucceededGlyph = "";
-    /// <summary>Segoe Fluent Icons / Segoe MDL2 Assets glyph "Error" (a circled exclamation mark).</summary>
-    public const string RecentInstallFailedGlyph = "";
     /// <summary>Tooltip of a successful row, e.g. "Updated from 155.0.4 to 156.0.1".</summary>
     public static string RecentInstallUpdatedFrom(string from, string to) => $"Updated from {from} to {to}";
 

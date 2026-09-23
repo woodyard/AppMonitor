@@ -150,6 +150,7 @@ Details, including the scan cycle, the update state machine and the IPC message 
 | **Take over a mismatched winget package** | `WingetReplaceOnMismatch = 1` (per application, off by default) | Nothing extra. When `winget upgrade` refuses because the installed package's install technology differs from the new one, the agent uninstalls the package with winget and installs the new version. |
 | **Notification style** | `NotificationMode` = `Quiet` (default) or `Reminders`, `NotificationIntervalMinutes` (both global, per-app override) | `Quiet`: one toast per update - several updates found in one scan are collapsed into a single "3 updates available" toast - and after that only a deadline, a close prompt or a failure interrupts. `Reminders`: a reminder every interval while the update is pending. |
 | **Scan cadence** | `ScanIntervalMinutes`, `StartupDelaySeconds`, `ScanOnStartup` | Nothing - scans are silent. |
+| **Application icons** | Nothing to configure | Update cards, the "Recent" list and the toasts show each application's own icon. The winget catalog has none, so they are taken from the device (the uninstall entry's `DisplayIcon`, App Paths, an MSIX package's logo); without one, a monogram tile. |
 
 Applications are defined either fully in the registry, or by referencing an entry in the shipped
 catalog (`catalog.json`) and overriding only what you care about. The catalog supplies identity,

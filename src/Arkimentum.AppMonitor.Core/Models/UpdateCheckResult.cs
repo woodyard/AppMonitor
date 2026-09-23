@@ -15,6 +15,8 @@ public sealed record UpdateCheckResult
     public InstallerType InstallerType { get; init; }
     public string? Sha256 { get; init; }
     public string? WingetId { get; init; }
+    /// <summary>Where the tray finds the application's icon (see <see cref="Inventory.AppIconSource.ForInstalledApp"/>); display only.</summary>
+    public string? IconPath { get; init; }
     public string? Error { get; init; }
     /// <summary>System or User; the context in which the install was detected.</summary>
     public InstallContext ResolvedContext { get; init; }

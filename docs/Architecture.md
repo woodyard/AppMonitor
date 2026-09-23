@@ -305,6 +305,12 @@ after the retention period, the history is not. Each state message carries the 1
 receiving client may see (machine-wide installs for everyone, per-user installs only for their own user)
 as `RecentInstalls`, which the tray shows on its "Recent" tab.
 
+The update cards and the "Recent" rows show each application's own icon. The winget catalog carries no icons, so
+they come from the device: the scan passes the matched uninstall entry's `DisplayIcon` (or an MSI product's registered
+icon, or the only executable in `InstallLocation`) along as `PendingUpdate.IconPath`, which the history keeps too; when
+that gives nothing the tray tries the configured process names in App Paths, then an MSIX package with the same display
+name, and otherwise shows a monogram tile. Resolved icons are also cached per user as PNGs for the toasts' app logo.
+
 ### Closing blocking applications
 **Only interactive sessions count.** A process in session 0 - a scheduled task, a management agent's
 script, a service's helper - never blocks an update and is never closed by the agent: no user can save
@@ -495,6 +501,7 @@ Notes:
 | `%ProgramData%\Arkimentum\AppMonitor\AgentUpdates\<version>\` | service | The downloaded release package, the extracted payload, and `install.log` from the installer run. The two most recent versions are kept. |
 | `%ProgramData%\Arkimentum\AppMonitor\update-pending.json` | service | Written before the self-updater hands over; read on the next start to report the outcome. |
 | `%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Tray_yyyyMMdd.log` | tray agent | One log per user. |
+| `%LOCALAPPDATA%\Arkimentum\AppMonitor\Icons\<AppId>.png` | tray agent | Application icons found on this device, used as the toasts' app logo. Safe to delete; rebuilt as needed. |
 | `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` | Group Policy / Intune | Policy configuration (wins). |
 | `HKLM\SOFTWARE\Arkimentum\AppMonitor` | installer / admin | Local preference configuration. |
 | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\ArkimentumAppMonitorTray` | installer | Logon fallback that starts the tray agent. |

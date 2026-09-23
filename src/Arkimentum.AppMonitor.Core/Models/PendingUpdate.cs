@@ -88,6 +88,13 @@ public sealed class PendingUpdate
     public string? Sha256 { get; set; }
 
     /// <summary>
+    /// Where the tray finds the application's icon: the matched uninstall entry's raw <c>DisplayIcon</c> (<c>path,index</c>,
+    /// environment variables unexpanded) or an executable found for it. Display only; null when the scan found nothing,
+    /// and then the tray falls back to App Paths, an MSIX logo or a monogram. Added after 1.1.31; older state lacks it.
+    /// </summary>
+    public string? IconPath { get; set; }
+
+    /// <summary>
     /// Whether the user may defer the update right now. False while a deferral is still running: deferring again
     /// before it has expired would only extend it and use up another of the allowed deferrals, so the tray, the toast
     /// and the close-apps dialog hide the buttons and the service refuses the request until the period is over.

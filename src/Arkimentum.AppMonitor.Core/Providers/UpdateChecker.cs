@@ -170,6 +170,9 @@ public sealed class UpdateChecker
         }
 
         result = ApplyMinimumVersion(app, result, label);
+        // Display only: where the tray finds the application's icon (the winget catalog carries none).
+        if (result.IsInstalled && result.IconPath is null)
+            result = result with { IconPath = AppIconSource.ForInstalledApp(installed, app.DetectFilePath) };
         LogSummary(label, app, result, context);
         return result;
     }

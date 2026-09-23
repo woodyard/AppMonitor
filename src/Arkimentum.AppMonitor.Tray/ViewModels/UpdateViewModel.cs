@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows.Input;
+using System.Windows.Media;
 using Arkimentum.AppMonitor.Models;
 using Arkimentum.AppMonitor.Tray.Infrastructure;
 using Arkimentum.AppMonitor.Tray.Resources;
+using Arkimentum.AppMonitor.Tray.Services;
 using Arkimentum.AppMonitor.UI;
 
 namespace Arkimentum.AppMonitor.Tray.ViewModels;
@@ -38,7 +40,11 @@ public interface IUpdateActions
 /// <summary>One update card.</summary>
 public sealed class UpdateViewModel : ObservableObject
 {
+    /// <summary>The card's application icon, in logical pixels.</summary>
+    public const int IconSize = 32;
+
     private readonly IUpdateActions _actions;
+    private readonly AppIconProvider _icons;
     private readonly RelayCommand _installCommand;
     private readonly RelayCommand _dismissCommand;
     private readonly RelayCommand _closeAppsCommand;
@@ -46,11 +52,14 @@ public sealed class UpdateViewModel : ObservableObject
     private PendingUpdate _update;
     private string? _localStatus;
     private bool _isConnected;
+    private string? _iconHints;
+    private ImageSource? _icon;
 
-    public UpdateViewModel(PendingUpdate update, IUpdateActions actions, bool isConnected, string? localStatus)
+    public UpdateViewModel(PendingUpdate update, IUpdateActions actions, bool isConnected, string? localStatus, AppIconProvider icons)
     {
         _update = update;
         _actions = actions;
+        _icons = icons;
         _isConnected = isConnected;
         _localStatus = localStatus;
 
@@ -61,6 +70,7 @@ public sealed class UpdateViewModel : ObservableObject
         _closeAppsCommand = new RelayCommand(() => _actions.ShowCloseApps(_update));
         DeferralOptions = [];
         RebuildDeferralOptions();
+        RequestIcon();
     }
 
     public PendingUpdate Model => _update;
@@ -86,6 +96,20 @@ public sealed class UpdateViewModel : ObservableObject
     public string SourceBadge => _update.Source == UpdateSource.Winget ? Strings.BadgeWinget : Strings.BadgeWeb;
 
     public string ContextBadge => _update.Context == InstallContext.User ? Strings.BadgeUser : Strings.BadgeSystem;
+
+    /// <summary>The application's own icon once it has been found; until then, or when there is none, the view shows <see cref="Monogram"/>.</summary>
+    public ImageSource? Icon
+    {
+        get => _icon;
+        private set
+        {
+            if (SetProperty(ref _icon, value)) OnPropertyChanged(nameof(HasIcon));
+        }
+    }
+
+    public bool HasIcon => _icon is not null;
+
+    public string Monogram => AppIconLookup.Monogram(DisplayName);
 
     // ---------------------------------------------------------------- status
 
@@ -170,7 +194,21 @@ public sealed class UpdateViewModel : ObservableObject
         _isConnected = isConnected;
         _localStatus = localStatus;
         RebuildDeferralOptions();
+        RequestIcon();
         RaiseAll();
+    }
+
+    /// <summary>
+    /// Asks for the icon when the card is new or the update now carries different hints (a fresh scan found an icon path).
+    /// The provider caches per application, so the 30-second refresh never re-resolves anything.
+    /// </summary>
+    private void RequestIcon()
+    {
+        var request = AppIconRequest.For(_update);
+        var hints = request.Hints;
+        if (hints == _iconHints) return;
+        _iconHints = hints;
+        _icons.Deliver(request, IconSize, icon => { if (_iconHints == hints) Icon = icon; });
     }
 
     private void RebuildDeferralOptions()
@@ -190,7 +228,7 @@ public sealed class UpdateViewModel : ObservableObject
         _installCommand.RaiseCanExecuteChanged();
         _dismissCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(
-            nameof(DisplayName), nameof(VersionText), nameof(SourceBadge), nameof(ContextBadge),
+            nameof(DisplayName), nameof(Monogram), nameof(VersionText), nameof(SourceBadge), nameof(ContextBadge),
             nameof(StatusText), nameof(Severity), nameof(DeadlineText), nameof(HasDeadline),
             nameof(ShowInstall), nameof(IsInstallEnabled), nameof(ShowCloseApps), nameof(ShowDefer),
             nameof(ShowNoMoreDeferrals), nameof(DeferralsUsedText), nameof(ShowRemindMeLater), nameof(ShowAnyAction));

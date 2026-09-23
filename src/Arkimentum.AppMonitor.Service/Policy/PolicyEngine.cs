@@ -248,6 +248,8 @@ public static class PolicyEngine
         p.InstallerArgs = r.InstallerArgs;
         p.InstallerType = r.InstallerType;
         p.Sha256 = r.Sha256;
+        // A scan that found no icon (the entry briefly missing mid-upgrade, an older tray) keeps the one already known.
+        p.IconPath = r.IconPath ?? p.IconPath;
         if (p.DeferredUntilUtc is { } d && p.DeadlineUtc is { } dl && d > dl) p.DeferredUntilUtc = dl;
     }
 

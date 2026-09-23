@@ -178,5 +178,6 @@ public static class InstallHistory
         Context = u.Context,
         UserSid = u.Context == InstallContext.User ? u.UserSid : null,
         Message = message,
+        IconPath = u.IconPath,
     };
 }

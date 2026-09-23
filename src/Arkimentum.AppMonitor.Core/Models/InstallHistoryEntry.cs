@@ -29,4 +29,7 @@ public sealed class InstallHistoryEntry
 
     /// <summary>Why the install failed, shortened; null for a success.</summary>
     public string? Message { get; set; }
+
+    /// <summary>The tracked update's <see cref="PendingUpdate.IconPath"/> when the install finished; null for older or backfilled entries.</summary>
+    public string? IconPath { get; set; }
 }

@@ -23,18 +23,20 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     private readonly IpcClientService _ipc;
     private readonly IWindowService _windows;
     private readonly ICloseAppsLauncher _closeApps;
+    private readonly AppIconProvider _icons;
     private readonly RelayCommand _checkNowCommand;
     private readonly RelayCommand _updateAllCommand;
     private readonly DispatcherTimer _clock;
 
     public MainViewModel(ILogger<MainViewModel> log, AgentStateStore store, IpcClientService ipc, IWindowService windows,
-        ICloseAppsLauncher closeApps, AgentUpdateViewModel agentUpdate)
+        ICloseAppsLauncher closeApps, AgentUpdateViewModel agentUpdate, AppIconProvider icons)
     {
         _log = log;
         _store = store;
         _ipc = ipc;
         _windows = windows;
         _closeApps = closeApps;
+        _icons = icons;
         AgentUpdate = agentUpdate;
 
         _checkNowCommand = new RelayCommand(CheckNow, () => _store.IsConnected && !_store.IsScanning);
@@ -216,7 +218,11 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         var signature = RecentInstallViewModel.Signature(entries);
         if (signature == _recentSignature) return false;
         _recentSignature = signature;
-        RecentInstalls = entries.Take(10).Select(e => new RecentInstallViewModel(e)).ToList();
+        // The tracked update of the same application lends a history row its icon path and process names.
+        RecentInstalls = entries.Take(10)
+            .Select(e => new RecentInstallViewModel(e,
+                _store.Updates.FirstOrDefault(u => string.Equals(u.AppId, e.AppId, StringComparison.OrdinalIgnoreCase)), _icons))
+            .ToList();
         return true;
     }
 
@@ -345,7 +351,7 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
             }
             else
             {
-                Updates.Insert(index, new UpdateViewModel(model, this, connected, local));
+                Updates.Insert(index, new UpdateViewModel(model, this, connected, local, _icons));
             }
         }
 

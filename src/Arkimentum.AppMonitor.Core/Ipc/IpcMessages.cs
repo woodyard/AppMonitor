@@ -175,6 +175,13 @@ public sealed class StateMessage : IpcMessage
     /// shows the plain version without the status line or the buttons.
     /// </summary>
     public AgentUpdateStatus? AgentUpdate { get; set; }
+
+    /// <summary>
+    /// Optional (added after 1.1.20): the most recent finished installs this client may see, newest first - machine-wide
+    /// ones for everyone, per-user ones only for their own user - at most 10. Null from an older service; the tray then
+    /// shows its "Recent updates" list as empty.
+    /// </summary>
+    public List<InstallHistoryEntry>? RecentInstalls { get; set; }
 }
 
 /// <summary>The self-updater's last outcome, as the service reports it to its clients.</summary>

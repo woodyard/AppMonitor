@@ -49,6 +49,12 @@ public sealed class AgentStateStore : IHostedService
 
     public IReadOnlyList<PendingUpdate> Updates => _updates;
 
+    /// <summary>
+    /// The latest finished installs this user may see, newest first (at most 10). Empty before the first state message
+    /// and from a service that predates the install history.
+    /// </summary>
+    public IReadOnlyList<InstallHistoryEntry> RecentInstalls { get; private set; } = [];
+
     public DateTimeOffset? LastScanUtc { get; private set; }
 
     public DateTimeOffset? NextScanUtc { get; private set; }
@@ -284,6 +290,8 @@ public sealed class AgentStateStore : IHostedService
     public void Apply(StateMessage state)
     {
         _updates = state.Updates ?? [];
+        // Null from a service that predates the install history.
+        RecentInstalls = state.RecentInstalls ?? [];
         LastScanUtc = state.LastScanUtc;
         NextScanUtc = state.NextScanUtc;
         ScanInProgress = state.ScanInProgress;

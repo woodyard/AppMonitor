@@ -19,6 +19,14 @@ public sealed class ServiceState
     /// only the applications that actually exist on this device instead of the whole configuration.
     /// </summary>
     public Dictionary<string, AppPresence> AppPresence { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Finished install attempts, newest first, at most <see cref="State.InstallHistory.MaxEntries"/> (added after
+    /// 1.1.20 and additive: an older state file has none). Kept apart from <see cref="Updates"/>, whose installed entries
+    /// are purged after the retention period. Replaced as a whole on every append, never edited in place, because the
+    /// state message is built from it on pipe threads without the policy lock.
+    /// </summary>
+    public List<InstallHistoryEntry> InstallHistory { get; set; } = [];
 }
 
 /// <summary>Persists <see cref="ServiceState"/> as JSON (atomic replace) so deadlines and deferrals survive restarts.</summary>
@@ -48,6 +56,7 @@ public sealed class StateStore
             var state = JsonSerializer.Deserialize<ServiceState>(json, Json) ?? new ServiceState();
             state.Updates = new Dictionary<string, PendingUpdate>(state.Updates, StringComparer.OrdinalIgnoreCase);
             state.AppPresence = new Dictionary<string, AppPresence>(state.AppPresence, StringComparer.OrdinalIgnoreCase);
+            state.InstallHistory = InstallHistory.Normalize(state.InstallHistory);
             // An install that was in flight when the service stopped cannot be trusted.
             foreach (var u in state.Updates.Values.Where(u => u.State == UpdateState.Installing)) u.State = UpdateState.Available;
             _logger.LogInformation("Loaded state from {Path}: {Count} tracked update(s), {Presence} known application(s)",

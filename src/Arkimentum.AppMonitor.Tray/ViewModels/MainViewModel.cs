@@ -171,6 +171,35 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
 
     public string EmptyGlyph => Strings.EmptyGlyph;
 
+    // ---------------------------------------------------------------- recent updates
+
+    private string? _recentSignature;
+
+    /// <summary>The latest finished installs (the service sends at most 10), one line each; replaced only when they change.</summary>
+    public IReadOnlyList<RecentInstallViewModel> RecentInstalls { get; private set; } = [];
+
+    public bool ShowRecentInstallsEmpty => RecentInstalls.Count == 0;
+
+    private bool _recentInstallsExpanded;
+
+    /// <summary>Whether "Recent updates" is open; remembered for the tray's lifetime only.</summary>
+    public bool RecentInstallsExpanded
+    {
+        get => _recentInstallsExpanded;
+        set => SetProperty(ref _recentInstallsExpanded, value);
+    }
+
+    /// <summary>Rebuilds the rows when the history (or the date the times are relative to) changed; true when it did.</summary>
+    private bool RefreshRecentInstalls()
+    {
+        var entries = _store.RecentInstalls;
+        var signature = RecentInstallViewModel.Signature(entries);
+        if (signature == _recentSignature) return false;
+        _recentSignature = signature;
+        RecentInstalls = entries.Take(10).Select(e => new RecentInstallViewModel(e)).ToList();
+        return true;
+    }
+
     // ---------------------------------------------------------------- details footer
 
     public string ScanIntervalText => _store.Settings.ScanIntervalMinutes > 0
@@ -303,6 +332,7 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         for (var index = Updates.Count - 1; index >= incoming.Count; index--) Updates.RemoveAt(index);
 
         RefreshProgress();
+        if (RefreshRecentInstalls()) OnPropertyChanged(nameof(RecentInstalls), nameof(ShowRecentInstallsEmpty));
 
         _checkNowCommand.RaiseCanExecuteChanged();
         _updateAllCommand.RaiseCanExecuteChanged();

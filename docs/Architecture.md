@@ -299,6 +299,11 @@ Pending state is persisted to `state.json` so deferrals, deadlines and deferral 
 service restart or reboot. The same file also holds `AppPresence` - what the last check concluded about
 each configured application on this device - which is what "Monitored applications" in the tray is built
 from; see [Monitored applications are per session](#monitored-applications-are-per-session).
+It also keeps `InstallHistory`: every finished install attempt (app, from/to version, success, time,
+context, user SID, a short failure message), newest first, capped at 50. Installed updates are purged
+after the retention period, the history is not. Each state message carries the 10 newest entries the
+receiving client may see (machine-wide installs for everyone, per-user installs only for their own user)
+as `RecentInstalls`, which the tray shows under "Recent updates".
 
 ### Closing blocking applications
 **Only interactive sessions count.** A process in session 0 - a scheduled task, a management agent's
@@ -482,7 +487,7 @@ Notes:
 | `%ProgramFiles%\Arkimentum\AppMonitor\Admin\` | installer | Admin console binaries. Started from the all-users Start Menu shortcut `Programs\Arkimentum\Arkimentum AppMonitor Admin`. |
 | `%ProgramData%\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Admin_yyyyMMdd.log` | admin console | What the console changed, and every headless export/import. |
 | `%ProgramData%\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Service_yyyyMMdd.log` | service | Service log, rolled daily and at `MaxLogFileSizeMB` (`..._1.log`, `..._2.log`), pruned after `LogRetentionDays`. |
-| `%ProgramData%\Arkimentum\AppMonitor\state.json` | service | Pending updates, deferrals, deadlines, failure counts. |
+| `%ProgramData%\Arkimentum\AppMonitor\state.json` | service | Pending updates, deferrals, deadlines, failure counts, application presence, install history. |
 | `%ProgramData%\Arkimentum\AppMonitor\Downloads\` | service | Installers downloaded from web sources (`StateDirectory\Downloads`). |
 | `%ProgramData%\Arkimentum\AppMonitor\device.credential` | service | The per-device cloud key, DPAPI-protected (LocalMachine) with the ACL replaced: `SYSTEM` and `BUILTIN\Administrators` only. Machine-bound - never put it in a reference image. |
 | `%ProgramData%\Arkimentum\AppMonitor\cloud-config.json` | service | The last organization configuration fetched, with its `configVersion`. Read on every configuration resolve, so it keeps working offline. |

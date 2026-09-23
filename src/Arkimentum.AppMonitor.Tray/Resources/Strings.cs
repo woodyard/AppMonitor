@@ -115,6 +115,16 @@ public static class Strings
     public static string RequiredBy(string when) => $"Required by {when} ({StateMandatory})";
     public static string DeferralsUsed(int used, int max) => $"{used} of {max} deferrals used";
 
+    // ---------------------------------------------------------------- recent updates expander
+    public const string RecentInstallsHeader = "Recent updates";
+    public const string RecentInstallsEmpty = "No updates installed yet";
+    /// <summary>Segoe Fluent Icons / Segoe MDL2 Assets glyph "CheckMark".</summary>
+    public const string RecentInstallSucceededGlyph = "";
+    /// <summary>Segoe Fluent Icons / Segoe MDL2 Assets glyph "Error" (a circled exclamation mark).</summary>
+    public const string RecentInstallFailedGlyph = "";
+    /// <summary>Tooltip of a successful row, e.g. "Updated from 155.0.4 to 156.0.1".</summary>
+    public static string RecentInstallUpdatedFrom(string from, string to) => $"Updated from {from} to {to}";
+
     // ---------------------------------------------------------------- details expander
     public const string DetailsHeader = "Details";
     public const string DetailsOrganization = "Organization";

@@ -648,7 +648,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         var message = ProcessHelper.DescribeFailure(outcome, u.DisplayName);
         _logger.LogError("{App}: {Message}", u.DisplayName, message);
         var at = DateTimeOffset.UtcNow;
-        await MutateAsync(u.Key, x => PolicyEngine.MarkFailed(x, message, at), ct).ConfigureAwait(false);
+        await FinishAsync(u.Key, u, x => PolicyEngine.MarkFailed(x, message, at), x => InstallHistory.Failed(x, message, at), ct).ConfigureAwait(false);
         RecordEvent(ReportedEventKind.InstallFailed, u.AppId, message, u.InstalledVersion, u.AvailableVersion);
         if (_settings.Current.NotificationsEnabled && Get(u.Key) is { } failed)
             await SendNotificationAsync(failed, NotificationKind.Failed, ct).ConfigureAwait(false);
@@ -775,16 +775,18 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         {
             _logger.LogInformation("Installed {App} {Version}{Reboot}: {Message}", snapshot.DisplayName, result.InstalledVersion ?? snapshot.AvailableVersion,
                 result.RebootRequired ? " (reboot required)" : "", result.Message ?? "ok");
-            await MutateAsync(key, x => PolicyEngine.MarkInstalled(x, result, doneAt), ct).ConfigureAwait(false);
+            var entry = await FinishAsync(key, snapshot, x => PolicyEngine.MarkInstalled(x, result, doneAt), x => InstallHistory.Succeeded(x, result, doneAt), ct).ConfigureAwait(false);
+            // The history entry was taken before MarkInstalled overwrote the installed version, so it still has the old one.
             RecordEvent(ReportedEventKind.InstallSucceeded, snapshot.AppId,
-                $"{snapshot.DisplayName} installed{(result.RebootRequired ? " (reboot required)" : "")}", snapshot.InstalledVersion, result.InstalledVersion ?? snapshot.AvailableVersion);
+                $"{snapshot.DisplayName} installed{(result.RebootRequired ? " (reboot required)" : "")}", entry.FromVersion, result.InstalledVersion ?? snapshot.AvailableVersion);
             if (settings.NotificationsEnabled && settings.ShowInstalledNotifications && Get(key) is { } done)
                 await SendNotificationAsync(done, NotificationKind.Installed, ct, result.RebootRequired ? "A restart is required to finish the update." : null).ConfigureAwait(false);
         }
         else
         {
             _logger.LogError("Install of {App} failed (exit {Code}): {Message}", snapshot.DisplayName, result.ExitCode, result.Message);
-            await MutateAsync(key, x => PolicyEngine.MarkFailed(x, result.Message ?? $"exit code {result.ExitCode}", doneAt), ct).ConfigureAwait(false);
+            var error = result.Message ?? $"exit code {result.ExitCode}";
+            await FinishAsync(key, snapshot, x => PolicyEngine.MarkFailed(x, error, doneAt), x => InstallHistory.Failed(x, error, doneAt), ct).ConfigureAwait(false);
             RecordEvent(ReportedEventKind.InstallFailed, snapshot.AppId,
                 $"{snapshot.DisplayName}: {result.Message ?? $"exit code {result.ExitCode}"}", snapshot.InstalledVersion, snapshot.AvailableVersion);
             if (settings.NotificationsEnabled && Get(key) is { } failed)
@@ -1057,6 +1059,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 OrganizationName = string.IsNullOrWhiteSpace(cloud?.OrganizationName) ? null : cloud!.OrganizationName,
             },
             AgentUpdate = AgentUpdateState(),
+            // Same visibility as the updates: machine-wide installs for everyone, per-user ones for their own user.
+            RecentInstalls = InstallHistory.VisibleTo(_state.InstallHistory, conn.UserSid),
         };
     }
 
@@ -1089,6 +1093,30 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
         finally { _policyLock.Release(); }
         await BroadcastStateAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Records the end of an install attempt: takes the history entry from the tracked update (before
+    /// <paramref name="mutate"/> marks it installed or failed), prepends it to the persisted history, applies the
+    /// mutation, and saves both in one go under the policy lock. When the update is no longer tracked (pruned while
+    /// the install ran) the entry is made from <paramref name="fallback"/>, since the install did happen.
+    /// </summary>
+    private async Task<InstallHistoryEntry> FinishAsync(string key, PendingUpdate fallback, Action<PendingUpdate> mutate,
+        Func<PendingUpdate, InstallHistoryEntry> entryFor, CancellationToken ct)
+    {
+        InstallHistoryEntry entry;
+        await _policyLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var u = Get(key);
+            entry = entryFor(u ?? fallback);
+            _state.InstallHistory = InstallHistory.Append(_state.InstallHistory, entry);
+            if (u is not null) mutate(u);
+            _store.Save(_settings.Current, _state);
+        }
+        finally { _policyLock.Release(); }
+        await BroadcastStateAsync(ct).ConfigureAwait(false);
+        return entry;
     }
 
     /// <summary>Forgets a tracked update (its card disappears from the tray with the broadcast).</summary>

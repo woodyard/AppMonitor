@@ -209,7 +209,10 @@ public sealed class NotificationService : IHostedService
             var installing = notify.Kind == NotificationKind.Installing && update is not null;
             if (installing)
             {
-                builder.AddProgressBar(title: null, value: null, isIndeterminate: true, valueStringOverride: null, status: Strings.ToastInstallingStatus);
+                // Every field is given explicitly: the library turns a field left null into a data-binding placeholder,
+                // and without bound data Windows shows the placeholder's name ("progressBarTitle_0") on the toast.
+                builder.AddProgressBar(title: string.Empty, value: null, isIndeterminate: true, valueStringOverride: string.Empty,
+                    status: Strings.ToastInstallingStatus);
                 builder.SetToastScenario(ToastScenario.Reminder);
                 builder.AddAudio(new ToastAudio { Silent = true });
             }

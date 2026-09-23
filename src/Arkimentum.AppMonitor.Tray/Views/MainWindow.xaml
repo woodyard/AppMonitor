@@ -5,9 +5,9 @@
         xmlns:ui="clr-namespace:Arkimentum.AppMonitor.UI;assembly=Arkimentum.AppMonitor.UI"
         Title="{Binding Title}"
         Width="560"
-        Height="680"
+        Height="760"
         MinWidth="440"
-        MinHeight="480"
+        MinHeight="580"
         WindowStartupLocation="CenterScreen"
         Icon="pack://application:,,,/Arkimentum.AppMonitor.UI;component/Assets/app.ico"
         FontFamily="{StaticResource AppFontFamily}"
@@ -20,6 +20,7 @@
             <RowDefinition Height="Auto" />
             <!-- The update list keeps some room even with both expanders open in a small window. -->
             <RowDefinition Height="*" MinHeight="120" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -214,7 +215,8 @@
             </ScrollViewer>
 
             <!-- ==== empty state -->
-            <StackPanel VerticalAlignment="Center"
+            <StackPanel x:Name="EmptyStatePanel"
+                        VerticalAlignment="Center"
                         HorizontalAlignment="Center"
                         Margin="0,0,0,32"
                         Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibility}}">
@@ -243,19 +245,15 @@
         </Grid>
 
         <!-- ==== recent updates: one line per finished install, newest first (the service sends at most 10) -->
-        <!-- ==== recent updates and details: one panel that scrolls when both are open. The window caps its height so the
-             update list above always keeps its row's MinHeight (see MainWindow.FitLowerSection). -->
-        <ScrollViewer x:Name="LowerSection"
-                      Grid.Row="3"
-                      VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled">
-        <StackPanel>
-        <Expander Expanded="OnSectionExpanded"
+        <Expander x:Name="RecentExpander"
+                  Grid.Row="3"
                   Margin="0,16,0,0"
                   Foreground="{DynamicResource BrandInkBrush}"
                   Header="{x:Static res:Strings.RecentInstallsHeader}"
                   IsExpanded="{Binding RecentInstallsExpanded, Mode=TwoWay}">
-            <StackPanel Margin="0,12,0,4">
+            <!-- Each section scrolls on its own; MainWindow.FitSections caps the height. -->
+            <ScrollViewer x:Name="RecentScroll" Margin="0,4,0,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
                 <TextBlock Style="{StaticResource CaptionText}"
                            Text="{x:Static res:Strings.RecentInstallsEmpty}"
                            Visibility="{Binding ShowRecentInstallsEmpty, Converter={StaticResource BoolToVisibility}}" />
@@ -304,14 +302,17 @@
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
             </StackPanel>
+            </ScrollViewer>
         </Expander>
 
         <!-- ==== details footer -->
-        <Expander Expanded="OnSectionExpanded"
+        <Expander x:Name="DetailsExpander"
+                  Grid.Row="4"
                   Margin="0,16,0,0"
                   Foreground="{DynamicResource BrandInkBrush}"
                   Header="{x:Static res:Strings.DetailsHeader}">
-            <Grid Margin="0,12,0,4">
+            <ScrollViewer x:Name="DetailsScroll" Margin="0,4,0,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" MinWidth="144" />
                     <ColumnDefinition Width="*" />
@@ -382,8 +383,7 @@
                                Visibility="{Binding AgentUpdate.HasNotice, Converter={StaticResource BoolToVisibility}}" />
                 </StackPanel>
             </Grid>
+            </ScrollViewer>
         </Expander>
-        </StackPanel>
-        </ScrollViewer>
     </Grid>
 </Window>

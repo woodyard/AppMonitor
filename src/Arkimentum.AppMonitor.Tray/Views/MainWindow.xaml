@@ -14,13 +14,12 @@
         Foreground="{DynamicResource BrandInkBrush}"
         Background="{DynamicResource BrandBackgroundBrush}">
 
-    <Grid Margin="24,20,24,20">
+    <Grid x:Name="LayoutRoot" Margin="24,20,24,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <!-- The update list keeps some room even with both expanders open in a small window. -->
             <RowDefinition Height="*" MinHeight="120" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -244,7 +243,14 @@
         </Grid>
 
         <!-- ==== recent updates: one line per finished install, newest first (the service sends at most 10) -->
-        <Expander Grid.Row="3"
+        <!-- ==== recent updates and details: one panel that scrolls when both are open. The window caps its height so the
+             update list above always keeps its row's MinHeight (see MainWindow.FitLowerSection). -->
+        <ScrollViewer x:Name="LowerSection"
+                      Grid.Row="3"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+        <StackPanel>
+        <Expander Expanded="OnSectionExpanded"
                   Margin="0,16,0,0"
                   Foreground="{DynamicResource BrandInkBrush}"
                   Header="{x:Static res:Strings.RecentInstallsHeader}"
@@ -301,7 +307,7 @@
         </Expander>
 
         <!-- ==== details footer -->
-        <Expander Grid.Row="4"
+        <Expander Expanded="OnSectionExpanded"
                   Margin="0,16,0,0"
                   Foreground="{DynamicResource BrandInkBrush}"
                   Header="{x:Static res:Strings.DetailsHeader}">
@@ -377,5 +383,7 @@
                 </StackPanel>
             </Grid>
         </Expander>
+        </StackPanel>
+        </ScrollViewer>
     </Grid>
 </Window>

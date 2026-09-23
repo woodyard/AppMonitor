@@ -43,6 +43,12 @@ public sealed class AgentStateStore : IHostedService
     /// <summary>Raised on the UI thread whenever anything the UI shows has changed.</summary>
     public event Action? Changed;
 
+    /// <summary>
+    /// The service answered an agent update request (message id, ok, its text), or did not within the timeout (text
+    /// null). Lets the tray menu show the answer as a toast, since its window is usually closed.
+    /// </summary>
+    public event Action<string, bool, string?>? AgentUpdateAnswered;
+
     public bool IsConnected { get; private set; }
 
     public bool HasReceivedState { get; private set; }
@@ -136,7 +142,9 @@ public sealed class AgentStateStore : IHostedService
         _agentUpdateTimeout?.Stop();
         if (_agentUpdateRequests.Count == 0) return;
         _log.LogWarning("The service did not answer {Count} agent update request(s) within {Seconds:F0} s", _agentUpdateRequests.Count, UpdateAllPendingTimeout.TotalSeconds);
+        var unanswered = _agentUpdateRequests.ToList();
         _agentUpdateRequests.Clear();
+        foreach (var id in unanswered) AgentUpdateAnswered?.Invoke(id, false, null);
         Changed?.Invoke();
     }
 
@@ -281,6 +289,7 @@ public sealed class AgentStateStore : IHostedService
                 _agentUpdateTimeout?.Stop();
                 AgentUpdateNotice = ack.Message;
                 _log.LogInformation("Agent update request answered: ok={Ok} {Message}", ack.Ok, ack.Message);
+                AgentUpdateAnswered?.Invoke(id, ack.Ok, ack.Message);
                 Changed?.Invoke();
                 break;
         }

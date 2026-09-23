@@ -103,9 +103,11 @@ a target version, applied like `AgentTargetVersion` for that one run.
 
 The user does not have to wait for the 12-hour check. The tray agent's details footer and its About dialog show the
 agent version with what the last check concluded ("1.1.3 · up to date (checked 16:22)") and offer **Check for
-updates**; when a newer release is known they also offer **Update now**, and the tray's context menu turns into
-*Update AppMonitor to 1.1.4*. The admin console's Overview page has an **Update agent** button next to *Install or
-repair prerequisites*.
+updates**; when a newer release is known they also offer **Update now**. The tray icon's menu has *Check for
+AppMonitor update* (*Update AppMonitor to 1.1.4* once a newer release is known): one click checks and, when there is a
+newer release, installs it, and the service's answer ("Up to date: 1.1.4", "Updating to 1.1.5 - the agent will
+restart", or why not now) appears as a toast, because the window is usually closed when the menu is used. The admin
+console's Overview page has an **Update agent** button next to *Install or repair prerequisites*.
 
 All of them send one `updateAgent` IPC message (`CheckOnly` = true for a check) to the service, which does exactly
 what the scheduled check does - as SYSTEM, without a UAC prompt, ending in the shipped installer that stops the

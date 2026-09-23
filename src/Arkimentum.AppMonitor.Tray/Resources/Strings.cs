@@ -20,8 +20,11 @@ public static class Strings
 
     // ---------------------------------------------------------------- tray
     public const string TrayMenuOpen = "Open Arkimentum AppMonitor";
-    public const string TrayMenuCheckNow = "Check for updates now";
-    public const string TrayMenuCheckAgentUpdate = "Check for agent update";
+    public const string TrayMenuCheckNow = "Check apps for updates";
+    public const string TrayMenuCheckAgentUpdate = "Check for AppMonitor update";
+    /// <summary>Title of the toast that answers the menu's AppMonitor update item; the body is the service's answer.</summary>
+    public const string AgentUpdateToastTitle = "AppMonitor update";
+    public const string AgentUpdateNoAnswer = "The service did not answer. Try again in a moment.";
     /// <summary>Replaces <see cref="TrayMenuCheckAgentUpdate"/> once the service knows a newer agent release exists.</summary>
     public static string TrayMenuUpdateAgent(string version) => $"Update AppMonitor to {version}";
     public const string TrayMenuOpenLogFolder = "Open log folder";

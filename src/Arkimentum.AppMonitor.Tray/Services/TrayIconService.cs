@@ -36,6 +36,7 @@ public sealed class TrayIconService : IHostedService
     private readonly IWindowService _windows;
     private readonly CommandLineOptions _options;
     private readonly Dispatcher _dispatcher;
+    private readonly NotificationService _notifications;
 
     /// <summary>Brand terracotta: the badge has to read as "attention" against both light and dark taskbars.</summary>
     private static readonly Brush BadgeFill = Freeze(new SolidColorBrush(Color.FromRgb(0xc7, 0x62, 0x39)));
@@ -60,8 +61,10 @@ public sealed class TrayIconService : IHostedService
         IpcClientService ipc,
         IWindowService windows,
         CommandLineOptions options,
-        Dispatcher dispatcher)
+        Dispatcher dispatcher,
+        NotificationService notifications)
     {
+        _notifications = notifications;
         _log = log;
         _store = store;
         _ipc = ipc;
@@ -74,6 +77,7 @@ public sealed class TrayIconService : IHostedService
     {
         _dispatcher.Invoke(Create);
         _store.Changed += Refresh;
+        _store.AgentUpdateAnswered += OnAgentUpdateAnswered;
         // Refresh renders the badge and touches the icon, both of which belong to the UI thread.
         _dispatcher.Invoke(Refresh);
         return Task.CompletedTask;
@@ -82,6 +86,7 @@ public sealed class TrayIconService : IHostedService
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _store.Changed -= Refresh;
+        _store.AgentUpdateAnswered -= OnAgentUpdateAnswered;
         _dispatcher.Invoke(() =>
         {
             _icon?.Dispose();
@@ -188,15 +193,28 @@ public sealed class TrayIconService : IHostedService
     /// </summary>
     private async void RequestAgentUpdate()
     {
-        var install = _store.AgentUpdate is { UpdateAvailable: true };
-        _log.LogInformation("User chose the agent {Kind} from the tray menu", install ? "update" : "update check");
-        var messageId = await _ipc.RequestAgentUpdateAsync(checkOnly: !install).ConfigureAwait(true);
+        // One click checks and, when a newer release exists, installs it: from the menu the window is usually closed,
+        // so a check-only first step changed nothing the user could see and needed a second click. The service
+        // answers either way (up to date, updating, or why not now), and that answer comes back as a toast.
+        _log.LogInformation("User chose the agent update from the tray menu");
+        var messageId = await _ipc.RequestAgentUpdateAsync(checkOnly: false).ConfigureAwait(true);
         if (messageId is null)
         {
             _log.LogWarning("The agent update request was not sent: the service pipe is not connected");
+            _notifications.ShowFeedback(Strings.AgentUpdateToastTitle, Strings.StatusDisconnected);
             return;
         }
+        _menuAgentUpdateRequests.Add(messageId);
         _store.TrackAgentUpdateRequest(messageId);
+    }
+
+    /// <summary>Agent update requests sent from this menu, whose answer is shown as a toast.</summary>
+    private readonly HashSet<string> _menuAgentUpdateRequests = new(StringComparer.Ordinal);
+
+    private void OnAgentUpdateAnswered(string messageId, bool ok, string? message)
+    {
+        if (!_menuAgentUpdateRequests.Remove(messageId)) return;
+        _notifications.ShowFeedback(Strings.AgentUpdateToastTitle, message ?? Strings.AgentUpdateNoAnswer);
     }
 
     private bool CanRequestAgentUpdate() =>

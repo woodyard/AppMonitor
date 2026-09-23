@@ -264,6 +264,34 @@ public sealed class NotificationService : IHostedService
         }
     }
 
+    /// <summary>
+    /// A plain toast answering something the user just did from the tray menu (whose window is usually closed). Shown
+    /// even when notifications are switched off, because the user asked for it; a newer answer replaces an older one.
+    /// </summary>
+    public void ShowFeedback(string title, string? body)
+    {
+        try
+        {
+            var builder = new ToastContentBuilder()
+                .AddArgument(ToastAction.ArgumentAction, ToastAction.Details)
+                .AddText(title);
+            if (!string.IsNullOrWhiteSpace(body)) builder.AddText(body);
+            builder.AddAttributionText(Strings.ProductName);
+            builder.Show(toast =>
+            {
+                toast.Tag = FeedbackTag;
+                toast.Group = ToastGroup;
+            });
+            _log.LogInformation("Showed feedback toast: {Title} - {Body}", title, body ?? "-");
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Failed to show a feedback toast");
+        }
+    }
+
+    private const string FeedbackTag = "feedback";
+
     private bool ShouldShow(NotifyMessage notify)
     {
         if (_store.Settings.NotificationsEnabled) return true;

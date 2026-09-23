@@ -5,23 +5,58 @@
         xmlns:ui="clr-namespace:Arkimentum.AppMonitor.UI;assembly=Arkimentum.AppMonitor.UI"
         Title="{Binding Title}"
         Width="560"
-        Height="760"
+        Height="680"
         MinWidth="440"
-        MinHeight="580"
+        MinHeight="500"
         WindowStartupLocation="CenterScreen"
         Icon="pack://application:,,,/Arkimentum.AppMonitor.UI;component/Assets/app.ico"
         FontFamily="{StaticResource AppFontFamily}"
         Foreground="{DynamicResource BrandInkBrush}"
         Background="{DynamicResource BrandBackgroundBrush}">
 
+    <Window.Resources>
+        <!-- A tab under the header: a pill that fills with the primary surface when it is the open section. RadioButtons
+             in one panel, so exactly one is checked and the arrow keys move between them. -->
+        <Style x:Key="SectionTab" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource BrandSubtleTextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="14,6" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Pill"
+                                CornerRadius="15"
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="False" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource BrandSurfaceBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource BrandInkBrush}" />
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource BrandPrimarySurfaceBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
     <Grid x:Name="LayoutRoot" Margin="24,20,24,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <!-- The update list keeps some room even with both expanders open in a small window. -->
-            <RowDefinition Height="*" MinHeight="120" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
+            <!-- One section at a time gets all of this, with its own scrolling. -->
+            <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <!-- ==== header: wordmark, status line, primary action -->
@@ -99,8 +134,15 @@
             </Border>
         </StackPanel>
 
+        <!-- ==== tabs: the update list, the install history and the details each get the whole window below -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,16">
+            <RadioButton Style="{StaticResource SectionTab}" Content="{Binding UpdatesTabText}" IsChecked="{Binding IsUpdatesSelected, Mode=TwoWay}" />
+            <RadioButton Style="{StaticResource SectionTab}" Content="{x:Static res:Strings.TabRecent}" IsChecked="{Binding IsRecentSelected, Mode=TwoWay}" />
+            <RadioButton Style="{StaticResource SectionTab}" Content="{x:Static res:Strings.TabDetails}" IsChecked="{Binding IsDetailsSelected, Mode=TwoWay}" />
+        </StackPanel>
+
         <!-- ==== update list -->
-        <Grid Grid.Row="2">
+        <Grid Grid.Row="3" Visibility="{Binding IsUpdatesSelected, Converter={StaticResource BoolToVisibility}}">
             <ScrollViewer VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled"
                           Padding="0,0,8,0"
@@ -214,12 +256,12 @@
                 </ItemsControl>
             </ScrollViewer>
 
-            <!-- ==== empty state -->
-            <StackPanel x:Name="EmptyStatePanel"
-                        VerticalAlignment="Center"
-                        HorizontalAlignment="Center"
-                        Margin="0,0,0,32"
-                        Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibility}}">
+            <!-- ==== empty state: shrinks to fit a short window (banner up, minimum height) instead of being clipped -->
+            <Viewbox Stretch="Uniform"
+                     StretchDirection="DownOnly"
+                     Margin="0,0,0,24"
+                     Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel x:Name="EmptyStatePanel">
                 <Border Width="96"
                         Height="96"
                         CornerRadius="48"
@@ -242,17 +284,15 @@
                            HorizontalAlignment="Center"
                            Text="{Binding EmptySubtitle}" />
             </StackPanel>
+            </Viewbox>
         </Grid>
 
         <!-- ==== recent updates: one line per finished install, newest first (the service sends at most 10) -->
-        <Expander x:Name="RecentExpander"
-                  Grid.Row="3"
-                  Margin="0,16,0,0"
-                  Foreground="{DynamicResource BrandInkBrush}"
-                  Header="{x:Static res:Strings.RecentInstallsHeader}"
-                  IsExpanded="{Binding RecentInstallsExpanded, Mode=TwoWay}">
-            <!-- Each section scrolls on its own; MainWindow.FitSections caps the height. -->
-            <ScrollViewer x:Name="RecentScroll" Margin="0,4,0,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <ScrollViewer Grid.Row="3"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Padding="0,0,8,0"
+                      Visibility="{Binding IsRecentSelected, Converter={StaticResource BoolToVisibility}}">
             <StackPanel>
                 <TextBlock Style="{StaticResource CaptionText}"
                            Text="{x:Static res:Strings.RecentInstallsEmpty}"
@@ -262,7 +302,7 @@
                               Visibility="{Binding ShowRecentInstallsEmpty, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <DockPanel Margin="0,0,0,4" Background="Transparent" ToolTip="{Binding ToolTip}">
+                            <DockPanel Margin="0,0,0,8" Background="Transparent" ToolTip="{Binding ToolTip}">
                                 <TextBlock DockPanel.Dock="Left"
                                            Width="16"
                                            Margin="0,0,8,0"
@@ -302,16 +342,14 @@
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
             </StackPanel>
-            </ScrollViewer>
-        </Expander>
+        </ScrollViewer>
 
-        <!-- ==== details footer -->
-        <Expander x:Name="DetailsExpander"
-                  Grid.Row="4"
-                  Margin="0,16,0,0"
-                  Foreground="{DynamicResource BrandInkBrush}"
-                  Header="{x:Static res:Strings.DetailsHeader}">
-            <ScrollViewer x:Name="DetailsScroll" Margin="0,4,0,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <!-- ==== details -->
+        <ScrollViewer Grid.Row="3"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Padding="0,0,8,0"
+                      Visibility="{Binding IsDetailsSelected, Converter={StaticResource BoolToVisibility}}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" MinWidth="144" />
@@ -383,7 +421,6 @@
                                Visibility="{Binding AgentUpdate.HasNotice, Converter={StaticResource BoolToVisibility}}" />
                 </StackPanel>
             </Grid>
-            </ScrollViewer>
-        </Expander>
+        </ScrollViewer>
     </Grid>
 </Window>

@@ -303,7 +303,7 @@ It also keeps `InstallHistory`: every finished install attempt (app, from/to ver
 context, user SID, a short failure message), newest first, capped at 50. Installed updates are purged
 after the retention period, the history is not. Each state message carries the 10 newest entries the
 receiving client may see (machine-wide installs for everyone, per-user installs only for their own user)
-as `RecentInstalls`, which the tray shows under "Recent updates".
+as `RecentInstalls`, which the tray shows on its "Recent" tab.
 
 ### Closing blocking applications
 **Only interactive sessions count.** A process in session 0 - a scheduled task, a management agent's

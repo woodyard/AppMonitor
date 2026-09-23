@@ -13,7 +13,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Arkimentum.AppMonitor.Tray.ViewModels;
 
-/// <summary>The main window: the update list, the status line and the details footer.</summary>
+/// <summary>The main window: the status line, the progress banner and three tabs (updates, recent installs, details).</summary>
 public sealed class MainViewModel : ObservableObject, IUpdateActions
 {
     private const int MaxMonitoredAppsShown = 12;
@@ -180,13 +180,33 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
 
     public bool ShowRecentInstallsEmpty => RecentInstalls.Count == 0;
 
-    private bool _recentInstallsExpanded;
+    // ---------------------------------------------------------------- sections (tabs under the header)
 
-    /// <summary>Whether "Recent updates" is open; remembered for the tray's lifetime only.</summary>
-    public bool RecentInstallsExpanded
+    /// <summary>The three views of the window; one shows at a time and gets the whole height.</summary>
+    public enum WindowSection
     {
-        get => _recentInstallsExpanded;
-        set => SetProperty(ref _recentInstallsExpanded, value);
+        Updates,
+        Recent,
+        Details,
+    }
+
+    private WindowSection _section = WindowSection.Updates;
+
+    public bool IsUpdatesSelected { get => _section == WindowSection.Updates; set { if (value) Select(WindowSection.Updates); } }
+
+    public bool IsRecentSelected { get => _section == WindowSection.Recent; set { if (value) Select(WindowSection.Recent); } }
+
+    public bool IsDetailsSelected { get => _section == WindowSection.Details; set { if (value) Select(WindowSection.Details); } }
+
+    /// <summary>"Updates", or "Updates · 2" when there are updates, so the count shows while another tab is open.</summary>
+    public string UpdatesTabText => Updates.Count > 0 ? Strings.TabUpdatesCount(Updates.Count) : Strings.TabUpdates;
+
+    /// <summary>Opens a section; the window resets to <see cref="WindowSection.Updates"/> each time it is shown.</summary>
+    public void Select(WindowSection section)
+    {
+        if (_section == section) return;
+        _section = section;
+        OnPropertyChanged(nameof(IsUpdatesSelected), nameof(IsRecentSelected), nameof(IsDetailsSelected));
     }
 
     /// <summary>Rebuilds the rows when the history (or the date the times are relative to) changed; true when it did.</summary>
@@ -339,7 +359,7 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         OnPropertyChanged(
             nameof(ShowUpdateAll), nameof(UpdateAllText), nameof(ShowProgressBanner), nameof(ProgressText),
             nameof(IsConnected), nameof(ShowDisconnectedBanner), nameof(IsScanning), nameof(StatusLine),
-            nameof(ShowEmptyState), nameof(EmptySubtitle), nameof(ScanIntervalText), nameof(NotificationIntervalText),
+            nameof(ShowEmptyState), nameof(UpdatesTabText), nameof(EmptySubtitle), nameof(ScanIntervalText), nameof(NotificationIntervalText),
             nameof(MonitoredAppsText), nameof(SourcesText), nameof(NotificationsText), nameof(LogDirectory),
             nameof(ServiceVersion), nameof(OrganizationText));
     }

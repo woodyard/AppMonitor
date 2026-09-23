@@ -118,8 +118,14 @@ public static class Strings
     public static string RequiredBy(string when) => $"Required by {when} ({StateMandatory})";
     public static string DeferralsUsed(int used, int max) => $"{used} of {max} deferrals used";
 
-    // ---------------------------------------------------------------- recent updates expander
-    public const string RecentInstallsHeader = "Recent updates";
+    // ---------------------------------------------------------------- tabs under the header
+    /// <summary>The Updates tab while there are none; <see cref="TabUpdatesCount"/> otherwise.</summary>
+    public const string TabUpdates = "Updates";
+    public static string TabUpdatesCount(int count) => $"Updates · {count}";
+    public const string TabRecent = "Recent";
+    public const string TabDetails = "Details";
+
+    // ---------------------------------------------------------------- recent updates tab
     public const string RecentInstallsEmpty = "No updates installed yet";
     /// <summary>Segoe Fluent Icons / Segoe MDL2 Assets glyph "CheckMark".</summary>
     public const string RecentInstallSucceededGlyph = "";
@@ -128,8 +134,7 @@ public static class Strings
     /// <summary>Tooltip of a successful row, e.g. "Updated from 155.0.4 to 156.0.1".</summary>
     public static string RecentInstallUpdatedFrom(string from, string to) => $"Updated from {from} to {to}";
 
-    // ---------------------------------------------------------------- details expander
-    public const string DetailsHeader = "Details";
+    // ---------------------------------------------------------------- details tab
     public const string DetailsOrganization = "Organization";
     public const string OrganizationStandalone = "None — this device is managed locally";
     public const string OrganizationEnrolling = "Connecting to the organization…";

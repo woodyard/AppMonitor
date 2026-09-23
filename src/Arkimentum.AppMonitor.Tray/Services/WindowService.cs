@@ -55,7 +55,12 @@ public sealed class WindowService : IWindowService
             _main.Closing += OnMainClosing;
         }
 
-        if (!_main.IsVisible) _main.Show();
+        if (!_main.IsVisible)
+        {
+            // Every opening starts on the Updates tab: that is what a toast or the tray icon brings the user to see.
+            (_main.DataContext as MainViewModel)?.Select(MainViewModel.WindowSection.Updates);
+            _main.Show();
+        }
         if (_main.WindowState == WindowState.Minimized) _main.WindowState = WindowState.Normal;
         _main.Activate();
         _main.Topmost = true;

@@ -101,7 +101,7 @@ a target version, applied like `AgentTargetVersion` for that one run.
 
 ## From the client
 
-The user does not have to wait for the 12-hour check. The tray agent's details footer and its About dialog show the
+The user does not have to wait for the 12-hour check. The tray agent's Details tab and its About dialog show the
 agent version with what the last check concluded ("1.1.3 · up to date (checked 16:22)") and offer **Check for
 updates**; when a newer release is known they also offer **Update now**. The tray icon's menu has *Check for
 AppMonitor update* (*Update AppMonitor to 1.1.4* once a newer release is known): one click checks and, when there is a

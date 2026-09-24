@@ -161,8 +161,7 @@ public sealed class AgentStateStore : IHostedService
                 .ToList();
 
     /// <summary>Updates the service is already working on: queued, waiting for applications to close, or installing.</summary>
-    public IReadOnlyList<PendingUpdate> UpdatesInProgress =>
-        _updates.Where(u => u.State is UpdateState.Scheduled or UpdateState.WaitingForClose or UpdateState.Installing).ToList();
+    public IReadOnlyList<PendingUpdate> UpdatesInProgress => _updates.Where(InstallRound.IsInProgress).ToList();
 
     /// <summary>The update being installed right now (the first by name when several are), or null. Names the progress banner and the tooltip.</summary>
     public PendingUpdate? CurrentInstall =>

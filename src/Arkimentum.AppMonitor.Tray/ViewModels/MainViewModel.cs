@@ -105,8 +105,8 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
 
     // ---------------------------------------------------------------- progress banner
 
-    /// <summary>Keys that took part in the current round of installs; the round ends when nothing is in progress.</summary>
-    private readonly HashSet<string> _roundKeys = new(StringComparer.Ordinal);
+    /// <summary>The updates of the current round of installs and how each ended; the round ends when nothing is in progress.</summary>
+    private readonly InstallRound _round = new();
 
     /// <summary>True while the progress banner is showing a check rather than an install; the header then stays quiet.</summary>
     private bool _bannerShowsCheck;
@@ -114,12 +114,12 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     /// <summary>True while the service is queueing, waiting for a close or installing something.</summary>
     public bool ShowProgressBanner { get; private set; }
 
-    /// <summary>One line such as "Installing 7-Zip… (1 of 6 done, 4 queued)".</summary>
+    /// <summary>One line such as "Installing 7-Zip… (3 of 6 finished, 1 failed, 2 queued)".</summary>
     public string ProgressText { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Recomputes the progress line. "Done" counts the updates of this round the service no longer reports (an
-    /// installed update disappears from the state message), so the scoreboard works for one install and for a batch.
+    /// Recomputes the progress line. "Finished" counts the updates of this round that installed (the service stops
+    /// reporting them) or failed (they stay, in state Failed); see <see cref="InstallRound"/> for the rule.
     /// </summary>
     private void RefreshProgress()
     {
@@ -129,7 +129,7 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         // be running at the same time (a request is refused while an application install is in flight).
         if (AgentUpdate.InProgress && AgentUpdate.IsEnabled)
         {
-            _roundKeys.Clear();
+            _round.Reset();
             ShowProgressBanner = true;
             ProgressText = AgentUpdate.LatestVersion is { } version
                 ? Strings.AgentUpdateProgress(version)
@@ -137,10 +137,12 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
             return;
         }
 
+        // Ends the round by itself when nothing is in progress.
+        _round.Observe(_store.Updates);
+
         var inProgress = _store.UpdatesInProgress;
         if (inProgress.Count == 0)
         {
-            _roundKeys.Clear();
             // A check shows the same banner as an install, so "Check now" visibly does something for the whole
             // minute a scan can take. Installs keep the banner when both run: they are what the user waits for.
             ShowProgressBanner = _store.IsConnected && _store.IsScanning;
@@ -149,8 +151,6 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
             return;
         }
 
-        foreach (var u in inProgress) _roundKeys.Add(u.Key);
-
         var installing = _store.CurrentInstall;
         var head = installing is not null
             ? Strings.ProgressInstalling(installing.DisplayName)
@@ -158,12 +158,10 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
                 ? Strings.ProgressWaitingForClose
                 : Strings.ProgressPreparing;
 
-        var total = _roundKeys.Count;
-        var done = _roundKeys.Count(k => _store.Find(k) is null);
-        var queued = inProgress.Count(u => u.State != UpdateState.Installing);
-
         ShowProgressBanner = true;
-        ProgressText = total > 1 ? $"{head} {Strings.ProgressCounts(done, total, queued)}" : head;
+        ProgressText = _round.ShowCounts
+            ? $"{head} {Strings.ProgressCounts(_round.Finished, _round.Total, _round.Failed, _round.Queued)}"
+            : head;
     }
 
     public bool ShowEmptyState => Updates.Count == 0;

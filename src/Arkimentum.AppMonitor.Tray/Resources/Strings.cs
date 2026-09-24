@@ -62,11 +62,17 @@ public static class Strings
     public const string ProgressWaitingForClose = "Waiting for applications to close…";
 
     /// <summary>
-    /// The tail of the progress line, e.g. "(1 of 6 done, 4 queued)". Only added when the round holds more than one
-    /// update; a single install needs no scoreboard.
+    /// The tail of the progress line, e.g. "(3 of 6 finished, 1 failed, 2 queued)". Finished means installed or
+    /// failed, so the failures are a part of it; each of the last two is left out while it is zero. Only added when
+    /// the round holds more than one update; a single install needs no scoreboard.
     /// </summary>
-    public static string ProgressCounts(int done, int total, int queued) =>
-        queued > 0 ? $"({done} of {total} done, {queued} queued)" : $"({done} of {total} done)";
+    public static string ProgressCounts(int finished, int total, int failed, int queued)
+    {
+        var parts = new List<string>(3) { $"{finished} of {total} finished" };
+        if (failed > 0) parts.Add($"{failed} failed");
+        if (queued > 0) parts.Add($"{queued} queued");
+        return $"({string.Join(", ", parts)})";
+    }
     public const string StatusDisconnected = "Service not connected";
     public const string DisconnectedBanner = "Waiting for the Arkimentum AppMonitor service…";
     public const string DisconnectedBannerDetail =

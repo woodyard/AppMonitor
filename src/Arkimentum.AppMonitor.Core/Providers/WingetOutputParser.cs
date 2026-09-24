@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Arkimentum.AppMonitor.Versioning;
 
 namespace Arkimentum.AppMonitor.Providers;
 
@@ -138,21 +139,61 @@ public static partial class WingetOutputParser
         return rows;
     }
 
-    /// <summary>Parses a single-package lookup: returns the row whose Id matches <paramref name="id"/> (case-insensitive), else the only row.</summary>
-    public static WingetRow? FindById(IReadOnlyList<WingetRow> rows, string? id)
+    /// <summary>
+    /// Parses a single-package lookup: the row whose Id matches <paramref name="id"/> (case-insensitive), else the only
+    /// row. winget lists a package once per installed version, so one id can have several rows (the .NET runtimes keep
+    /// every patch release registered side by side; two PuTTY builds). Those rows are combined by
+    /// <see cref="CombineInstalls"/>, so every caller - the scan and the check after an install alike - sees the highest
+    /// installed version rather than whichever row winget happened to print first.
+    /// </summary>
+    public static WingetRow? FindById(IReadOnlyList<WingetRow> rows, string? id) => CombineInstalls(FindAllById(rows, id));
+
+    /// <summary>Every row whose Id matches <paramref name="id"/> (case-insensitive), else every truncated row it can stand for, else the only row.</summary>
+    public static IReadOnlyList<WingetRow> FindAllById(IReadOnlyList<WingetRow> rows, string? id)
     {
-        if (rows.Count == 0) return null;
+        if (rows.Count == 0) return [];
         if (!string.IsNullOrWhiteSpace(id))
         {
-            var exact = rows.FirstOrDefault(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase));
-            if (exact is not null) return exact;
+            var exact = rows.Where(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (exact.Count > 0) return exact;
 
             // winget may truncate the Id cell; fall back to a prefix match on the non-ellipsised part.
-            var truncated = rows.FirstOrDefault(r =>
-                r.Id.EndsWith(Ellipsis) && id.StartsWith(r.Id.TrimEnd(Ellipsis), StringComparison.OrdinalIgnoreCase));
-            if (truncated is not null) return truncated;
+            var truncated = rows.Where(r =>
+                r.Id.EndsWith(Ellipsis) && id.StartsWith(r.Id.TrimEnd(Ellipsis), StringComparison.OrdinalIgnoreCase)).ToList();
+            if (truncated.Count > 0) return truncated;
         }
-        return rows.Count == 1 ? rows[0] : null;
+        return rows.Count == 1 ? [rows[0]] : [];
+    }
+
+    /// <summary>
+    /// Combines the rows of several installs of one package into one row. Pure, so the rule is testable. The highest
+    /// installed version wins (a known version beats "Unknown"; on a tie the first row), and the row keeps an available
+    /// version only when one of the rows names one that is newer than that highest install. So an older release that
+    /// stays registered next to the current one (.NET 8.0.30 next to 8.0.31, which winget keeps offering to upgrade)
+    /// does not make the package outdated, while an update beyond the newest install is still found. Returns the row
+    /// itself when there is only one or nothing changes, and null for no rows.
+    /// </summary>
+    public static WingetRow? CombineInstalls(IReadOnlyList<WingetRow> rows)
+    {
+        if (rows.Count == 0) return null;
+        if (rows.Count == 1) return rows[0];
+
+        var highest = rows
+            .OrderBy(r => VersionComparer.IsUnknown(r.Version))
+            .ThenByDescending(r => r.Version, VersionComparer.Instance)
+            .First();
+        var available = rows.Where(r => r.HasAvailable)
+            .Select(r => r.Available)
+            .OrderByDescending(v => v, VersionComparer.Instance)
+            .FirstOrDefault();
+        var source = highest.Source.Length > 0 ? highest.Source : rows.FirstOrDefault(r => r.Source.Length > 0)?.Source ?? string.Empty;
+
+        var combined = highest with
+        {
+            Available = VersionComparer.IsNewer(available, highest.Version) ? available! : string.Empty,
+            Source = source,
+        };
+        return combined == highest ? highest : combined;
     }
 
     /// <summary>Removes spinner/progress artefacts, banners and empty lines. Exposed for diagnostics and tests.</summary>

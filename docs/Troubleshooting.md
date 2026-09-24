@@ -322,6 +322,29 @@ because a user-scope installer started there would land in SYSTEM's profile; a m
 with the same problem keeps the original message and needs the vendor installer configured as a web
 source instead.
 
+## Several installs of one application
+
+Symptom (agents up to 1.1.35): *winget reported success (exit 0x00000000) but 'X' is still at
+<older version>, expected <new version>*, or *winget found no applicable upgrade ... installed version
+is still ...*, for an application that `winget list --id X` shows more than once - and the same update
+comes back after every scan. Typical: the .NET runtimes (`Microsoft.DotNet.DesktopRuntime.8`,
+`Microsoft.DotNet.AspNetCore.8`), which keep every patch release registered side by side, so 8.0.30
+stays next to 8.0.31; or two builds of PuTTY. The older agents read whichever row winget printed
+first, and the scan and the check after the install could each pick a different one.
+
+The rule now, the same for the scan and for every check after an install: winget lists a package
+once per installed version, and **the highest installed version is the application's version**. An
+update is offered only when a version newer than that highest install is available, and an install
+counts as verified as soon as the expected version (or a newer one) is among the installs, however many
+older releases stay registered. winget itself keeps offering the upgrade for the older row (8.0.30 ->
+8.0.31 while 8.0.31 is installed too); the agent ignores that offer, so there is no re-install loop.
+The log shows it at Debug: *winget lists 2 installs of 'X' ... the highest, ..., counts*. The registry
+inventory (web sources, icons) already used the highest matching `DisplayVersion`.
+
+Consequence: an older copy that stays registered is never updated or reported on its own. If it
+matters (an old PuTTY that users still start), remove it:
+`winget uninstall --id X --exact --version <old version>`.
+
 ## winget says the install technology is different
 
 Symptom: the update fails and winget's output contains

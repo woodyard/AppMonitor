@@ -26,6 +26,11 @@ namespace Arkimentum.AppMonitor.Providers;
 /// be installed, winget's upgrade listing - a configured id first, else a name match that describes the same install.
 /// The resolved id travels with the pending update and is the first id the install tries.
 /// </para>
+/// <para>
+/// winget lists a package once per installed version. When several versions are registered side by side, the highest
+/// installed version is the package's version everywhere - in the scan and in every check after an install (see
+/// <see cref="WingetOutputParser.CombineInstalls"/>).
+/// </para>
 /// </summary>
 public sealed class WingetProvider : IUpdateProvider
 {
@@ -143,7 +148,16 @@ public sealed class WingetProvider : IUpdateProvider
                         app.AppId, upgradeRow.Id, context.Context, upgradeRow.Name, matchedId);
             }
             matchedId = configured ?? upgradeRow.Id;
-            row = upgradeRow;
+
+            // Several installs of the product can be registered at once (.NET keeps every patch release side by side,
+            // two PuTTY builds), and winget keeps offering the upgrade for an older one although a newer install is
+            // there too. The highest installed version counts - the same rule the check after an install applies (see
+            // WingetOutputParser.CombineInstalls) - so an update is only flagged when the newest install is outdated.
+            var combined = WingetOutputParser.CombineInstalls([upgradeRow, row])!;
+            if (upgradeRow.HasAvailable && !combined.HasAvailable)
+                _logger.LogDebug("{AppId}: winget's upgrade listing offers {Available} for the {Older} install of '{UpgradeId}', but {Installed} is installed as well; the highest installed version counts, so there is no update.",
+                    app.AppId, upgradeRow.Available, upgradeRow.Version, upgradeRow.Id, combined.Version);
+            row = combined;
         }
         var installedVersion = string.IsNullOrWhiteSpace(row.Version) ? null : row.Version;
         var available = string.IsNullOrWhiteSpace(row.Available) ? null : row.Available;
@@ -355,7 +369,9 @@ public sealed class WingetProvider : IUpdateProvider
         var result = InterpretWingetExitCode(run.ExitCode, run);
 
         // Read the version winget now reports so the caller can record what actually got installed - and so a
-        // "no applicable upgrade" / "success" answer can be checked against reality.
+        // "no applicable upgrade" / "success" answer can be checked against reality. With several installs of the package
+        // registered this is the highest one, as in the scan: the update is verified once the expected version (or a
+        // newer one) is among them, however many older releases stay registered next to it.
         string? newVersion = null;
         try
         {
@@ -1073,7 +1089,8 @@ public sealed class WingetProvider : IUpdateProvider
         }
     }
 
-    private static bool IsStillOutdated(string? installed, string? available) =>
+    /// <summary>Whether a version read after an install is known and still below the expected one. Pure, so the rule is testable.</summary>
+    internal static bool IsStillOutdated(string? installed, string? available) =>
         installed is not null && !VersionComparer.IsUnknown(installed) && !string.IsNullOrWhiteSpace(available)
         && VersionComparer.Compare(installed, available) < 0;
 
@@ -1120,17 +1137,21 @@ public sealed class WingetProvider : IUpdateProvider
     /// (ellipsised) or pseudo id are never picked. Tie-break, in order: (1) the id sharing the most leading
     /// dot-separated segments with the first configured id (case-insensitive; <c>Google.Chrome.EXE</c> shares two with
     /// <c>Google.Chrome</c>, an unrelated vendor's id none); (2) the highest installed version; (3) the id in ordinal,
-    /// case-insensitive order, so the choice is deterministic.
+    /// case-insensitive order, so the choice is deterministic. When the chosen id has several rows (one per installed
+    /// version) they are combined (<see cref="WingetOutputParser.CombineInstalls"/>).
     /// </summary>
     internal static WingetRow? PickByName(IEnumerable<WingetRow> rows, AppPolicy app, IReadOnlyList<string> configuredIds)
     {
         var hint = configuredIds.FirstOrDefault(id => !string.IsNullOrWhiteSpace(id)) ?? string.Empty;
-        return rows
-            .Where(r => IsResolvableId(r.Id) && InstalledAppScanner.NameMatches(app, r.Name))
+        var matches = rows.Where(r => IsResolvableId(r.Id) && InstalledAppScanner.NameMatches(app, r.Name)).ToList();
+        var best = matches
             .OrderByDescending(r => SharedIdSegments(r.Id, hint))
             .ThenByDescending(r => r.Version, VersionComparer.Instance)
             .ThenBy(r => r.Id, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
+        // Several installed versions of the chosen package (side by side) are one package: combined by the same rule
+        // as a lookup by id (WingetOutputParser.CombineInstalls).
+        return best is null ? null : WingetOutputParser.CombineInstalls(matches.Where(r => string.Equals(r.Id, best.Id, StringComparison.OrdinalIgnoreCase)).ToList());
     }
 
     /// <summary>A listing id the agent may use as a package id: not empty, not truncated by winget, not a pseudo id.</summary>
@@ -1239,7 +1260,8 @@ public sealed class WingetProvider : IUpdateProvider
     /// <summary>
     /// The row of winget's upgrade listing that names the id able to upgrade the product, or null. Pure, so the rule is
     /// testable. Only rows with an available version count. First the row of the first configured id (in candidate
-    /// order) that appears there; ids are compared case-insensitively and exactly. Otherwise, when
+    /// order) that appears there; ids are compared case-insensitively and exactly, and several rows of that id (one per
+    /// installed version) are combined (<see cref="WingetOutputParser.CombineInstalls"/>). Otherwise, when
     /// <paramref name="app"/> is given, a row whose Name passes the app's identity rule
     /// (<see cref="InstalledAppScanner.NameMatches"/>), chosen by <see cref="PickByName"/> (never a pseudo or truncated
     /// id) - and, when <paramref name="installed"/> is given, only one that describes that same install
@@ -1253,7 +1275,7 @@ public sealed class WingetProvider : IUpdateProvider
         foreach (var id in candidateIds)
         {
             if (string.IsNullOrWhiteSpace(id)) continue;
-            var row = upgradeRows.FirstOrDefault(r => r.HasAvailable && string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase));
+            var row = WingetOutputParser.CombineInstalls(upgradeRows.Where(r => r.HasAvailable && string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase)).ToList());
             if (row is not null) return row;
         }
         if (app is null) return null;
@@ -1281,7 +1303,12 @@ public sealed class WingetProvider : IUpdateProvider
             return new ListLookup(null, true, null);
 
         var rows = WingetOutputParser.ParseListOutput(run.CombinedOutput);
-        var row = WingetOutputParser.FindById(rows, app.WingetId);
+        var matches = WingetOutputParser.FindAllById(rows, app.WingetId);
+        // One row per installed version: the scan and every check after an install see the same, highest one.
+        var row = WingetOutputParser.CombineInstalls(matches);
+        if (matches.Count > 1)
+            _logger.LogDebug("{AppId}: winget lists {Count} installs of '{WingetId}' in the {Context} scope ({Versions}); the highest, {Version}, counts.",
+                app.AppId, matches.Count, app.WingetId, context.Context, string.Join(", ", matches.Select(m => m.Version)), row!.Version);
 
         if (row is null)
         {

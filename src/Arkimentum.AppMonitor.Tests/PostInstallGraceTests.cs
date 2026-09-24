@@ -65,6 +65,21 @@ public class PostInstallGraceTests
     }
 
     [Fact]
+    public void A_scan_that_started_before_the_install_finished_does_not_undo_it()
+    {
+        // The scan began at T0 and read 8.9.1; the install finished (verified) while it ran; the merge comes after.
+        var (state, u) = InstalledAt(T0.AddSeconds(30), InstallResult.Ok("done", 0) with { InstalledVersion = "8.9.8" });
+        Assert.True(u.InstallVerified);
+
+        var stale = Scan("8.9.1");
+        PolicyEngine.Merge(state, [stale], new HashSet<string> { stale.Key }, T0);
+
+        Assert.Equal(UpdateState.Installed, u.State);
+        Assert.Equal("8.9.8", u.InstalledVersion);
+        Assert.True(u.InstallVerified);
+    }
+
+    [Fact]
     public void An_unverified_install_keeps_the_grace_period()
     {
         // The provider could not read the version back; a stale reading of the old version is still plausible.

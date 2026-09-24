@@ -132,7 +132,11 @@ public static class PolicyEngine
                 // no reboot is pending: a lower version now is a real change on the device (someone reinstalled an
                 // older build), so it is a fresh update, not a failure of ours.
                 var realChange = existing.InstallVerified && !existing.RebootPending;
-                if (installedRecently && sameTarget && !installKnownIncomplete && !realChange) { existing.LastSeenUtc = now; continue; }
+                // But a scan that began before the install finished (now is the scan's start) may have read the version
+                // before the installer moved it: that reading says nothing about the install and must not undo it. Seen on
+                // H-PARALLELSVM: VS Code installed, verified, and installed a second time 51 seconds later.
+                var readBeforeInstall = existing.InstalledAtUtc is { } done && done > now;
+                if (readBeforeInstall || (installedRecently && sameTarget && !installKnownIncomplete && !realChange)) { existing.LastSeenUtc = now; continue; }
                 // install did not stick, or a newer version appeared: start a new cycle but remember failures
                 existing.State = UpdateState.Available;
                 existing.InstalledAtUtc = null;

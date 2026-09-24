@@ -10,10 +10,26 @@ public enum PolicyActionKind
     Notify,
     /// <summary>Start the install now (no blocking processes, or install requested by the user).</summary>
     Install,
-    /// <summary>Blocking processes are running: ask the user to close them (with countdown when forced close is scheduled).</summary>
+    /// <summary>
+    /// Blocking processes are running: ask the user to close them (with countdown when forced close is scheduled) -
+    /// but only when no install is ahead of this one, see <see cref="PolicyEngine.HoldPromptForTurn"/>.
+    /// </summary>
     PromptClose,
-    /// <summary>Grace period elapsed: close the blocking processes and install.</summary>
+    /// <summary>Grace period elapsed: queue the install; the blocking processes are closed when its turn comes.</summary>
     ForceClose,
+}
+
+/// <summary>What an update does once it holds the install lock; see <see cref="PolicyEngine.DecideAtTurn"/>.</summary>
+public enum TurnAction
+{
+    /// <summary>Nothing is in the way: start the installer.</summary>
+    Install,
+    /// <summary>The user chose "Close apps and update", or deadline enforcement's grace period is over: close, then install.</summary>
+    CloseAndInstall,
+    /// <summary>Ask the user to close the blocking applications and give up the turn until they have.</summary>
+    PromptClose,
+    /// <summary>Blocked, but another queued install can start now: let it go first and stay queued.</summary>
+    Yield,
 }
 
 public readonly record struct PolicyAction(PolicyActionKind Kind, NotificationKind Notification = NotificationKind.Info)
@@ -160,6 +176,11 @@ public static class PolicyEngine
             {
                 // A newer version is a new thing to tell the user about, even in Quiet mode.
                 existing.Announced = false;
+                // And a new install: a countdown announced, or a "Close apps and update" given, for the version it
+                // replaces is no licence to close anything for this one. The deadline clock keeps running; the user is
+                // simply warned (or asked) again when this version's turn comes.
+                existing.ForceCloseAtUtc = null;
+                existing.ForceCloseRequestedUtc = null;
                 // A newer version superseded the one that failed: allow automatic retries again.
                 if (existing.State == UpdateState.Failed) { existing.State = UpdateState.Available; existing.FailureCount = 0; existing.LastError = null; }
             }
@@ -333,9 +354,59 @@ public static class PolicyEngine
     public static bool MayServiceForceClose(PendingUpdate u, DateTimeOffset now)
     {
         if (u.State is UpdateState.Installing or UpdateState.Installed) return false;
-        if (u.ForceCloseRequestedUtc is { } requested && now - requested <= ForceCloseRequestWindow) return true;
-        return u.ForceCloseAtDeadline && u.IsPastDeadline(now) && u.ForceCloseAtUtc is { } at && now >= at;
+        if (HasForceCloseRequest(u, now)) return true;
+        // Both licences must belong to this update cycle: a timestamp from before it was detected (a state file written
+        // by an older agent that carried it over to a newer version) was given for something else.
+        return u.ForceCloseAtDeadline && u.IsPastDeadline(now) && u.ForceCloseAtUtc is { } at && at >= u.FirstDetectedUtc && now >= at;
     }
+
+    /// <summary>True while a "Close apps and update" from this update cycle is less than <see cref="ForceCloseRequestWindow"/> old.</summary>
+    public static bool HasForceCloseRequest(PendingUpdate u, DateTimeOffset now) =>
+        u.ForceCloseRequestedUtc is { } requested && requested >= u.FirstDetectedUtc && now - requested <= ForceCloseRequestWindow;
+
+    /// <summary>
+    /// Forgets a forced-close time or a "Close apps and update" that predates the current update cycle, the way
+    /// <see cref="Merge"/> clears both when a cycle starts. Older agents did not clear them when a newer version
+    /// superseded a pending one, so a state file can still carry them. Returns true when something was cleared.
+    /// </summary>
+    public static bool ClearStaleForceClose(PendingUpdate u)
+    {
+        var cleared = false;
+        if (u.ForceCloseAtUtc is { } at && at < u.FirstDetectedUtc) { u.ForceCloseAtUtc = null; cleared = true; }
+        if (u.ForceCloseRequestedUtc is { } requested && requested < u.FirstDetectedUtc) { u.ForceCloseRequestedUtc = null; cleared = true; }
+        return cleared;
+    }
+
+    /// <summary>
+    /// Whether an update would really start installing at its turn: it is installing already, nothing of it is
+    /// running, or the service may close what is (see <see cref="MayServiceForceClose"/>). An update that would only
+    /// ask the user to close something is not ready, and does not hold anyone else up.
+    /// </summary>
+    public static bool IsReadyToInstall(PendingUpdate u, DateTimeOffset now, bool blockingProcessesRunning) =>
+        u.State == UpdateState.Installing || !blockingProcessesRunning || MayServiceForceClose(u, now);
+
+    /// <summary>
+    /// What an update does when its turn comes: it holds the install lock, so nothing else is installing, and this
+    /// is the moment right before its installer would start. That is the only place the user is asked to close an
+    /// application and the only place anything is closed for them, so a closed application is never left waiting
+    /// behind other installs. <paramref name="anotherInstallReady"/> is whether another queued install would start
+    /// as soon as this one lets go; a blocked update then gives up its turn instead of asking - it stays queued, and
+    /// the prompt comes once nothing is left ahead of it.
+    /// </summary>
+    public static TurnAction DecideAtTurn(PendingUpdate u, DateTimeOffset now, bool blockingProcessesRunning, bool anotherInstallReady)
+    {
+        if (!blockingProcessesRunning) return TurnAction.Install;
+        if (MayServiceForceClose(u, now)) return TurnAction.CloseAndInstall;
+        return anotherInstallReady ? TurnAction.Yield : TurnAction.PromptClose;
+    }
+
+    /// <summary>
+    /// The policy tick's close prompt, held back while an install is running or ready to start
+    /// (<paramref name="installAhead"/>): the user would close the application and then wait for the others, and
+    /// might well reopen it. The prompt comes on a later tick, once nothing is ahead of this update any more.
+    /// </summary>
+    public static PolicyAction HoldPromptForTurn(PolicyAction action, bool installAhead) =>
+        action.Kind == PolicyActionKind.PromptClose && installAhead ? PolicyAction.None : action;
 
     /// <summary>Records that a user pressed "Close apps and update" for this update.</summary>
     public static void RequestForcedClose(PendingUpdate u, DateTimeOffset now)

@@ -270,9 +270,10 @@ stateDiagram-v2
     Deferred --> Available: DeferredUntilUtc reached
     Available --> Scheduled: user chooses Install now / AutoInstall
     Deferred --> Scheduled: deadline reached (mandatory)
-    Scheduled --> WaitingForClose: a configured process is running
-    Scheduled --> Installing: nothing blocking
-    WaitingForClose --> Installing: user closes the apps, or forced close at ForceCloseAtUtc
+    Scheduled --> WaitingForClose: its turn comes, nothing else is ready, a configured process is running
+    Scheduled --> Installing: its turn comes and nothing is blocking
+    WaitingForClose --> Scheduled: user closes the apps (queued again)
+    WaitingForClose --> Installing: forced close at its turn, once ForceCloseAtUtc has passed
     WaitingForClose --> Deferred: user defers (still allowed)
     Installing --> Installed: installer succeeded
     Installing --> Failed: installer failed or timed out
@@ -288,7 +289,7 @@ Rules encoded in the model (`PendingUpdate`):
 | Deadline | Only mandatory updates have one: `DeadlineUtc = FirstDetectedUtc + DeadlineHours`. `DeadlineHours = 0` means no deadline, so a mandatory update waits for the user but can no longer be deferred once deferrals run out. |
 | Past deadline | `Mandatory` and `now >= DeadlineUtc`: deferral is refused and the install is forced. |
 | Blocking processes | The `ProcessNames` of the application that are currently running. For user-context updates only processes in that user's session count. |
-| Forced close | When the deadline has passed and `ForceCloseAtDeadline = 1`, the user is warned and `ForceCloseAtUtc = now + CloseGracePeriodMinutes`. At that moment the tray agent asks the windows to close (`WM_CLOSE`), waits the graceful period, and kills what is left; the service then terminates every survivor in every session. With `ForceCloseAtDeadline = 0` the update simply waits. |
+| Forced close | When the deadline has passed and `ForceCloseAtDeadline = 1`, the user is warned and `ForceCloseAtUtc = now + CloseGracePeriodMinutes`. From then on, when the update's install turn comes, the tray agent asks the windows to close (`WM_CLOSE`), waits the graceful period, and kills what is left; the service then terminates every survivor in every session. With `ForceCloseAtDeadline = 0` the update simply waits. |
 | Close apps and update | The user pressing the button in the close-apps dialog sets `ForceCloseRequestedUtc`, which lets the service terminate blocking processes for the next hour - see "Closing blocking applications" below. |
 | Auto install | `AutoInstall = 1` installs without asking as soon as no blocking process is running - no notification other than the optional "installed" toast (`ShowInstalledNotifications`, off by default). |
 | Notification style | `NotificationMode` (global, per-app override). `Quiet` (default) announces an update once - `PendingUpdate.Announced` records it - and afterwards only notifies about a deadline approaching, applications to close, or a failed install; there is no "installing" toast. `Reminders` is the pre-1.2 behaviour: one reminder per `NotificationIntervalMinutes` for as long as the update is pending. |
@@ -312,6 +313,18 @@ that gives nothing the tray tries the configured process names in App Paths, the
 name, and otherwise shows a monogram tile. Resolved icons are also cached per user as PNGs for the toasts' app logo.
 
 ### Closing blocking applications
+**Only right before the install.** Installs run one at a time (`UpdateCoordinator.InstallAsync` holds an
+install lock), and the blocking check, the close-apps prompt and any forced close - after **Close apps
+and update** or by deadline enforcement - happen only once an update holds that lock, immediately before
+its installer starts (`PolicyEngine.DecideAtTurn`). A blocked update whose turn comes while another
+queued install could start right away gives its turn up and stays `Scheduled` ("Queued for
+installation"); it asks once nothing is ahead of it. Waiting for the user never holds the lock: the
+update is parked in `WaitingForClose`, the others go ahead, and closing the application queues it again.
+The policy tick likewise holds its own close prompt (an `AutoInstall` or mandatory update found blocked)
+while an install is running or ready to start (`PolicyEngine.HoldPromptForTurn`). So "Update all" no
+longer asks for every application at once and then keeps the user waiting, application closed, while the
+other installs run, and nothing is killed long before its install begins.
+
 **Only interactive sessions count.** A process in session 0 - a scheduled task, a management agent's
 script, a service's helper - never blocks an update and is never closed by the agent: no user can save
 work there, and the installer itself handles files in use the way MSI installers do (typically by
@@ -355,7 +368,10 @@ The flow when the user presses **Close apps and update**:
 `MayServiceForceClose` is the single decision point and only two things satisfy it: a user request
 that is less than `PolicyEngine.ForceCloseRequestWindow` (one hour) old, or deadline enforcement with
 `ForceCloseAtDeadline = 1` whose grace period has expired. Deferring or dismissing withdraws the
-request, and it is cleared when the install finishes or fails.
+request, and it is cleared when the install finishes or fails. Both belong to one update cycle: a new
+cycle, or a newer version superseding a pending one, clears `ForceCloseRequestedUtc` and
+`ForceCloseAtUtc`, and a timestamp older than `FirstDetectedUtc` (a state file from an older agent) is
+never honoured.
 
 `PendingUpdate.BlockingDetails` carries what the service could read about each running instance - pid,
 session, owner, elevation - so the tray dialog can mark the ones it cannot close itself

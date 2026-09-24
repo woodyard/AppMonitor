@@ -42,6 +42,11 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<InstallResult> Tcs, string ConnectionId)> _pendingUserInstalls = new();
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<ProcessesClosedMessage> Tcs, string ConnectionId)> _pendingCloses = new();
     private readonly HashSet<string> _installsInFlight = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// 1 when a blocked update gave up its turn to the installs queued with it (InstallAsync), or the tick held its
+    /// close prompt back for them; the policy is then evaluated again the moment the last of those installs ends.
+    /// </summary>
+    private int _turnYielded;
 
     private ServiceState _state = new();
     private volatile bool _scanInProgress;
@@ -538,16 +543,20 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         ImpersonationGuard.RevertIfImpersonating(_logger, "policy evaluation");
         if (!await _policyLock.WaitAsync(0, ct).ConfigureAwait(false)) return;
         var toInstall = new List<PendingUpdate>();
-        var toForceClose = new List<PendingUpdate>();
         try
         {
             var settings = _settings.Current;
             var now = DateTimeOffset.UtcNow;
             var changed = false;
+            // Close prompts wait until the whole tick has been looked at: one is only sent when no install is running
+            // or about to start, see HoldPromptForTurn.
+            var prompts = new List<(PendingUpdate Update, PolicyAction Action, List<string> Blocking, IReadOnlyList<BlockingProcessInfo> Details)>();
+            var readyInstallQueued = false;
 
             foreach (var u in _state.Updates.Values.Where(u => u.IsActive).ToList())
             {
                 lock (_installsInFlight) { if (_installsInFlight.Contains(u.Key)) continue; }
+                if (PolicyEngine.ClearStaleForceClose(u)) changed = true;
                 var policy = settings.Apps.FirstOrDefault(a => a.AppId.Equals(u.AppId, StringComparison.OrdinalIgnoreCase));
                 var interval = PolicyEngine.NotificationIntervalFor(u, policy, settings);
                 var mode = PolicyEngine.NotificationModeFor(policy, settings);
@@ -579,15 +588,14 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 switch (action.Kind)
                 {
                     case PolicyActionKind.Install:
-                        toInstall.Add(u);
-                        break;
                     case PolicyActionKind.ForceClose:
-                        toForceClose.Add(u);
+                        // A forced close is queued like any install: the processes are closed when its turn comes,
+                        // right before the installer starts, never while other installs are still ahead of it.
+                        toInstall.Add(u);
+                        if (PolicyEngine.IsReadyToInstall(u, now, blocking.Count > 0)) readyInstallQueued = true;
                         break;
                     case PolicyActionKind.PromptClose:
-                        PolicyEngine.MarkWaitingForClose(u, blocking, now, scheduleForcedClose: true, details);
-                        if (await SendPromptCloseAsync(u, ct).ConfigureAwait(false)) { u.LastNotifiedUtc = now; }
-                        changed = true;
+                        prompts.Add((u, action, blocking, details));
                         break;
                     case PolicyActionKind.Notify:
                         if (settings.NotificationsEnabled && await SendNotificationAsync(u, action.Notification, ct).ConfigureAwait(false))
@@ -602,15 +610,34 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 }
             }
 
+            if (prompts.Count > 0)
+            {
+                // Asked now, the user would close the application and then wait - and maybe reopen it - while the
+                // installs ahead of this one run. So the prompt waits for a tick with nothing ahead of it.
+                var installAhead = readyInstallQueued || AnotherInstallReady(null, now);
+                foreach (var (u, action, blocking, details) in prompts)
+                {
+                    if (PolicyEngine.HoldPromptForTurn(action, installAhead).Kind == PolicyActionKind.None)
+                    {
+                        _logger.LogDebug("Policy: {App} ({Context}) waits for the installs ahead of it before asking to close {Processes}",
+                            u.DisplayName, u.Context, string.Join(", ", blocking));
+                        Interlocked.Exchange(ref _turnYielded, 1); // re-evaluated as soon as those installs are done
+                        continue;
+                    }
+                    PolicyEngine.MarkWaitingForClose(u, blocking, now, scheduleForcedClose: true, details);
+                    if (await SendPromptCloseAsync(u, ct).ConfigureAwait(false)) { u.LastNotifiedUtc = now; }
+                    changed = true;
+                }
+            }
+
             if (changed) _store.Save(settings, _state);
         }
         finally { _policyLock.Release(); }
 
-        foreach (var u in toForceClose) _ = RunGuardedAsync(() => ForceCloseAndInstallAsync(u, ct), u.Key);
-        foreach (var u in toInstall) _ = RunGuardedAsync(() => InstallAsync(u, ct), u.Key);
+        foreach (var u in toInstall) _ = RunGuardedAsync(() => InstallAsync(u, ct), u.Key, ct);
     }
 
-    private Task RunGuardedAsync(Func<Task> work, string key)
+    private Task RunGuardedAsync(Func<Task> work, string key, CancellationToken ct)
     {
         lock (_installsInFlight)
         {
@@ -622,21 +649,54 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             ImpersonationGuard.RevertIfImpersonating(_logger, $"install task for {key}");
             try { await work().ConfigureAwait(false); }
             catch (Exception ex) { _logger.LogError(ex, "Install task for {Key} failed", key); }
-            finally { lock (_installsInFlight) _installsInFlight.Remove(key); }
+            finally
+            {
+                bool drained;
+                lock (_installsInFlight) { _installsInFlight.Remove(key); drained = _installsInFlight.Count == 0; }
+                // An update that gave up its turn is waiting for exactly this moment; do not leave it (and its close
+                // prompt) to the next policy tick, up to a minute away.
+                if (drained && Interlocked.Exchange(ref _turnYielded, 0) == 1 && !ct.IsCancellationRequested)
+                    _ = Task.Run(() => EvaluatePoliciesAsync(ct));
+            }
         });
+    }
+
+    /// <summary>
+    /// True when an install other than <paramref name="exceptKey"/> is running, or queued and able to start at its
+    /// turn (<see cref="PolicyEngine.IsReadyToInstall"/>). A queued update that would only ask its user to close
+    /// something does not count: two blocked updates must not wait for each other.
+    /// </summary>
+    private bool AnotherInstallReady(string? exceptKey, DateTimeOffset now)
+    {
+        List<string> keys;
+        lock (_installsInFlight) keys = _installsInFlight.Where(k => !string.Equals(k, exceptKey, StringComparison.OrdinalIgnoreCase)).ToList();
+        foreach (var k in keys)
+        {
+            if (Get(k) is not { } other) continue;
+            var sessionId = other.Context == InstallContext.User ? SessionFor(other.UserSid) : null;
+            if (PolicyEngine.IsReadyToInstall(other, now, ProcessHelper.GetRunning(other.ProcessNames, sessionId).Count > 0)) return true;
+        }
+        return false;
     }
 
     // =====================================================================================================================
     // Install flows
     // =====================================================================================================================
 
-    private async Task ForceCloseAndInstallAsync(PendingUpdate u, CancellationToken ct)
+    /// <summary>
+    /// Closes what blocks <paramref name="u"/> when its turn has come and <see cref="PolicyEngine.MayServiceForceClose"/>
+    /// allows it. After "Close apps and update" the tray has already closed everything in its own session, so what is
+    /// left is terminated straight away; deadline enforcement first asks the tray agents to close the windows
+    /// gracefully. Returns false when something survived (the update has then been failed; see TerminateBlockingAsync).
+    /// </summary>
+    private async Task<bool> CloseBlockingAtTurnAsync(PendingUpdate u, int? sessionId, IReadOnlyList<BlockingProcessInfo> details, DateTimeOffset now, CancellationToken ct)
     {
-        var sessionId = u.Context == InstallContext.User ? SessionFor(u.UserSid) : null;
-        var still = ProcessHelper.GetRunning(u.ProcessNames, sessionId);
-        if (still.Count > 0)
+        var userChose = PolicyEngine.HasForceCloseRequest(u, now);
+        _logger.LogWarning("{App}: closing {Processes} before the install ({Reason})", u.DisplayName, BlockingProcessInfo.Describe(details),
+            userChose ? "the user chose Close apps and update" : "deadline enforcement");
+        if (!userChose)
         {
-            _logger.LogWarning("Deadline enforcement for {App}: closing {Processes}", u.DisplayName, string.Join(", ", still));
+            var still = details.Select(d => d.ProcessName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             RecordEvent(ReportedEventKind.ForcedClose, u.AppId, $"Closing {string.Join(", ", still)} to install {u.DisplayName} {u.AvailableVersion}");
             // Ask the agents in the affected sessions to close gracefully first, then kill survivors ourselves.
             var targets = TargetsFor(u).ToList();
@@ -654,13 +714,11 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 finally { _pendingCloses.TryRemove(msg.MessageId, out _); }
             });
             await Task.WhenAll(closeTasks).ConfigureAwait(false);
-
-            // Whatever the agents reported back, anything still alive is out of their reach (elevated, or in a session
-            // they do not own). The service runs as SYSTEM, so it can end it - and must, or we prompt again forever.
-            if (!await TerminateBlockingAsync(u, sessionId, ct).ConfigureAwait(false)) return;
         }
-        await MutateAsync(u.Key, x => { x.State = UpdateState.Scheduled; x.ForceCloseAtUtc = null; x.BlockingProcesses = []; x.BlockingDetails = []; }, ct).ConfigureAwait(false);
-        await InstallAsync(u, ct).ConfigureAwait(false);
+
+        // Whatever the agents reported back, anything still alive is out of their reach (elevated, or in a session
+        // they do not own). The service runs as SYSTEM, so it can end it - and must, or we prompt again forever.
+        return await TerminateBlockingAsync(u, sessionId, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -709,43 +767,19 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             && string.Equals(pair.First.ProcessName, pair.Second.ProcessName, StringComparison.OrdinalIgnoreCase)
             && pair.First.SessionId == pair.Second.SessionId);
 
-    /// <summary>Installs one update (system context in-process, user context through the tray agent).</summary>
+    /// <summary>
+    /// Installs one update (system context in-process, user context through the tray agent). Installs run one at a
+    /// time, and everything that concerns the user's applications - the blocking check, the close prompt and any
+    /// forced close - happens only once this update holds the install lock, right before its installer starts
+    /// (<see cref="PolicyEngine.DecideAtTurn"/>). Checked any earlier, a queue of installs ("Update all") asked the
+    /// user to close every application at once and then kept them waiting, and a forced close could end an
+    /// application long before its install began. Waiting for the user never holds the lock: the update is parked in
+    /// WaitingForClose, the others go ahead, and closing the application queues it again.
+    /// </summary>
     private async Task InstallAsync(PendingUpdate snapshot, CancellationToken ct)
     {
         var settings = _settings.Current;
         var key = snapshot.PendingKey();
-        var now = DateTimeOffset.UtcNow;
-
-        // Re-check blocking processes right before we start. For a machine-wide update this looks across every session
-        // (sessionId is null), which is why a pwsh running elevated, as a scheduled task or under another user used to
-        // land here again and again: no tray agent can close any of those, so the prompt came straight back.
-        var sessionId = snapshot.Context == InstallContext.User ? SessionFor(snapshot.UserSid) : null;
-        var details = ProcessHelper.GetRunningDetails(snapshot.ProcessNames, sessionId);
-        var blocking = details.Select(d => d.ProcessName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (blocking.Count > 0)
-        {
-            var current = Get(key);
-            if (current is null) return;
-
-            if (PolicyEngine.MayServiceForceClose(current, now))
-            {
-                _logger.LogWarning("{App}: closing {Processes} before the install ({Reason})", current.DisplayName,
-                    BlockingProcessInfo.Describe(details),
-                    current.ForceCloseRequestedUtc is not null ? "the user chose Close apps and update" : "deadline enforcement");
-                if (!await TerminateBlockingAsync(current, sessionId, ct).ConfigureAwait(false)) return;
-            }
-            else
-            {
-                var enforce = current.IsPastDeadline(now) && current.ForceCloseAtDeadline;
-                _logger.LogInformation("{App}: waiting for the user to close {Processes}{Enforce}", current.DisplayName, BlockingProcessInfo.Describe(details),
-                    enforce ? $" (forced close in {current.CloseGracePeriodMinutes} min)" : "");
-                await MutateAsync(key, x => PolicyEngine.MarkWaitingForClose(x, blocking, now, scheduleForcedClose: true, details), ct).ConfigureAwait(false);
-                var latest = Get(key);
-                if (latest is not null && await SendPromptCloseAsync(latest, ct).ConfigureAwait(false))
-                    await MutateAsync(key, x => x.LastNotifiedUtc = now, ct).ConfigureAwait(false);
-                return;
-            }
-        }
 
         await _installLock.WaitAsync(ct).ConfigureAwait(false);
         InstallResult result;
@@ -763,7 +797,46 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 return;
             }
 
-            await MutateAsync(key, PolicyEngine.MarkInstalling, ct).ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            // The user may have deferred an automatic install while it waited for its turn.
+            if (u.IsDeferred(now))
+            {
+                _logger.LogInformation("{App}: deferred while it was queued; not installing it now", u.DisplayName);
+                return;
+            }
+
+            // Its turn: re-check blocking processes right before the installer starts. For a machine-wide update this
+            // looks across every interactive session (sessionId is null), which is why a pwsh running elevated or under
+            // another user used to land here again and again: no tray agent can close either, so the prompt came
+            // straight back. Session 0 never counts (ProcessHelper.IsBlocking).
+            var sessionId = u.Context == InstallContext.User ? SessionFor(u.UserSid) : null;
+            var details = ProcessHelper.GetRunningDetails(u.ProcessNames, sessionId);
+            var blocking = details.Select(d => d.ProcessName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            switch (PolicyEngine.DecideAtTurn(u, now, blocking.Count > 0, blocking.Count > 0 && AnotherInstallReady(key, now)))
+            {
+                case TurnAction.Yield:
+                    // Stays queued (or available); the tick queues it again, and it asks once nothing is ahead of it.
+                    Interlocked.Exchange(ref _turnYielded, 1);
+                    _logger.LogInformation("{App}: {Processes} running; letting the other queued installs go first",
+                        u.DisplayName, BlockingProcessInfo.Describe(details));
+                    return;
+
+                case TurnAction.PromptClose:
+                    var enforce = u.IsPastDeadline(now) && u.ForceCloseAtDeadline;
+                    _logger.LogInformation("{App}: waiting for the user to close {Processes}{Enforce}", u.DisplayName, BlockingProcessInfo.Describe(details),
+                        enforce ? $" (forced close in {u.CloseGracePeriodMinutes} min)" : "");
+                    await MutateAsync(key, x => PolicyEngine.MarkWaitingForClose(x, blocking, now, scheduleForcedClose: true, details), ct).ConfigureAwait(false);
+                    var latest = Get(key);
+                    if (latest is not null && await SendPromptCloseAsync(latest, ct).ConfigureAwait(false))
+                        await MutateAsync(key, x => x.LastNotifiedUtc = now, ct).ConfigureAwait(false);
+                    return;
+
+                case TurnAction.CloseAndInstall:
+                    if (!await CloseBlockingAtTurnAsync(u, sessionId, details, now, ct).ConfigureAwait(false)) return;
+                    break;
+            }
+
+            await MutateAsync(key, x => { PolicyEngine.MarkInstalling(x); x.BlockingProcesses = []; x.BlockingDetails = []; }, ct).ConfigureAwait(false);
             u = Get(key)!;
             _logger.LogInformation("Installing {App} {From} -> {To} ({Source}, {Context}{User})", u.DisplayName, u.InstalledVersion, u.AvailableVersion, u.Source, u.Context,
                 u.Context == InstallContext.User ? $" for {u.UserSid}" : "");

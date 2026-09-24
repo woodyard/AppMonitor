@@ -285,7 +285,9 @@ Internet Options proxy.
 ## The update is found but never installs
 
 - A configured process is running: the update sits in `WaitingForClose`. Check `ProcessNames` and
-  whether the process really belongs to that user's session.
+  whether the process really belongs to that user's session. While other installs are running or
+  queued it stays `Scheduled` instead ("letting the other queued installs go first" in the service
+  log): the close prompt only comes when it is next in line.
 - It is deferred: the log and the tray UI show the time it returns.
 - It is not mandatory and the user keeps dismissing it - that is by design. Set `Mandatory = 1` with
   a `DeadlineHours` to enforce it.

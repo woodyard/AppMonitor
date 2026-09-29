@@ -269,6 +269,7 @@ public static class PolicyEngine
         p.WingetSourceName = policy.WingetSourceName;
         p.WingetExtraArgs = policy.WingetExtraArgs;
         p.WingetReplaceOnMismatch = policy.WingetReplaceOnMismatch;
+        p.WingetUncorrelated = r.WingetUncorrelated;
         p.DownloadUrl = r.DownloadUrl;
         p.InstallerArgs = r.InstallerArgs;
         p.InstallerType = r.InstallerType;

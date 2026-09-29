@@ -14,12 +14,17 @@ Get-Service ArkimentumAppMonitor
 Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Arkimentum AppMonitor' } -MaxEvents 20
 ```
 
-Raise the detail level while investigating and restart the service:
+Raise the detail level while investigating - no restart needed:
 
 ```powershell
 Set-ItemProperty 'HKLM:\SOFTWARE\Arkimentum\AppMonitor' -Name LogLevel -Value 'Debug'
-Restart-Service ArkimentumAppMonitor
 ```
+
+The service applies a new `LogLevel` within one configuration refresh and logs
+`Log level changed from Information to Debug (source: local preference)`: a registry change at the next
+reload (every `PolicyTickSeconds`, 60 s by default, and before every scan), an organization change when
+the device next polls (`CloudSyncIntervalMinutes`, 15 min, or **Check now** in the tray). The tray agent
+follows the level the service reports (its `--debug` switch pins it to `Debug`).
 
 Set it back to `Information` afterwards - `Debug` and `Trace` produce large files.
 
@@ -232,6 +237,41 @@ connected tray agent for that user's listing (`runUserPackageList`, about 45 sec
 no tray agent running, or one from a version that predates the message, therefore shows "no winget
 package" for their per-user installs unless the catalog (or a configured application) already knows
 the product and supplies the id. The service log says how many user-scope rows each agent reported.
+
+### winget says "No installed package found" for an installed program / inventory shows "No winget package"
+
+Seen with Node.js installed from the vendor MSI (winget 1.30): `winget list` prints the program with a
+pseudo id such as `ARP\Machine\X64\{89850E15-…}` and an empty Source column, `winget upgrade` never lists
+it, and `winget list --id OpenJS.NodeJS --exact` answers *No installed package found matching input
+criteria* - although it is installed and `winget show --id OpenJS.NodeJS --exact` knows the package. The
+cause is winget's correlation: it ties an installed program to a package through the MSI product code
+(or ARP name and publisher), and when the index carries that product code in more than one package
+(`OpenJS.NodeJS.LTS` and an `OpenJS.NodeJS.22` line) it refuses to pick one. Whether a given id still
+correlates varies between winget versions, users and SYSTEM, so do not rely on it.
+
+The agent handles this without configuration, as long as the application's detection rule
+(`DetectDisplayNameRegex`, e.g. `^Node\.js$`) finds the program in the registry:
+
+- the scan takes the installed version from the registry and the available version from
+  `winget show --id <WingetId> --exact` (the first configured id winget knows); the log says
+  *winget does not correlate the installed product (24.19.0, registry); available version 26.7.0 from
+  the package 'OpenJS.NodeJS'*;
+- the install runs `winget install --id <id> --exact ... --scope machine` (`--scope user` in the tray)
+  instead of `winget upgrade`, and the vendor installer upgrades the program in place;
+- success is judged by the registry afterwards: the update only counts as installed when the detected
+  version reached the expected one, otherwise it fails with the registry version and winget's exit code
+  in the message.
+
+When the log says instead that winget *neither lists it under the configured id(s) nor knows a package*,
+the `WingetId` is wrong: check it with `winget search --id <id> --exact`. The organization Inventory
+still shows such programs as "No winget package" (winget has no id for them); a configured application
+or a catalog entry for the product supplies the id there.
+
+To see exactly what SYSTEM's winget lists - which is what the service works with, and can differ from
+your own terminal - run `deploy\Get-SystemWingetDiagnostics.ps1` elevated (it runs `winget list` and
+friends as SYSTEM through a one-shot scheduled task and writes
+`%ProgramData%\Arkimentum\AppMonitor\Logs\system-winget.txt`); add
+`-Extra 'show --id OpenJS.NodeJS --exact --disable-interactivity'` to include the package check.
 
 ## A web source stopped working
 
@@ -592,8 +632,9 @@ Then work through:
   becomes 5).
 - The application was skipped: a winget application without `WingetId`, or a web application without
   `VersionUrl`/`DownloadUrl`, is dropped with a warning in the log.
-- The change is simply not picked up yet - restart the service to apply it immediately:
-  `Restart-Service ArkimentumAppMonitor`.
+- The change is simply not picked up yet - it is read at the next `PolicyTickSeconds` or scan; restart the
+  service to apply it immediately: `Restart-Service ArkimentumAppMonitor`. (`LogLevel` needs no restart;
+  `LogDirectory`, `LogRetentionDays` and `MaxLogFileSizeMB` are only read at start-up.)
 - The catalog is off (`UseCatalog = 0`) and the values you relied on came from it.
 
 ## Admin console

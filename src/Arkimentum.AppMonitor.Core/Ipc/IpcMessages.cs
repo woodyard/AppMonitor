@@ -272,6 +272,15 @@ public sealed class RunUserInstallMessage : IpcMessage
 {
     public required PendingUpdate Update { get; set; }
     public int TimeoutMinutes { get; set; } = 30;
+
+    /// <summary>
+    /// The application's registry detection rule (<see cref="AppPolicy.DetectDisplayNameRegex"/>,
+    /// <see cref="AppPolicy.DetectPublisherRegex"/>). The tray rebuilds the installer plan from <see cref="Update"/>,
+    /// which does not carry it; an install winget cannot verify (<see cref="PendingUpdate.WingetUncorrelated"/>) is
+    /// verified against the registry with it. Added after 1.1.37; an older service leaves both null.
+    /// </summary>
+    public string? DetectDisplayNameRegex { get; set; }
+    public string? DetectPublisherRegex { get; set; }
 }
 
 /// <summary>Instruct the tray agent to check the given apps in user context (winget --scope user, HKCU inventory).</summary>

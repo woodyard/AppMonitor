@@ -123,6 +123,24 @@ sequenceDiagram
   rows), upgrade 0.5s (0 rows); 56 app(s) matched in 27 ms; 0 per-app fallback(s); 2 winget
   process(es)* shows what a scan cost. Installs and the checks after them still ask winget about their
   one id, afresh.
+- Uncorrelated installs: winget sometimes cannot tie an installed product to any package, typically
+  because the index carries the product's MSI product code in more than one package (Node.js from the
+  vendor MSI: `OpenJS.NodeJS.LTS` and an `OpenJS.NodeJS.22` line). The listing then shows the product only
+  under a pseudo id such as `ARP\Machine\X64\{GUID}` without a source, `winget upgrade` never offers it,
+  and `winget list --id <id> --exact` answers "No installed package found". When no configured id is
+  installed according to winget, no listing row passes the identity rule, but the registry detection
+  found the application, the check asks `winget show --id <id> --exact [--source <source>]` for the
+  configured ids in order (an id winget does not know is skipped; cached per id, source and scope for
+  the scan) and compares the first package's `Version:` with the registry's version. The result and the
+  pending update carry `WingetUncorrelated = true`; the install then skips `winget upgrade` and runs
+  `winget install --id <id> --exact [--source <source>] --silent --accept-package-agreements
+  --accept-source-agreements --disable-interactivity --scope machine` (the service) or `--scope user`
+  (the tray - never unscoped, no MSIX or portable fallback), so the vendor installer upgrades the
+  product in place. winget still cannot see the product afterwards, so the result is judged by the
+  registry alone: the application's detection rule is applied to the context's Uninstall entries once
+  more (the tray receives the rule with `runUserInstall`), and only a version at or above the expected
+  one counts as success. When winget knows none of the ids the application stays "not installed", as
+  before; when `winget show` fails the check fails and a tracked update is kept.
 - Web applications are checked in parallel (up to `UpdateChecker.MaxParallelChecks`, 3, at a time)
   alongside the winget applications and never wait for them; winget applications are checked one
   after the other because winget keeps machine-wide state.
@@ -444,7 +462,7 @@ session id from the pipe handle, so one user cannot act on another user's update
 | `state` | `StateMessage` | `Updates`, `LastScanUtc`, `NextScanUtc`, `ScanInProgress`, `ServiceVersion`, `Settings` (`SettingsSummary`, including `CloudConfigured`, `CloudEnrolled` and `OrganizationName` so the tray can show which organization manages the device; `MonitoredApps`/`MonitoredAppCount`, which are **per session** - see below - and the optional `ConfiguredAppCount`, the whole enabled set, 0 from a service older than 1.2), `AgentUpdate` (optional `AgentUpdateStatus`: `RunningVersion`, `LatestVersion`, `UpdateAvailable`, `InProgress`, `LastCheckUtc`, `LastError`, `Enabled`; null from a service that predates client-initiated self-update) | Snapshot of the updates relevant to that session: machine-wide updates plus that user's own. |
 | `notify` | `NotifyMessage` | `Kind` (`NotificationKind`), `Title`, `Body`, `Update` | Show a toast. |
 | `promptClose` | `PromptCloseMessage` | `Update` (including the optional `BlockingDetails`: pid, session, owner and elevation per running instance) | Blocking processes are running; ask the user to close them (with the forced-close countdown when one applies). |
-| `runUserInstall` | `RunUserInstallMessage` | `Update`, `TimeoutMinutes` | Install this update in the user's session. |
+| `runUserInstall` | `RunUserInstallMessage` | `Update`, `TimeoutMinutes`, `DetectDisplayNameRegex`, `DetectPublisherRegex` (optional) | Install this update in the user's session. The detection rule is used to verify an install winget cannot see (`Update.WingetUncorrelated`) against the user's Uninstall entries; an older service leaves it out. |
 | `runUserScan` | `RunUserScanMessage` | `ScanId`, `Apps`, `WingetEnabled`, `WebSourcesEnabled`, `ProxyUrl`, `WingetGlobalArgs`, `WingetIncludeUnknown` | Check these applications in user context. |
 | `runUserPackageList` | `RunUserPackageListMessage` | `ListId`, `WingetPath` (optional) | Run `winget list --scope user` in the user's session and answer with `userPackageListResult`. An older tray does not know the discriminator, logs the line as a bad message and never answers; the service falls back to its timeout. |
 | `closeProcesses` | `CloseProcessesMessage` | `UpdateKey`, `ProcessNames`, `Force`, `GracefulWaitSeconds` | Close (or with `Force`, kill) those processes in the user's session. |

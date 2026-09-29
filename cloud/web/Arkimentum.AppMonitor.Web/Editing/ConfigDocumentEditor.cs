@@ -179,33 +179,127 @@ public sealed partial class ConfigDocumentEditor
 
     /// <summary>
     /// Adds an application the fleet inventory reported. A catalog match is added by catalog id with nothing but
-    /// <c>Enabled</c>; anything else becomes a plain winget application with a cleaned display name, the source and
-    /// the winget id. Context is deliberately left unset, so the agent resolves it from where the app is installed.
-    /// Returns null when the AppId is unusable or already in the document.
+    /// <c>Enabled</c>; anything else becomes a plain winget application with a cleaned display name and the source,
+    /// plus the winget id when the devices' winget mapped the application to a package. Without one (winget found
+    /// several equally good packages, or none) the application is identified by an anchored display-name rule
+    /// instead, and the editor flags the missing package id until the administrator enters it. Context is
+    /// deliberately left unset, so the agent resolves it from where the app is installed.
+    /// Returns null when the AppId is unusable or the application is already in the document.
     /// </summary>
     public AppEditor? AddFromInventory(OrganizationInventoryItem item)
     {
-        var appId = SuggestAppId(item);
-        if (appId is null || Exists(appId)) return null;
-
         var values = new SortedDictionary<string, SettingValue>(StringComparer.OrdinalIgnoreCase)
         {
             ["Enabled"] = SettingValue.From(true),
         };
-        if (item.CatalogAppId is null)
+
+        if (item.CatalogAppId is not null || !string.IsNullOrWhiteSpace(item.WingetId))
         {
-            values["DisplayName"] = SettingValue.From(CleanDisplayName(item.DisplayName));
-            values["Source"] = SettingValue.From("winget");
-            values["WingetId"] = SettingValue.From(item.WingetId!);
+            var appId = SuggestAppId(item);
+            if (appId is null || Exists(appId)) return null;
+            if (item.CatalogAppId is null)
+            {
+                values["DisplayName"] = SettingValue.From(CleanDisplayName(item.DisplayName));
+                values["Source"] = SettingValue.From("winget");
+                values["WingetId"] = SettingValue.From(item.WingetId!.Trim());
+            }
+            return AddValues(appId, values);
         }
-        return AddValues(appId, values);
+
+        // No catalog match and no winget id: a slug of the display name, made unique, and a detection rule.
+        if (Slug(CleanDisplayName(item.DisplayName)) is not { } slug) return null;
+        var rule = DisplayNameRule(item.DisplayName);
+        // The same inventory row added again (a second visit to the Inventory page before publishing) would
+        // otherwise become "slug-2" with the identical rule.
+        if (_apps.Any(a => a.Row("DetectDisplayNameRegex") is { IsOverridden: true } r && r.TextValue.Trim() == rule)) return null;
+
+        values["DisplayName"] = SettingValue.From(CleanDisplayName(item.DisplayName));
+        values["Source"] = SettingValue.From("winget");
+        values["DetectDisplayNameRegex"] = SettingValue.From(rule);
+        return AddValues(UniqueAppId(slug), values);
     }
 
-    /// <summary>The catalog id when the catalog knows the application, otherwise the winget id verbatim.</summary>
+    /// <summary>
+    /// The catalog id when the catalog knows the application, otherwise the winget id verbatim, otherwise a slug of
+    /// the cleaned display name (<see cref="Slug"/>; the editor makes it unique when it adds the application).
+    /// </summary>
     public static string? SuggestAppId(OrganizationInventoryItem item)
     {
-        var id = item.CatalogAppId ?? item.WingetId;
-        return string.IsNullOrWhiteSpace(id) || !AppIdPattern.IsMatch(id) ? null : id;
+        var id = item.CatalogAppId ?? (string.IsNullOrWhiteSpace(item.WingetId) ? null : item.WingetId.Trim());
+        if (id is null) return Slug(CleanDisplayName(item.DisplayName));
+        return AppIdPattern.IsMatch(id) ? id : null;
+    }
+
+    /// <summary>
+    /// An AppId from a display name: accents dropped, lower case, every run of characters other than a-z and 0-9
+    /// becomes one dash, no leading or trailing dash ("Node.js" becomes "node-js", "Notepad++" becomes "notepad").
+    /// Null when nothing usable is left.
+    /// </summary>
+    public static string? Slug(string? displayName)
+    {
+        if (string.IsNullOrWhiteSpace(displayName)) return null;
+        var builder = new System.Text.StringBuilder(displayName.Length);
+        var dash = false;
+        string decomposed;
+        try
+        {
+            decomposed = displayName.Normalize(System.Text.NormalizationForm.FormD);
+        }
+        catch (PlatformNotSupportedException)
+        {
+            // Normalization needs ICU; in the browser without it an accented letter simply becomes a separator.
+            decomposed = displayName;
+        }
+        foreach (var c in decomposed)
+        {
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.NonSpacingMark) continue;
+            var lower = char.ToLowerInvariant(c);
+            if (lower is (>= 'a' and <= 'z') or (>= '0' and <= '9'))
+            {
+                if (dash && builder.Length > 0) builder.Append('-');
+                builder.Append(lower);
+                dash = false;
+            }
+            else
+            {
+                dash = true;
+            }
+        }
+        return builder.Length == 0 ? null : builder.ToString();
+    }
+
+    /// <summary>
+    /// The slug itself when no configured application and no catalog entry uses it, otherwise the slug with the
+    /// first free "-2", "-3", ... appended. A catalog id is avoided as well: the new application would silently
+    /// inherit that entry's identity.
+    /// </summary>
+    public string UniqueAppId(string slug)
+    {
+        if (IsFree(slug)) return slug;
+        for (var n = 2; ; n++)
+        {
+            var candidate = $"{slug}-{n}";
+            if (IsFree(candidate)) return candidate;
+        }
+
+        bool IsFree(string id) => !Exists(id) && _catalog(id) is null;
+    }
+
+    /// <summary>
+    /// A tight identity rule for a display name: anchored and regex-escaped ("Node.js" becomes <c>^Node\.js$</c>).
+    /// When the reported name carries a version or architecture suffix, the rule keeps the cleaned name and allows
+    /// exactly the suffixes <see cref="CleanDisplayName"/> strips, so it still matches after the next update
+    /// ("Contoso 4.1 (x64)" becomes <c>^Contoso</c> followed by an optional version and architecture pattern).
+    /// </summary>
+    public static string DisplayNameRule(string displayName)
+    {
+        var raw = displayName.Trim();
+        var clean = CleanDisplayName(raw);
+        // Regex.Escape escapes spaces too; a literal space means the same without IgnorePatternWhitespace and reads better.
+        var escaped = Regex.Escape(clean).Replace("\\ ", " ", StringComparison.Ordinal);
+        return clean == raw
+            ? $"^{escaped}$"
+            : $@"^{escaped}(?:\s+v?\d+(?:\.\d+)+[\w.\-]*|(?i:\s*\((?:x64|x86|64-bit|32-bit|user|machine|current user|all users)[^)]*\)))*$";
     }
 
     /// <summary>Trailing version and architecture noise ("7-Zip 26.02 (x64 edition)" becomes "7-Zip").</summary>

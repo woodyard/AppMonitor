@@ -25,6 +25,8 @@ public sealed class SettingRow
     private bool _isOverridden;
     private bool _boolValue;
     private string _textValue = string.Empty;
+    private string? _ownError;
+    private string? _ruleError;
 
     public SettingRow(SettingDefinition definition, SettingValue? value)
     {
@@ -93,9 +95,20 @@ public sealed class SettingRow
     /// <summary>Whether the row appears on the page, given the page's "Show advanced" toggle.</summary>
     public bool IsShown(bool showAdvanced) => IsVisible && (!IsAdvanced || showAdvanced);
 
-    public string? Error { get; private set; }
+    /// <summary>
+    /// The row's own problem (range, choice, list syntax) when it has one, otherwise the problem a rule spanning
+    /// several rows pinned on it (see <see cref="SetRuleError"/>).
+    /// </summary>
+    public string? Error => _ownError ?? _ruleError;
 
     public bool HasError => !string.IsNullOrEmpty(Error);
+
+    /// <summary>
+    /// Pins a problem on this row that the row cannot see by itself - it depends on other rows or on the catalog
+    /// entry, e.g. "a winget application needs a package id". The owning editor recomputes it on every change.
+    /// Null clears it.
+    /// </summary>
+    public void SetRuleError(string? error) => _ruleError = string.IsNullOrEmpty(error) ? null : error;
 
     /// <summary>What the badge next to the row says: where the effective value comes from.</summary>
     public string SourceBadge => IsOverridden ? "Set" : "Default";
@@ -207,7 +220,7 @@ public sealed class SettingRow
 
     // ---------------------------------------------------------------- validation
 
-    private void Revalidate() => Error = IsOverridden ? Validate() : null;
+    private void Revalidate() => _ownError = IsOverridden ? Validate() : null;
 
     private string? Validate()
     {

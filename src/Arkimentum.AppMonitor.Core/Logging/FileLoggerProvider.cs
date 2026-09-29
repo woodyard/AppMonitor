@@ -10,7 +10,14 @@ public sealed class FileLoggerOptions
     public string FilePrefix { get; set; } = "Arkimentum.AppMonitor";
     public int RetentionDays { get; set; } = 30;
     public int MaxFileSizeMb { get; set; } = 10;
+    /// <summary>Starting level when no <see cref="LevelSwitch"/> is given.</summary>
     public LogLevel MinimumLevel { get; set; } = LogLevel.Information;
+
+    /// <summary>
+    /// Live minimum level shared with the logger factory filter. When null the provider makes its own from
+    /// <see cref="MinimumLevel"/>, reachable through <see cref="FileLoggerProvider.LevelSwitch"/>.
+    /// </summary>
+    public LogLevelSwitch? LevelSwitch { get; set; }
 }
 
 /// <summary>
@@ -32,6 +39,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
     public FileLoggerProvider(FileLoggerOptions options)
     {
         _options = options;
+        LevelSwitch = options.LevelSwitch ?? new LogLevelSwitch(options.MinimumLevel);
         if (string.IsNullOrWhiteSpace(_options.Directory))
             _options.Directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Arkimentum", "AppMonitor", "Logs");
         _writer = new Thread(WriteLoop) { IsBackground = true, Name = "FileLogger" };
@@ -40,9 +48,12 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     public string Directory => _options.Directory;
 
+    /// <summary>The minimum level, read on every log call: changing it takes effect without recreating the provider.</summary>
+    public LogLevelSwitch LevelSwitch { get; }
+
     public ILogger CreateLogger(string categoryName) => new FileLogger(this, ShortCategory(categoryName));
 
-    internal bool IsEnabled(LogLevel level) => level != LogLevel.None && level >= _options.MinimumLevel;
+    internal bool IsEnabled(LogLevel level) => LevelSwitch.IsEnabled(level);
 
     internal void Enqueue(string line)
     {
@@ -164,6 +175,17 @@ public static class FileLoggerExtensions
     public static ILoggingBuilder AddArkimentumFile(this ILoggingBuilder builder, FileLoggerOptions options)
     {
         builder.AddProvider(new FileLoggerProvider(options));
+        return builder;
+    }
+
+    /// <summary>
+    /// Global filter that consults <paramref name="levelSwitch"/> on every call, in place of a fixed
+    /// <c>SetMinimumLevel</c>. More specific rules (a category such as "Microsoft", or a provider such as the event log)
+    /// still win for what they cover.
+    /// </summary>
+    public static ILoggingBuilder AddLevelSwitch(this ILoggingBuilder builder, LogLevelSwitch levelSwitch)
+    {
+        builder.AddFilter(level => levelSwitch.IsEnabled(level));
         return builder;
     }
 

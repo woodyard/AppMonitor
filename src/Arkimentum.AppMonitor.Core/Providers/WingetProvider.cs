@@ -66,6 +66,20 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     internal Func<string, TimeSpan, ExecutionContextInfo, CancellationToken, Task<ProcessRunResult>>? LookupRunner { get; init; }
 
     /// <summary>
+    /// Replaces the winget process for every run of the install path (<c>upgrade</c>, <c>install</c>, <c>uninstall</c>,
+    /// <c>show</c>); arguments, timeout, context. The checks after a run still go through <see cref="LookupRunner"/>.
+    /// Tests script winget's answers through it, so an install test never starts the real winget; null (the default) runs winget.
+    /// </summary>
+    internal Func<string, TimeSpan, ExecutionContextInfo, CancellationToken, Task<ProcessRunResult>>? InstallRunner { get; init; }
+
+    /// <summary>
+    /// Replaces the registry read that verifies the install of an uncorrelated product: the application's best match
+    /// among the Uninstall entries of the context. Tests feed the "after" state through it; null (the default) reads the
+    /// registry (see <see cref="ReadInstalledFromRegistry"/>).
+    /// </summary>
+    internal Func<AppPolicy, ExecutionContextInfo, InstalledApp?>? RegistryReader { get; init; }
+
+    /// <summary>
     /// Checks every id with winget's own per-id lookup, as the fallback for a failed full listing does, even when the
     /// listing is complete. For tests that prove both paths reach the same result for the same winget output.
     /// </summary>
@@ -134,6 +148,16 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
                 lookup = new ListLookup(byName, false, null);
                 matchedId = byName.Id;
             }
+        }
+
+        if (lookup is null && firstError is null && installed is not null)
+        {
+            // winget does not correlate the installed product with any package, but the registry detection found it:
+            // an MSI product code that the index carries in more than one package (Node.js: OpenJS.NodeJS.LTS and
+            // OpenJS.NodeJS.22) makes winget list the install only as "ARP\Machine\X64\{GUID}" without a source, and
+            // "winget upgrade" never offers it. The package itself still says which version is current.
+            var uncorrelated = await CheckUncorrelatedAsync(winget, app, installed, candidates, context, ct).ConfigureAwait(false);
+            if (uncorrelated is not null) return uncorrelated;
         }
 
         if (lookup is null)
@@ -216,6 +240,144 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         };
     }
 
+    /// <summary>
+    /// The check for a product the registry detection found but winget does not correlate with any package (see
+    /// <see cref="UpdateCheckResult.WingetUncorrelated"/>). The first configured id (in order) whose package winget
+    /// knows gives the available version (<c>winget show</c>, see <see cref="ShowPackageAsync"/>); the installed version
+    /// is the registry's. Null when winget knows none of the ids, so the caller reports the product as not installed,
+    /// as before; a failed check when a <c>winget show</c> failed for another reason before a known id was reached
+    /// (a failed check keeps a tracked update, "not installed" would drop it).
+    /// </summary>
+    private async Task<UpdateCheckResult?> CheckUncorrelatedAsync(string winget, AppPolicy app, InstalledApp installed, IReadOnlyList<string> candidates,
+        ExecutionContextInfo context, CancellationToken ct)
+    {
+        string? firstError = null;
+        foreach (var id in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(id)) continue;
+            var show = await ShowPackageAsync(winget, id, app.WingetSourceName, context, ct).ConfigureAwait(false);
+            // An id winget could not answer for may be the first one that exists: stop rather than pick a later one.
+            if (show.Error is not null) { firstError = show.Error; break; }
+            if (show.Version is null)
+            {
+                _logger.LogDebug("{AppId}: winget knows no package '{WingetId}'; trying the next configured id, if any.", app.AppId, id);
+                continue;
+            }
+
+            var installedVersion = string.IsNullOrWhiteSpace(installed.DisplayVersion) ? null : installed.DisplayVersion.Trim();
+            bool updateAvailable;
+            if (VersionComparer.IsUnknown(installedVersion))
+            {
+                // The same opt-in as for winget's own "Unknown": acting on it can reinstall an unrelated build.
+                updateAvailable = _options.WingetIncludeUnknown;
+                _logger.LogDebug("{AppId}: the registry has no usable version ('{Installed}'); UpdateAvailable={Flag} (WingetIncludeUnknown).",
+                    app.AppId, installedVersion ?? "<empty>", updateAvailable);
+            }
+            else
+            {
+                updateAvailable = VersionComparer.IsNewer(show.Version, installedVersion);
+            }
+
+            _logger.LogInformation("{AppId}: winget does not correlate the installed product ({Version}, registry); available version {Available} from the package '{WingetId}'",
+                app.AppId, installedVersion ?? "unknown", show.Version, id);
+            return new UpdateCheckResult
+            {
+                AppId = app.AppId,
+                Source = UpdateSource.Winget,
+                IsInstalled = true,
+                InstalledVersion = installedVersion,
+                AvailableVersion = show.Version,
+                UpdateAvailable = updateAvailable,
+                WingetId = id,
+                ResolvedContext = context.Context,
+                WingetUncorrelated = true,
+            };
+        }
+
+        if (firstError is not null)
+        {
+            _logger.LogWarning("{AppId}: '{Name}' {Version} is installed (registry) but winget does not correlate it with a package, and the package's version could not be read: {Error}",
+                app.AppId, installed.DisplayName, installed.DisplayVersion ?? "(no version)", firstError);
+            return UpdateCheckResult.Failed(app.AppId, UpdateSource.Winget, $"winget does not correlate the installed product with a package, and the package's version could not be read: {firstError}")
+                with { WingetId = candidates[0], ResolvedContext = context.Context };
+        }
+
+        _logger.LogInformation("{AppId}: '{Name}' {Version} is installed (registry) but winget neither lists it under the configured id(s) nor knows a package '{Configured}'; reporting it as not installed for winget.",
+            app.AppId, installed.DisplayName, installed.DisplayVersion ?? "(no version)", string.Join(";", candidates));
+        return null;
+    }
+
+    /// <summary>What <c>winget show</c> says about a package: its current version (both null when winget knows no such package), or the error that kept it from answering.</summary>
+    private sealed record ShowLookup(string? Version, string? Error);
+
+    private readonly ConcurrentDictionary<(InstallContext Context, string Id, string Source), ShowLookup> _showCache = new();
+
+    /// <summary>
+    /// <c>winget show --id X --exact [--source S] --accept-source-agreements --disable-interactivity</c>, cached per id,
+    /// source and context for the lifetime of this provider instance (= one scan), like the listings. No scope filter:
+    /// the package's version does not depend on it, and the install applies the scope itself.
+    /// </summary>
+    private async Task<ShowLookup> ShowPackageAsync(string winget, string id, string? sourceName, ExecutionContextInfo context, CancellationToken ct)
+    {
+        var key = (context.Context, id.ToLowerInvariant(), SourceKey(sourceName));
+        if (_showCache.TryGetValue(key, out var cached)) return cached;
+
+        ShowLookup lookup;
+        try
+        {
+            var args = new StringBuilder()
+                .Append("show --id ").Append(Quote(id))
+                .Append(" --exact");
+            AppendSource(args, sourceName);
+            args.Append(" --accept-source-agreements --disable-interactivity");
+            AppendExtra(args, _options.WingetGlobalArgs);
+
+            var run = await RunLookupAsync(winget, args.ToString(), _options.CheckTimeout, context, ct).ConfigureAwait(false);
+            if (!run.Started) lookup = new ShowLookup(null, run.StartFailure);
+            else if (run.TimedOut) lookup = new ShowLookup(null, $"winget show timed out after {_options.CheckTimeout.TotalSeconds:0} seconds and was terminated.");
+            else if (IsUnknownPackage(run.ExitCode, run.CombinedOutput)) lookup = new ShowLookup(null, null);
+            else if (run.ExitCode != 0) lookup = new ShowLookup(null, $"winget show exited with 0x{run.ExitCode:X8}: {run.LastLines(2)}");
+            else lookup = ParseShowVersion(run.CombinedOutput) is { } version
+                ? new ShowLookup(version, null)
+                : new ShowLookup(null, $"winget show printed no package version: {run.LastLines(2)}");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "winget show for '{WingetId}' failed.", id);
+            lookup = new ShowLookup(null, $"{ex.GetType().Name}: {ex.Message}");
+        }
+        _showCache[key] = lookup;
+        return lookup;
+    }
+
+    /// <summary>
+    /// Whether <c>winget show</c> answered that it knows no package with the id (0x8A150014, or its "No package found"
+    /// message). Pure, so the rule is testable.
+    /// </summary>
+    internal static bool IsUnknownPackage(int exitCode, string? output) =>
+        exitCode == WingetOutputParser.ExitNoInstalledPackageFound
+        || (output?.Contains("No package found matching input criteria", StringComparison.OrdinalIgnoreCase) ?? false);
+
+    /// <summary>
+    /// The package version <c>winget show</c> prints ("Version: 26.7.0"), or null when the output has no such line.
+    /// Pure, so the parsing is testable. Only a line that starts with "Version:" counts (not "Installer Version:" or
+    /// the like), and the first one wins: it belongs to the package, before the installer section.
+    /// </summary>
+    internal static string? ParseShowVersion(string? showOutput)
+    {
+        if (string.IsNullOrWhiteSpace(showOutput)) return null;
+        const string label = "Version:";
+        foreach (var raw in showOutput.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith(label, StringComparison.OrdinalIgnoreCase)) continue;
+            var value = line[label.Length..].Trim();
+            return value.Length == 0 || VersionComparer.IsUnknown(value) ? null : value;
+        }
+        return null;
+    }
+
     /// <summary>Splits a WingetId setting into its alternatives (separated by ';' or ',' or whitespace).</summary>
     public static IReadOnlyList<string> SplitIds(string? wingetId)
     {
@@ -242,11 +404,18 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         if (candidates.Count == 0)
             return InstallResult.Fail($"No WingetId configured for '{app.AppId}'.");
 
-        var winget = WingetLocator.Find(_logger, context.IsSystem, WingetPathOverride);
+        var winget = LocateWinget(context);
         if (winget is null)
             return InstallResult.Fail("winget.exe was not found on this machine.");
 
         var sourceName = FirstNonEmpty(update.WingetSourceName, app.WingetSourceName, "winget");
+
+        // winget does not correlate the installed product with any package (see CheckAsync): "winget upgrade" would only
+        // answer "not installed" for every id, so the package the scan took the available version from is installed
+        // over the product directly and the result is judged by the registry.
+        if (update.WingetUncorrelated)
+            return await InstallUncorrelatedAsync(app, update, context, winget, candidates[0], sourceName, progress, ct).ConfigureAwait(false);
+
         var fallbackRan = false;
         var result = await RunCandidatesAsync(
             candidates,
@@ -373,17 +542,15 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         progress?.Report($"Upgrading {(string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName)} via winget...");
 
         var lastProgressLine = string.Empty;
-        var run = await ProcessRunner.RunAsync(
-            _logger, winget, args.ToString(), _options.InstallTimeout,
-            onOutputLine: line =>
+        var run = await RunInstallProcessAsync(winget, args.ToString(), _options.InstallTimeout,
+            line =>
             {
                 var condensed = Condense(line);
                 if (condensed is null || condensed == lastProgressLine) return;
                 lastProgressLine = condensed;
                 progress?.Report(condensed);
             },
-            environment: ProcessRunner.ChildEnvironment(context),
-            ct: ct).ConfigureAwait(false);
+            context, ct).ConfigureAwait(false);
 
         if (!run.Started) return UpgradeOutcome.Final(InstallResult.Fail(run.StartFailure!));
         if (run.TimedOut)
@@ -581,6 +748,10 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         if (step.NoPerUserInstaller)
         {
             var message = $"{prefix} {MachineOnlyMessage(wingetId, step.PortableSkipped)}";
+            // winget truly offers nothing for the user (not merely a portable copy): when the installed copy is an MSIX
+            // package, the tray can ask the SYSTEM service to install the package for all users (see HandOverToSystemAsync).
+            if (!context.IsSystem && !step.PortableSkipped && _options.SystemInstallHandOver is { } handOver)
+                return await HandOverToSystemAsync(app, update, context, winget, wingetId, sourceName, message, handOver, progress, ct).ConfigureAwait(false);
             _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
             return InstallResult.Fail(message, WingetOutputParser.ExitNoApplicableInstaller);
         }
@@ -605,6 +776,269 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         _logger.LogInformation("{AppId}: 'winget install --force' finished (exit 0x{Hex}){Reboot}; installed version now {Version}.", app.AppId, run.ExitCode.ToString("X8"),
             result.RebootRequired ? ", reboot required" : string.Empty, newVersion ?? update.AvailableVersion);
         return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
+    }
+
+    /// <summary>How much of the service's reply text goes into the result: that text is the only evidence that reaches the cloud.</summary>
+    internal const int HandOverEvidenceLimit = 900;
+
+    /// <summary>1 once this provider instance (= one install) has handed a package to the service; a second candidate id never does it again.</summary>
+    private int _handedOver;
+
+    /// <summary>
+    /// The way out when the user context has no installer it may run and the installed copy is an MSIX package
+    /// (Microsoft.WindowsAppRuntime.1.6 on DESKTOP-V1CDE3I: registered for the user as an MSIX framework package, while
+    /// the manifest only has an exe that needs elevation and declares no Scope, so neither <c>--scope user</c> nor
+    /// <c>--installer-type msix</c> selects it). The SYSTEM service never sees such a package - MSIX registrations are
+    /// per user - so without this nothing could update it. Guarded: only when <c>winget list --details</c> says every
+    /// installed row of the id is an MSIX package of one package family (<see cref="EvaluateHandOver"/>), and only once
+    /// per install. The tray then asks the service (<see cref="ProviderOptions.SystemInstallHandOver"/>) to run an
+    /// unscoped <c>winget install</c> as SYSTEM, where no UAC prompt is possible (<see cref="InstallForAllUsersAsync"/>),
+    /// and judges the outcome by the user's own version afterwards (<see cref="JudgeHandOver"/>): whether the user's
+    /// registration moves at once or only at the next sign-in is not known yet, so both are handled, and the service's
+    /// evidence (package registrations before and after) always goes into the result message, which is what reaches
+    /// the cloud. Every failure message starts with the old "machine-wide installer only" text.
+    /// </summary>
+    private async Task<InstallResult> HandOverToSystemAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
+        string wingetId, string sourceName, string machineOnly,
+        Func<SystemInstallHandOverRequest, CancellationToken, Task<SystemInstallHandOverReply?>> handOver, IProgress<string>? progress, CancellationToken ct)
+    {
+        InstallResult NotHandedOver(string reason)
+        {
+            _logger.LogInformation("{AppId}: not asking the AppMonitor service to install '{WingetId}' for all users: {Reason}.", app.AppId, wingetId, reason);
+            _logger.LogWarning("{AppId}: {Message}", app.AppId, machineOnly);
+            return InstallResult.Fail(machineOnly, WingetOutputParser.ExitNoApplicableInstaller);
+        }
+
+        if (Volatile.Read(ref _handedOver) == 1) return NotHandedOver("this install already handed a package to the service");
+
+        var before = await ListDetailsAsync(winget, wingetId, sourceName, context, ct).ConfigureAwait(false);
+        if (before.Error is not null) return NotHandedOver($"'winget list --details' failed ({before.Error})");
+        var (eligible, family, why) = EvaluateHandOver(before.Rows, wingetId);
+        if (!eligible || family is null) return NotHandedOver(why);
+        if (Interlocked.Exchange(ref _handedOver, 1) == 1) return NotHandedOver("this install already handed a package to the service");
+
+        var ownRows = before.Rows.Where(r => string.Equals(r.Id, wingetId, StringComparison.OrdinalIgnoreCase)).ToList();
+        var userPackageBefore = WingetOutputParser.HighestMsixPackageVersion(ownRows);
+        var name = string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName;
+        _logger.LogInformation("{AppId}: '{WingetId}' is installed for this user as the MSIX package {Family} ({PackageVersion}) and winget only offers an installer that needs administrator rights; asking the AppMonitor service to install {Version} for all users.",
+            app.AppId, wingetId, family, userPackageBefore ?? "version unknown", update.AvailableVersion);
+        progress?.Report($"Installing {name} {update.AvailableVersion} for all users via the AppMonitor service...");
+
+        SystemInstallHandOverReply? reply;
+        try
+        {
+            reply = await handOver(new SystemInstallHandOverRequest(update.Key, wingetId, family, userPackageBefore), ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{AppId}: the hand-over of '{WingetId}' to the AppMonitor service failed.", app.AppId, wingetId);
+            reply = null;
+        }
+        var evidence = Bound(reply?.Message, HandOverEvidenceLimit);
+        _logger.LogInformation("{AppId}: the AppMonitor service answered the hand-over of '{WingetId}': {Answer}", app.AppId, wingetId,
+            reply is null ? "no answer" : $"ok={reply.Ok}, exit 0x{reply.ExitCode:X8}, machine package {reply.MachinePackageVersion ?? "unknown"}: {evidence}");
+
+        string? userVersion = null;
+        string? userPackageAfter = null;
+        if (reply is { Ok: true })
+        {
+            userVersion = await ReadVersionAfterAsync(app, context, winget, wingetId, sourceName, ct).ConfigureAwait(false);
+            var after = await ListDetailsAsync(winget, wingetId, sourceName, context, ct).ConfigureAwait(false);
+            userPackageAfter = WingetOutputParser.HighestMsixPackageVersion(after.Rows.Where(r => string.Equals(r.Id, wingetId, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        var verdict = JudgeHandOver(reply, userVersion, update.AvailableVersion, userPackageBefore);
+        var service = evidence is null ? string.Empty : $" Service: {evidence}";
+        var packages = $"package {userPackageBefore ?? "unknown"} -> {userPackageAfter ?? "unknown"}";
+        switch (verdict)
+        {
+            case HandOverVerdict.Installed:
+            {
+                var message = $"{name} {update.AvailableVersion} was installed for all users by the AppMonitor service; this user's copy is now {userVersion} ({packages}).{service}";
+                _logger.LogInformation("{AppId}: {Message}", app.AppId, message);
+                return InstallResult.Ok(message, reply!.ExitCode, InterpretWingetExitCode(reply.ExitCode).RebootRequired) with { InstalledVersion = userVersion };
+            }
+            case HandOverVerdict.PendingSignIn:
+            {
+                // The package is on the device, but this user's registration still points at the old one. Reported as
+                // installed with a restart pending (a restart signs the user in again), so the old reading is not
+                // taken for a failed install, and the message says plainly what is still to happen.
+                var current = userVersion ?? update.InstalledVersion;
+                var message = $"Installed {name} {update.AvailableVersion} for all users via the AppMonitor service (package {reply!.MachinePackageVersion}); your copy is still {current ?? "the old version"} ({packages}) and switches over at your next sign-in or restart.{service}";
+                _logger.LogInformation("{AppId}: {Message}", app.AppId, message);
+                return InstallResult.Ok(message, reply.ExitCode, reboot: true) with { InstalledVersion = current };
+            }
+            case HandOverVerdict.NoNewerPackage:
+            {
+                var message = $"{machineOnly} The AppMonitor service installed it for all users and reported success (exit 0x{reply!.ExitCode:X8}), but no newer {family} package is on the device (user {packages}, machine {reply.MachinePackageVersion ?? "unknown"}).{service}";
+                _logger.LogError("{AppId}: {Message}", app.AppId, message);
+                return InstallResult.Fail(message, reply.ExitCode == 0 ? -1 : reply.ExitCode);
+            }
+            default:
+            {
+                var reason = reply is null
+                    ? "it did not answer (an older service, a disconnect or a timeout)"
+                    : (evidence ?? $"exit 0x{reply.ExitCode:X8}").TrimEnd('.');
+                var message = $"{machineOnly} The AppMonitor service could not install it for all users: {reason}.";
+                _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+                // Nothing ran when there was no answer (or the service refused): "no applicable installer", as before.
+                var code = reply is null || reply.ExitCode == 0 ? WingetOutputParser.ExitNoApplicableInstaller : reply.ExitCode;
+                return InstallResult.Fail(message, code);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether a package winget offers no user-context installer for may be handed to the service, and the package
+    /// family it is installed as. Pure, so the rule is testable: only when <c>winget list --details</c> shows at least one
+    /// installed row of <paramref name="wingetId"/>, every such row is an MSIX package (installer category "msix") and
+    /// all of them belong to one package family. Anything else - a classic exe/MSI install, rows without a family,
+    /// several families - keeps the "machine-wide installer only" failure; the reason says why.
+    /// </summary>
+    internal static (bool HandOver, string? PackageFamilyName, string Reason) EvaluateHandOver(IReadOnlyList<WingetInstalledDetails> rows, string wingetId)
+    {
+        var own = rows.Where(r => string.Equals(r.Id, wingetId, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (own.Count == 0) return (false, null, "'winget list --details' shows no installed row for it in this user's scope");
+        var notMsix = own.Where(r => !string.Equals(r.InstallerCategory, "msix", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (notMsix.Count > 0)
+            return (false, null, $"the installed copy is not an MSIX package (installer category {string.Join(", ", notMsix.Select(r => r.InstallerCategory ?? "unknown").Distinct(StringComparer.OrdinalIgnoreCase))})");
+        var families = own.Select(r => r.PackageFamilyName?.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (families.Any(string.IsNullOrWhiteSpace)) return (false, null, "winget names no package family for the installed MSIX package");
+        if (families.Count > 1) return (false, null, $"the installed rows belong to {families.Count} package families ({string.Join(", ", families)})");
+        return (true, families[0], "every installed row is an MSIX package of one family");
+    }
+
+    /// <summary>The bool form of <see cref="EvaluateHandOver"/>.</summary>
+    internal static bool ShouldHandOverToSystem(IReadOnlyList<WingetInstalledDetails> rows, string wingetId, out string? packageFamilyName)
+    {
+        var (handOver, family, _) = EvaluateHandOver(rows, wingetId);
+        packageFamilyName = family;
+        return handOver;
+    }
+
+    /// <summary>
+    /// How the user context judges a hand-over to the service. Pure, so the rule is testable.
+    /// <see cref="HandOverVerdict.Failed"/>: no reply (timeout, an older service, a disconnect) or the service's install
+    /// failed or was refused. <see cref="HandOverVerdict.Installed"/>: the user's own version, read afterwards, is known
+    /// and at least the expected one. <see cref="HandOverVerdict.PendingSignIn"/>: the user's copy is still old, but the
+    /// service found a package of the family on the machine that is newer than the user's package before the hand-over
+    /// (both MSIX package versions, e.g. 6000.519.329.0 against 6000.519.297.0; winget's own version numbers are another
+    /// scheme and never compared with them). <see cref="HandOverVerdict.NoNewerPackage"/> otherwise: success was reported
+    /// but nothing shows that it took - never report success when the version did not move.
+    /// </summary>
+    internal static HandOverVerdict JudgeHandOver(SystemInstallHandOverReply? reply, string? userVersionAfter, string? availableVersion, string? userPackageVersionBefore)
+    {
+        if (reply is null || !reply.Ok) return HandOverVerdict.Failed;
+        if (!string.IsNullOrWhiteSpace(userVersionAfter) && !VersionComparer.IsUnknown(userVersionAfter)
+            && !string.IsNullOrWhiteSpace(availableVersion) && VersionComparer.Compare(userVersionAfter, availableVersion) >= 0)
+            return HandOverVerdict.Installed;
+        if (!string.IsNullOrWhiteSpace(reply.MachinePackageVersion) && !string.IsNullOrWhiteSpace(userPackageVersionBefore)
+            && VersionComparer.IsNewer(reply.MachinePackageVersion, userPackageVersionBefore))
+            return HandOverVerdict.PendingSignIn;
+        return HandOverVerdict.NoNewerPackage;
+    }
+
+    /// <summary>Trims <paramref name="text"/> to at most <paramref name="max"/> characters (with an ellipsis), or null when it is empty.</summary>
+    internal static string? Bound(string? text, int max)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var t = text.Trim();
+        return t.Length <= max ? t : t[..(max - 1)] + "…";
+    }
+
+    /// <summary>What <c>winget list --details</c> says about one id: its installed rows, or the error that kept it from answering.</summary>
+    private sealed record DetailsLookup(IReadOnlyList<WingetInstalledDetails> Rows, string? Error);
+
+    /// <summary>
+    /// <c>winget list --id X --exact [--source S] --details --accept-source-agreements --disable-interactivity</c> in this
+    /// context's scope: one record per installed registration (see <see cref="WingetOutputParser.ParseListDetails"/>).
+    /// "Not installed" is no rows, not an error.
+    /// </summary>
+    private async Task<DetailsLookup> ListDetailsAsync(string winget, string wingetId, string sourceName, ExecutionContextInfo context, CancellationToken ct)
+    {
+        try
+        {
+            var args = new StringBuilder()
+                .Append("list --id ").Append(Quote(wingetId))
+                .Append(" --exact");
+            AppendSource(args, sourceName);
+            args.Append(" --details --accept-source-agreements --disable-interactivity")
+                .Append(ScopeArgument(context));
+            AppendExtra(args, _options.WingetGlobalArgs);
+
+            var run = await RunLookupAsync(winget, args.ToString(), _options.CheckTimeout, context, ct).ConfigureAwait(false);
+            if (!run.Started) return new DetailsLookup([], run.StartFailure);
+            if (run.TimedOut) return new DetailsLookup([], $"timed out after {_options.CheckTimeout.TotalSeconds:0} seconds");
+            if (run.ExitCode == WingetOutputParser.ExitNoInstalledPackageFound || WingetOutputParser.IsNotInstalledOutput(run.CombinedOutput))
+                return new DetailsLookup([], null);
+            var rows = WingetOutputParser.ParseListDetails(run.StandardOutput);
+            if (rows.Count == 0 && run.ExitCode != 0) return new DetailsLookup([], $"exit 0x{run.ExitCode:X8}: {run.LastLines(2)}");
+            return new DetailsLookup(rows, null);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "winget list --details for '{WingetId}' failed.", wingetId);
+            return new DetailsLookup([], $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The service's half of the hand-over (see <see cref="HandOverToSystemAsync"/>): installs <paramref name="wingetId"/>
+    /// as LocalSystem with an unscoped <c>winget install --id X --exact [--source S] --silent
+    /// --accept-package-agreements --accept-source-agreements --disable-interactivity</c> (plus the configured extra and
+    /// global arguments). Unscoped on purpose: a manifest that declares no Scope (Microsoft.WindowsAppRuntime.1.6) answers
+    /// "no applicable installer" to <c>--scope machine</c> as much as to <c>--scope user</c>. As SYSTEM, in session 0, the
+    /// installer runs elevated and cannot show a prompt to anyone. "Already installed" and "no newer version" are not
+    /// errors here (<see cref="InterpretAllUsersInstallExit"/>): the caller's before/after check of the package
+    /// registrations decides what happened. Must only be called by the service, for an id it has checked belongs to the
+    /// update.
+    /// </summary>
+    public async Task<InstallResult> InstallForAllUsersAsync(AppPolicy app, PendingUpdate update, string wingetId, IProgress<string>? progress, CancellationToken ct)
+    {
+        if (!_options.WingetEnabled)
+            return InstallResult.Fail("winget disabled by configuration");
+        var context = ExecutionContextInfo.System;
+        var winget = LocateWinget(context);
+        if (winget is null)
+            return InstallResult.Fail("winget.exe was not found on this machine.");
+
+        var sourceName = FirstNonEmpty(update.WingetSourceName, app.WingetSourceName, "winget");
+        _logger.LogInformation("{AppId}: installing '{WingetId}' {Version} for all users with an unscoped 'winget install' using {Winget} as {Identity}.",
+            app.AppId, wingetId, update.AvailableVersion, winget, Native.ImpersonationGuard.DescribeCurrentIdentity());
+
+        var step = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: false, systemScope: false, progress, ct).ConfigureAwait(false);
+        var run = step.Run;
+        if (!run.Started) return InstallResult.Fail(run.StartFailure!);
+        if (run.TimedOut)
+            return InstallResult.Fail($"winget install timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1);
+
+        var result = InterpretAllUsersInstallExit(run.ExitCode, run);
+        if (result.Success)
+            _logger.LogInformation("{AppId}: 'winget install' of '{WingetId}' for all users finished (exit 0x{Hex}): {Message}", app.AppId, wingetId, run.ExitCode.ToString("X8"), result.Message);
+        else
+            _logger.LogError("{AppId}: 'winget install' of '{WingetId}' for all users failed: {Message}", app.AppId, wingetId, result.Message);
+        return result;
+    }
+
+    /// <summary>
+    /// The outcome of the service's unscoped <c>winget install</c> (see <see cref="InstallForAllUsersAsync"/>). Pure, so
+    /// the rule is testable. "No applicable upgrade" (0x8A15002B) and "package already installed" (0x8A150061) mean
+    /// winget found nothing newer to install, which is not an error: the package registrations decide. "No applicable
+    /// installer" means winget has none even unscoped. Everything else as <see cref="InterpretWingetExitCode"/>.
+    /// </summary>
+    internal static InstallResult InterpretAllUsersInstallExit(int exitCode, ProcessRunResult? run = null)
+    {
+        if (exitCode is WingetOutputParser.ExitNoApplicableUpgrade or WingetOutputParser.ExitPackageAlreadyInstalled)
+            return InstallResult.Ok($"winget found nothing newer to install (exit 0x{exitCode:X8}).", exitCode);
+        if (exitCode != 0 && IsNoApplicableInstaller(exitCode, run?.CombinedOutput))
+            return InstallResult.Fail($"winget has no installer for the package even without a scope filter (exit 0x{exitCode:X8}).", exitCode);
+        var result = InterpretWingetExitCode(exitCode, run);
+        if (result.Success) return result;
+        var detail = run?.LastLines() ?? string.Empty;
+        return InstallResult.Fail($"winget install failed with exit code {exitCode} (0x{exitCode:X8})." +
+            (string.IsNullOrWhiteSpace(detail) ? string.Empty : $" Output: {detail}"), exitCode);
     }
 
     /// <summary>
@@ -796,6 +1230,127 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     }
 
     /// <summary>
+    /// The install of a product winget does not correlate with any package (<see cref="PendingUpdate.WingetUncorrelated"/>):
+    /// <c>winget upgrade --id</c> would answer "not installed", so this runs <c>winget install --id X --exact</c> for the
+    /// package the scan took the available version from, and the vendor's installer (an MSI major upgrade, an exe)
+    /// upgrades the product in place. The scope is always given, never left to the manifest: <c>--scope machine</c> as
+    /// LocalSystem, <c>--scope user</c> in the user's session (only that - no MSIX or unscoped attempt, which would put a
+    /// second, differently packaged copy next to the installed one; a portable user-scope installer is refused for the
+    /// same reason). winget still cannot see the product afterwards, so its listing cannot verify anything: success is
+    /// judged only by the registry - the same detection the scan applies (<see cref="InstalledAppScanner.Match"/>) - and
+    /// only when the version there reached the expected one, whatever winget's exit code said.
+    /// </summary>
+    private async Task<InstallResult> InstallUncorrelatedAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
+        string wingetId, string sourceName, IProgress<string>? progress, CancellationToken ct)
+    {
+        var name = string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName;
+        var prefix = $"winget does not correlate the installed {name} with a package ({context.Context} scope), so 'winget upgrade' cannot see it.";
+
+        _logger.LogInformation("{AppId}: winget does not correlate the installed product ({Installed}, registry), so 'winget upgrade' cannot see it; installing {Available} with 'winget install --id {WingetId}' in the {Context} context using {Winget} as {Identity}.",
+            app.AppId, update.InstalledVersion ?? "unknown", update.AvailableVersion, wingetId, context.Context, winget, Native.ImpersonationGuard.DescribeCurrentIdentity());
+
+        var filter = ScopeArgument(context);
+        if (!context.IsSystem)
+        {
+            // Never a machine-wide installer in the user's session, and never a portable copy next to the real one.
+            var show = await RunShowAsync(winget, wingetId, sourceName, context, filter, ct).ConfigureAwait(false);
+            if (show.Started && !show.TimedOut)
+            {
+                var portable = show.ExitCode == 0 && IsPortable(ParseInstallerType(show.CombinedOutput));
+                if (portable || IsNoApplicableInstaller(show.ExitCode, show.CombinedOutput))
+                {
+                    var message = $"{prefix} '{wingetId}' cannot be installed over it: {MachineOnlyMessage(wingetId, portable)}";
+                    _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+                    return InstallResult.Fail(message, WingetOutputParser.ExitNoApplicableInstaller);
+                }
+            }
+        }
+
+        progress?.Report($"Installing {name} {update.AvailableVersion} via winget...");
+        var args = new StringBuilder()
+            .Append("install --id ").Append(Quote(wingetId))
+            .Append(" --exact");
+        AppendSource(args, sourceName);
+        args.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity")
+            .Append(filter);
+        AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
+        AppendExtra(args, _options.WingetGlobalArgs);
+
+        var run = await RunInstallProcessAsync(winget, args.ToString(), _options.InstallTimeout, ProgressSink(progress), context, ct).ConfigureAwait(false);
+        if (!run.Started) return InstallResult.Fail(run.StartFailure!);
+        if (run.TimedOut)
+            return InstallResult.Fail($"winget install timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1);
+        if (!context.IsSystem && IsNoApplicableInstaller(run.ExitCode, run.CombinedOutput))
+        {
+            var message = $"{prefix} '{wingetId}' cannot be installed over it: {MachineOnlyMessage(wingetId)}";
+            _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, WingetOutputParser.ExitNoApplicableInstaller);
+        }
+
+        var result = InterpretWingetExitCode(run.ExitCode, run);
+        var after = ReadInstalledAfterFromRegistry(app, context);
+        var registryVersion = string.IsNullOrWhiteSpace(after?.DisplayVersion) ? null : after!.DisplayVersion!.Trim();
+
+        if (!UncorrelatedInstallReached(registryVersion, update.AvailableVersion))
+        {
+            var found = after is null
+                ? "the registry no longer shows a matching Uninstall entry"
+                : $"the registry still shows {registryVersion ?? "no version"}";
+            var outcome = result.Success ? $"reported success (exit 0x{run.ExitCode:X8})" : $"failed (exit 0x{run.ExitCode:X8}): {result.Message}";
+            var message = $"{prefix} 'winget install --id {wingetId}' {outcome}, but {found}, expected {update.AvailableVersion}.";
+            _logger.LogError("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, run.ExitCode);
+        }
+
+        if (!result.Success)
+            _logger.LogWarning("{AppId}: 'winget install' for '{WingetId}' exited with 0x{Code:X8}, but the registry shows {Version} now; the update took.",
+                app.AppId, wingetId, run.ExitCode, registryVersion);
+        _logger.LogInformation("{AppId}: 'winget install' for '{WingetId}' finished (exit 0x{Hex}){Reboot}; the registry shows {Version} now.",
+            app.AppId, wingetId, run.ExitCode.ToString("X8"), result.RebootRequired ? ", reboot required" : string.Empty, registryVersion);
+        var ok = result.Success ? result : InstallResult.Ok($"Installed; winget exited with 0x{run.ExitCode:X8}, but the registry shows the new version.", run.ExitCode);
+        return ok with { InstalledVersion = registryVersion };
+    }
+
+    /// <summary>
+    /// Whether the install of an uncorrelated product took: the version the registry shows afterwards is known and at
+    /// least the expected one. Pure, so the rule is testable. Anything else - no entry, no version, "Unknown", a lower
+    /// version, no expected version - is a failure: never report success when the version did not move.
+    /// </summary>
+    internal static bool UncorrelatedInstallReached(string? registryVersion, string? expected) =>
+        !string.IsNullOrWhiteSpace(registryVersion) && !VersionComparer.IsUnknown(registryVersion)
+        && !string.IsNullOrWhiteSpace(expected) && !VersionComparer.IsUnknown(expected)
+        && VersionComparer.Compare(registryVersion, expected) >= 0;
+
+    /// <summary>The application's registry entry after an install, through <see cref="RegistryReader"/> when a test set one.</summary>
+    private InstalledApp? ReadInstalledAfterFromRegistry(AppPolicy app, ExecutionContextInfo context)
+    {
+        try
+        {
+            return RegistryReader is { } reader ? reader(app, context) : ReadInstalledFromRegistry(app, context);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{AppId}: the Uninstall registry could not be read after the install.", app.AppId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The application's best match among the Uninstall entries of this context, read afresh - the detection the scan
+    /// feeds the check with (<see cref="UpdateChecker"/>: the context's inventory, then <see cref="InstalledAppScanner.Match"/>,
+    /// whose first entry has the highest version). LocalSystem reads the machine hive, the tray its own user's.
+    /// </summary>
+    private static InstalledApp? ReadInstalledFromRegistry(AppPolicy app, ExecutionContextInfo context)
+    {
+        var sid = context.IsSystem ? null : context.UserSid ?? CurrentUserSid();
+        var scanner = new InstalledAppScanner(NullLogger<InstalledAppScanner>.Instance);
+        var inventory = scanner.Scan(includeMachine: context.IsSystem, includeUsers: !context.IsSystem, onlyUserSid: sid);
+        var scoped = inventory.Where(e => e.Context == context.Context
+            && (context.IsSystem || sid is null || string.Equals(e.UserSid, sid, StringComparison.OrdinalIgnoreCase)));
+        return InstalledAppScanner.Match(app, scoped).FirstOrDefault();
+    }
+
+    /// <summary>
     /// The installer type <c>winget show</c> reports for the installer it selected ("Installer Type: portable (zip)",
     /// "Installer Type: msix"), or null when the output has no such line. Pure, so the parsing is testable. Only the
     /// line that starts with "Installer Type:" counts, not "Nested Installer Type:".
@@ -864,8 +1419,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
             AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
             AppendExtra(args, _options.WingetGlobalArgs);
 
-            var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress),
-                environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+            var run = await RunInstallProcessAsync(winget, args.ToString(), _options.InstallTimeout, ProgressSink(progress), context, ct).ConfigureAwait(false);
             var noInstaller = !context.IsSystem && run.Started && !run.TimedOut && IsNoApplicableInstaller(run.ExitCode, run.CombinedOutput);
             if (noInstaller && attempt + 1 < attempts)
             {
@@ -890,8 +1444,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         args.Append(filter).Append(" --accept-source-agreements --disable-interactivity");
         AppendExtra(args, _options.WingetGlobalArgs);
 
-        return await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout,
-            environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+        return await RunInstallProcessAsync(winget, args.ToString(), _options.CheckTimeout, null, context, ct).ConfigureAwait(false);
     }
 
     /// <summary>Whether winget offers an installer the user context may run (see <see cref="CheckPerUserInstallerAsync"/>).</summary>
@@ -955,8 +1508,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         if (allVersions) args.Append(" --all-versions");
         AppendExtra(args, _options.WingetGlobalArgs);
 
-        return await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.InstallTimeout, onOutputLine: ProgressSink(progress),
-            environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+        return await RunInstallProcessAsync(winget, args.ToString(), _options.InstallTimeout, ProgressSink(progress), context, ct).ConfigureAwait(false);
     }
 
     /// <summary>Outcome of the stale-registration cleanup: how many keys were deleted, and why one could not be.</summary>
@@ -1415,7 +1967,19 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
 
     /// <summary>winget.exe for this context, or null when it is not installed. A test runner needs no real winget.</summary>
     private string? LocateWinget(ExecutionContextInfo context) =>
-        LookupRunner is not null ? "winget.exe" : WingetLocator.Find(_logger, context.IsSystem, WingetPathOverride);
+        LookupRunner is not null || InstallRunner is not null ? "winget.exe" : WingetLocator.Find(_logger, context.IsSystem, WingetPathOverride);
+
+    /// <summary>
+    /// Runs a winget process of the install path (<c>upgrade</c>, <c>install</c>, <c>uninstall</c>, <c>show</c>), through
+    /// <see cref="InstallRunner"/> when a test set one.
+    /// </summary>
+    private Task<ProcessRunResult> RunInstallProcessAsync(string winget, string arguments, TimeSpan timeout, Action<string>? onOutputLine,
+        ExecutionContextInfo context, CancellationToken ct) =>
+        InstallRunner is { } runner ? runner(arguments, timeout, context, ct)
+        // A test that scripts the lookups but not the install path must never reach the real winget.
+        : LookupRunner is not null ? Task.FromResult(new ProcessRunResult(-1, string.Empty, string.Empty, StartFailure: "no InstallRunner set for this test"))
+        : ProcessRunner.RunAsync(_logger, winget, arguments, timeout, onOutputLine: onOutputLine,
+            environment: ProcessRunner.ChildEnvironment(context), ct: ct);
 
     /// <summary>The key the upgrade listing is cached under for a winget source name.</summary>
     private static string SourceKey(string? sourceName) => (sourceName ?? string.Empty).Trim().ToLowerInvariant();

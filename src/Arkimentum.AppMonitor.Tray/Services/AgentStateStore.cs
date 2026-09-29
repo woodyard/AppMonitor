@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using System.Windows.Threading;
 using Arkimentum.AppMonitor.Ipc;
+using Arkimentum.AppMonitor.Logging;
 using Arkimentum.AppMonitor.Models;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -25,6 +26,7 @@ public sealed class AgentStateStore : IHostedService
     private readonly ILogger<AgentStateStore> _log;
     private readonly IpcClientService _ipc;
     private readonly Dispatcher _dispatcher;
+    private readonly LogLevelSwitch _logLevel;
     private readonly Dictionary<string, string> _localStatus = new(StringComparer.Ordinal);
     private readonly HashSet<string> _updateAllKeys = new(StringComparer.Ordinal);
     private DispatcherTimer? _updateAllTimeout;
@@ -33,11 +35,12 @@ public sealed class AgentStateStore : IHostedService
 
     private List<PendingUpdate> _updates = [];
 
-    public AgentStateStore(ILogger<AgentStateStore> log, IpcClientService ipc, Dispatcher dispatcher)
+    public AgentStateStore(ILogger<AgentStateStore> log, IpcClientService ipc, Dispatcher dispatcher, LogLevelSwitch logLevel)
     {
         _log = log;
         _ipc = ipc;
         _dispatcher = dispatcher;
+        _logLevel = logLevel;
     }
 
     /// <summary>Raised on the UI thread whenever anything the UI shows has changed.</summary>
@@ -306,6 +309,10 @@ public sealed class AgentStateStore : IHostedService
         _scan.ServiceReported(state.ScanInProgress);
         ServiceVersion = state.ServiceVersion;
         Settings = state.Settings ?? new SettingsSummary();
+        // The service reports the effective LogLevel (policy > organization > preference); the tray follows it, so an
+        // organization-wide Debug reaches the tray logs too. Empty from a service that predates the field.
+        if (!string.IsNullOrWhiteSpace(Settings.LogLevel))
+            _logLevel.Apply(FileLoggerExtensions.ParseLevel(Settings.LogLevel), _log, "service configuration");
         // Null from a service that predates client-initiated self-update; the UI then hides the status and buttons.
         AgentUpdate = state.AgentUpdate;
         HasReceivedState = true;

@@ -82,6 +82,13 @@ public sealed class PendingUpdate
     public string? WingetExtraArgs { get; set; }
     /// <summary>Opt-in take-over (uninstall + install) when winget refuses the upgrade with a technology mismatch.</summary>
     public bool WingetReplaceOnMismatch { get; set; }
+    /// <summary>
+    /// winget does not correlate the installed product with any package (see <see cref="UpdateCheckResult.WingetUncorrelated"/>):
+    /// <c>winget upgrade</c> would answer "not installed", so the install runs <c>winget install</c> for
+    /// <see cref="WingetId"/> and is verified by re-reading the registry. Added after 1.1.37; a state file or an IPC
+    /// message without it means false.
+    /// </summary>
+    public bool WingetUncorrelated { get; set; }
     public string? DownloadUrl { get; set; }
     public string? InstallerArgs { get; set; }
     public InstallerType InstallerType { get; set; }

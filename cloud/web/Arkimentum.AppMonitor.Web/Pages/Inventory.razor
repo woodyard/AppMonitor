@@ -11,8 +11,11 @@
 
     Adding follows exactly the rule the WPF console's Discover dialog follows: an application the catalog recognises
     is added by catalog id with nothing but Enabled = 1, so the shipped identity, source and detection data apply;
-    anything else becomes a plain winget application with DisplayName, Source and WingetId. Nothing is sent to the
-    server here - the changes land in the shared pending document and are published from the Applications page.
+    anything else becomes a plain winget application with DisplayName, Source and WingetId. An application winget
+    could not map to a package (several equally good candidates, e.g. Node.js LTS and 22) is added too, with an
+    anchored display-name detection rule and no WingetId; the Applications page flags the missing id, and publishing
+    waits until the administrator enters it. Nothing is sent to the server here - the changes land in the shared
+    pending document and are published from the Applications page.
 *@
 
 <PageTitle>Inventory · AppMonitor admin</PageTitle>
@@ -90,7 +93,7 @@ else
                                     }
                                 </span>
                             </td>
-                            <td class="mono">@(string.IsNullOrWhiteSpace(item.WingetId) ? "No winget package" : item.WingetId!)</td>
+                            <td class="mono">@WingetIdText(item, selectable)</td>
                             <td class="num">@item.DeviceCount</td>
                             <td class="num">
                                 @if (item.DevicesWithUpdateAvailable > 0)
@@ -142,6 +145,16 @@ else
     private static bool CanSelect(OrganizationInventoryItem item) =>
         string.IsNullOrWhiteSpace(item.MonitoredAppId) && ConfigDocumentEditor.SuggestAppId(item) is not null;
 
+    /// <summary>
+    /// The winget id, or why there is none. An addable application without one is added all the same; the package
+    /// id then has to be entered on the Applications page before the change can be published.
+    /// </summary>
+    private static string WingetIdText(OrganizationInventoryItem item, bool selectable)
+    {
+        if (!string.IsNullOrWhiteSpace(item.WingetId)) return item.WingetId!;
+        return selectable && item.CatalogAppId is null ? "No winget package — enter the id after adding" : "No winget package";
+    }
+
     private static string Key(OrganizationInventoryItem item) => $"{item.CatalogAppId}|{item.WingetId}|{item.DisplayName}";
 
     private void Toggle(OrganizationInventoryItem item, ChangeEventArgs args)
@@ -178,16 +191,23 @@ else
         }
 
         int added = 0, skipped = 0;
+        AppEditor? land = null;
         foreach (var item in _items.Where(i => _selected.Contains(Key(i))).ToList())
         {
-            if (Workspace.Editor.AddFromInventory(item) is null) skipped++;
-            else added++;
+            if (Workspace.Editor.AddFromInventory(item) is not { } app)
+            {
+                skipped++;
+                continue;
+            }
+            added++;
+            // Land on an application that still needs something (a package id) in preference to one that is complete.
+            if (land is null || (!land.Problems.Any() && app.Problems.Any())) land = app;
         }
         _selected.Clear();
 
         Notice = skipped == 0
             ? $"Added {added} application(s) to the pending configuration."
             : $"Added {added} application(s); skipped {skipped} that were already there.";
-        if (added > 0) Navigation.NavigateTo("applications");
+        if (land is not null) Navigation.NavigateTo($"applications?app={Uri.EscapeDataString(land.AppId)}");
     }
 }

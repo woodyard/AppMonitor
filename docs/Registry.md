@@ -101,7 +101,7 @@ All of these live directly under `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` 
 | `NotificationsEnabled` | DWORD | 1 | 0/1 | Tray agent shows toast notifications. |
 | `NotificationMode` | SZ | `Quiet` | `Quiet`, `Reminders` | `Quiet` announces an update once and afterwards only interrupts when the user has to act (deadline approaching, applications must be closed, install failed); no "Installing ..." toast unless `NotifyInstalling` asks for one. `Reminders` repeats every `NotificationIntervalMinutes`. |
 | `ShowInstalledNotifications` | DWORD | 0 | 0/1 | Notify the user after a successful install. Changed in 1.2: this was on by default up to 1.1.1. |
-| `LogLevel` | SZ | `Information` | `Trace`, `Debug`, `Information`, `Warning`, `Error` | Minimum level written to the log files. |
+| `LogLevel` | SZ | `Information` | `Trace`, `Debug`, `Information`, `Warning`, `Error` | Minimum level written to the log files. Applies while the service runs, no restart: a registry change at the next configuration reload (every `PolicyTickSeconds` and before every scan), an organization change when the device next polls (`CloudSyncIntervalMinutes`, 15 min, or **Check now** in the tray). The tray agent follows the service's effective level unless started with `--debug`. |
 | `LogDirectory` | SZ / EXPAND_SZ | `%ProgramData%\Arkimentum\AppMonitor\Logs` | full path | Service log folder. Must be writable by LocalSystem. Does not affect the tray agent. |
 | `LogRetentionDays` | DWORD | 30 | 1-3650 | Log files older than this are deleted. |
 | `MaxLogFileSizeMB` | DWORD | 10 | 1-1024 | Roll the log file at this size (`..._1.log`, `..._2.log`, ...). |
@@ -402,8 +402,9 @@ Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Arkimentum\AppMonitor' -ErrorAction Si
 Get-Content "$env:ProgramData\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Service_$(Get-Date -Format yyyyMMdd).log" -Tail 100
 ```
 
-Configuration is re-read by the service on its own schedule; restart the `ArkimentumAppMonitor` service to
-apply a change immediately.
+Configuration is re-read by the service on its own schedule (every `PolicyTickSeconds` and before every scan);
+restart the `ArkimentumAppMonitor` service to apply a change immediately. `LogLevel` never needs the restart: it
+takes effect at that reload. `LogDirectory`, `LogRetentionDays` and `MaxLogFileSizeMB` are read once at start-up.
 
 ## Related
 

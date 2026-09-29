@@ -64,6 +64,7 @@ public sealed class AppEditor
 
         RefreshInherited();
         RefreshVisibility();
+        RefreshRules();
     }
 
     /// <summary>Raised whenever a value changes, so the owning document can re-evaluate dirtiness.</summary>
@@ -243,9 +244,25 @@ public sealed class AppEditor
         }
     }
 
+    /// <summary>
+    /// Rules that span rows and are shown on one of them. A winget application needs a package id: its own value or
+    /// the catalog entry's. Adding an application the inventory could not map to a package writes none (winget on the
+    /// device found several candidates, or none), and the administrator has to supply it before publishing.
+    /// </summary>
+    private void RefreshRules()
+    {
+        var wingetId = Row("WingetId");
+        var missing = !IsWeb && string.IsNullOrWhiteSpace(EffectiveText("WingetId", CatalogText("WingetId")));
+        wingetId.SetRuleError(missing ? MissingWingetIdMessage : null);
+    }
+
+    public const string MissingWingetIdMessage =
+        "Required for winget applications: the package id, e.g. from `winget search <name>`.";
+
     private void OnRowChanged(SettingRow row)
     {
         RefreshVisibility();
+        RefreshRules();
         Changed?.Invoke();
     }
 }

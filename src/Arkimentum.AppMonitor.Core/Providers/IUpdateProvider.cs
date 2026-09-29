@@ -48,6 +48,14 @@ public sealed class ProviderOptions
     /// <summary>Explicit path to winget.exe (registry value WingetPath); null = auto-detect.</summary>
     public string? WingetPath { get; set; }
 
+    /// <summary>
+    /// The tray agent's way to have the AppMonitor service install a package for all users when the user's own
+    /// session cannot (see <see cref="SystemInstallHandOverRequest"/>): an installed MSIX package whose winget manifest
+    /// only offers an installer that needs elevation. Null everywhere except in the tray agent, and null keeps the
+    /// user context's "machine-wide installer only" failure exactly as it was.
+    /// </summary>
+    public Func<SystemInstallHandOverRequest, CancellationToken, Task<SystemInstallHandOverReply?>>? SystemInstallHandOver { get; set; }
+
     public static ProviderOptions From(AgentSettings s) => new()
     {
         WingetEnabled = s.WingetEnabled,

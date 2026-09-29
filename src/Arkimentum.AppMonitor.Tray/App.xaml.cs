@@ -94,19 +94,23 @@ public partial class App : Application
         var builder = Host.CreateApplicationBuilder();
         var level = _options.Debug ? LogLevel.Debug : FileLoggerExtensions.ParseLevel(settings.LogLevel);
 
+        // The registry read above is only the starting point: once connected, the tray follows the effective LogLevel the
+        // service reports (organization configuration included, see AgentStateStore.Apply). --debug pins it to Debug.
+        var levelSwitch = new LogLevelSwitch(level) { Pinned = _options.Debug };
         builder.Logging.ClearProviders();
-        builder.Logging.SetMinimumLevel(level);
+        builder.Logging.AddLevelSwitch(levelSwitch);
         builder.Logging.AddArkimentumFile(new FileLoggerOptions
         {
             Directory = AppInfo.LogDirectory,
             FilePrefix = "Arkimentum.AppMonitor.Tray",
-            MinimumLevel = level,
+            LevelSwitch = levelSwitch,
             RetentionDays = settings.LogRetentionDays,
             MaxFileSizeMb = settings.MaxLogFileSizeMb,
         });
 
         var services = builder.Services;
         services.AddSingleton(_options);
+        services.AddSingleton(levelSwitch);
         services.AddSingleton(settings);
         services.AddSingleton(Dispatcher.CurrentDispatcher);
         services.AddSingleton(sp => new PipeClient(sp.GetRequiredService<ILogger<PipeClient>>()));
@@ -138,7 +142,7 @@ public partial class App : Application
         return builder.Build();
     }
 
-    /// <summary>HKLM settings, read-only, purely to pick the log level before the logger exists.</summary>
+    /// <summary>HKLM settings, read-only, purely to pick the starting log level before the logger exists.</summary>
     private static AgentSettings ReadRegistrySettings()
     {
         try

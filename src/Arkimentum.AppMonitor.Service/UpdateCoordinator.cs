@@ -892,7 +892,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 _pendingUserInstalls[key] = (tcs, client.ConnectionId);
                 try
                 {
-                    var msg = new RunUserInstallMessage { Update = u.Clone(), TimeoutMinutes = settings.InstallTimeoutMinutes };
+                    var msg = new RunUserInstallMessage
+                    {
+                        Update = u.Clone(),
+                        TimeoutMinutes = settings.InstallTimeoutMinutes,
+                        DetectDisplayNameRegex = policy.DetectDisplayNameRegex,
+                        DetectPublisherRegex = policy.DetectPublisherRegex,
+                    };
                     if (!await _pipe.SendAsync(client, msg, ct).ConfigureAwait(false)) result = InstallResult.Fail("Could not reach the tray agent");
                     else result = await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
                 }

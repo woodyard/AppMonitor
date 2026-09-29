@@ -196,11 +196,18 @@ else
 
     private List<AppEditor> Visible => Workspace.Editor.Apps.Where(a => a.Matches(_filter)).ToList();
 
+    /// <summary>The AppId to open with, e.g. the application the Inventory page has just added (<c>?app=nodejs</c>).</summary>
+    [SupplyParameterFromQuery(Name = "app")]
+    public string? InitialAppId { get; set; }
+
     protected override async Task LoadAsync()
     {
         await Catalog.EnsureLoadedAsync();
         await Workspace.EnsureLoadedAsync();
-        _selected = Workspace.Editor.Apps.FirstOrDefault();
+        _selected = (string.IsNullOrWhiteSpace(InitialAppId)
+                        ? null
+                        : Workspace.Editor.Apps.FirstOrDefault(a => a.AppId.Equals(InitialAppId, StringComparison.OrdinalIgnoreCase)))
+                    ?? Workspace.Editor.Apps.FirstOrDefault();
     }
 
     protected override async Task OnInitializedAsync()

@@ -349,8 +349,10 @@ public sealed class ConfigDocumentEditorTests
     {
         var editor = NewEditor();
 
-        Assert.Null(editor.AddFromInventory(new OrganizationInventoryItem { DisplayName = "Something local" }));
+        // A winget id that cannot be an AppId, and a display name with nothing left to slug. (An item without any
+        // winget id is added by a display-name slug; see InventoryWithoutWingetIdTests.)
         Assert.Null(editor.AddFromInventory(new OrganizationInventoryItem { DisplayName = "Odd", WingetId = "not a valid id" }));
+        Assert.Null(editor.AddFromInventory(new OrganizationInventoryItem { DisplayName = "++" }));
         Assert.Empty(editor.ToDocument().Apps);
     }
 

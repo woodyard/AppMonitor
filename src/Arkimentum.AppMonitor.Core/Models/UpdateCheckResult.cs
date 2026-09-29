@@ -21,6 +21,14 @@ public sealed record UpdateCheckResult
     /// <summary>System or User; the context in which the install was detected.</summary>
     public InstallContext ResolvedContext { get; init; }
 
+    /// <summary>
+    /// winget does not correlate the installed product with any package (its listing shows it only under an
+    /// <c>ARP\…</c> pseudo id, e.g. an MSI product code that several packages claim), so the installed version comes from
+    /// the registry detection and the available version from <c>winget show</c> for <see cref="WingetId"/>. The install
+    /// then runs <c>winget install</c> instead of <c>winget upgrade</c> and is verified against the registry.
+    /// </summary>
+    public bool WingetUncorrelated { get; init; }
+
     public static UpdateCheckResult NotInstalled(string appId, UpdateSource source) =>
         new() { AppId = appId, Source = source, IsInstalled = false };
 

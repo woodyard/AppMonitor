@@ -156,5 +156,16 @@
     "detectDisplayNameRegex": "^Slack\\b",
     "processNames": [ "slack" ],
     "notes": "winget only. Slack's default installer is per-user, so the tray agent owns this app."
+  },
+  {
+    "appId": "nodejs",
+    "displayName": "Node.js",
+    "source": "winget",
+    "context": "system",
+    "wingetId": "OpenJS.NodeJS.LTS;OpenJS.NodeJS",
+    "detectDisplayNameRegex": "^Node\\.js$",
+    "detectPublisherRegex": "Node\\.js Foundation|OpenJS Foundation",
+    "processNames": [ "node" ],
+    "notes": "winget only. The Node.js MSI product code appears in more than one winget manifest (OpenJS.NodeJS.LTS and the OpenJS.NodeJS.<major> lines), so `winget list` reports the install without a package id (\"multiple packages with strong match fields\"); the ids here settle it, LTS first. Verified 2026-09-29 on two devices with 24.19.0 and 26.4.0."
   }
 ]

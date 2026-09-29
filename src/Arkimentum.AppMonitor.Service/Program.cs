@@ -48,7 +48,9 @@ if (args.Any(a => a.Equals("--version", StringComparison.OrdinalIgnoreCase)))
 
 var configHive = userConfig ? Microsoft.Win32.Registry.CurrentUser : Microsoft.Win32.Registry.LocalMachine;
 
-// Bootstrap: read the configuration once to configure logging (log level/directory need a restart to change).
+// Bootstrap: read the registry configuration once to configure logging. The log directory, retention and file size need a
+// restart to change; the log level only starts here and then follows the effective configuration, organization layer
+// included, at every reload (LogLevelController).
 var catalog = new JsonCatalogProvider(NullLogger<JsonCatalogProvider>.Instance);
 var bootstrapReader = new RegistryConfigurationReader(NullLogger<RegistryConfigurationReader>.Instance, catalog, configHive);
 AgentSettings bootstrap;
@@ -94,8 +96,10 @@ var runAsService = !console && !scanOnce && !cliOnly && WindowsServiceHelpers.Is
 
 var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { Args = args, ContentRootPath = AppContext.BaseDirectory });
 
+var logLevelSwitch = new LogLevelSwitch(FileLoggerExtensions.ParseLevel(bootstrap.LogLevel));
 builder.Logging.ClearProviders();
-builder.Logging.SetMinimumLevel(FileLoggerExtensions.ParseLevel(bootstrap.LogLevel));
+// A filter consulted on every call instead of a fixed SetMinimumLevel, so the level can change while the service runs.
+builder.Logging.AddLevelSwitch(logLevelSwitch);
 builder.Logging.AddFilter("Microsoft", LogLevel.Warning);
 builder.Logging.AddFilter("System", LogLevel.Warning);
 builder.Logging.AddArkimentumFile(new FileLoggerOptions
@@ -104,7 +108,7 @@ builder.Logging.AddArkimentumFile(new FileLoggerOptions
     FilePrefix = "Arkimentum.AppMonitor.Service",
     RetentionDays = bootstrap.LogRetentionDays,
     MaxFileSizeMb = bootstrap.MaxLogFileSizeMb,
-    MinimumLevel = FileLoggerExtensions.ParseLevel(bootstrap.LogLevel),
+    LevelSwitch = logLevelSwitch,
 });
 if (OperatingSystem.IsWindows())
 {
@@ -124,9 +128,17 @@ builder.Services.AddSingleton(sp =>
     var cache = sp.GetRequiredService<Arkimentum.AppMonitor.Cloud.CloudConfigCache>();
     return new RegistryConfigurationReader(sp.GetRequiredService<ILogger<RegistryConfigurationReader>>(), catalog, configHive, () => cache.CurrentSettings());
 });
-builder.Services.AddSingleton(sp => new SettingsProvider(sp.GetRequiredService<RegistryConfigurationReader>(), sp.GetRequiredService<ILogger<SettingsProvider>>())
+builder.Services.AddSingleton(logLevelSwitch);
+builder.Services.AddSingleton<LogLevelController>();
+builder.Services.AddSingleton(sp =>
 {
-    Overrides = userConfig ? s => s with { LogDirectory = bootstrap.LogDirectory, StateDirectory = bootstrap.StateDirectory } : null,
+    var provider = new SettingsProvider(sp.GetRequiredService<RegistryConfigurationReader>(), sp.GetRequiredService<ILogger<SettingsProvider>>())
+    {
+        Overrides = userConfig ? s => s with { LogDirectory = bootstrap.LogDirectory, StateDirectory = bootstrap.StateDirectory } : null,
+    };
+    // Every reload that changes the configuration (the first one at start-up included) re-applies LogLevel.
+    sp.GetRequiredService<LogLevelController>().Attach(provider);
+    return provider;
 });
 builder.Services.AddSingleton<StateStore>();
 builder.Services.AddSingleton<InstalledAppScanner>();

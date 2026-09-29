@@ -90,6 +90,12 @@ public static partial class WingetOutputParser
     /// </summary>
     public const int ExitMultipleUninstallFailed = unchecked((int)0x8A150066);
 
+    /// <summary>
+    /// winget exit code for "package already installed" (0x8A150061, APPINSTALLER_CLI_ERROR_PACKAGE_ALREADY_INSTALLED):
+    /// <c>winget install</c> found the package installed and had nothing newer to put there.
+    /// </summary>
+    public const int ExitPackageAlreadyInstalled = unchecked((int)0x8A150061);
+
     /// <summary>winget exit codes meaning "installed, reboot required".</summary>
     public const int ExitRebootRequiredToFinish = unchecked((int)0x8A150109);
     public const int ExitRebootRequiredForInstall = unchecked((int)0x8A15010A);

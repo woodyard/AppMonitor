@@ -162,7 +162,13 @@ public sealed class UserContextExecutor : IHostedService
         AppInfo.EnsureDirectories();
 
         var context = CurrentContext();
-        var policy = ToPolicy(update);
+        // The detection rule travels with the message (not the update): an install winget cannot see
+        // (WingetUncorrelated) is verified against this user's Uninstall entries with it.
+        var policy = ToPolicy(update) with
+        {
+            DetectDisplayNameRegex = string.IsNullOrWhiteSpace(message.DetectDisplayNameRegex) ? null : message.DetectDisplayNameRegex,
+            DetectPublisherRegex = string.IsNullOrWhiteSpace(message.DetectPublisherRegex) ? null : message.DetectPublisherRegex,
+        };
         var progress = CreateProgress(key);
 
         SetStatus(key, Strings.StateInstalling);

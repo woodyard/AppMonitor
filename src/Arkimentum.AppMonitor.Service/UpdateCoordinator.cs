@@ -316,8 +316,12 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             var outcomes = new List<ScanOutcome>();
             var checkedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+            // The system-context check and the user-context checks (one per signed-in user, run by that user's tray) run at
+            // the same time and are merged once all of them are in. They share nothing but the two collections above,
+            // which are only touched under lock (outcomes): each side reads its own winget scope in its own process.
+
             // --- system context (in-process)
-            if (systemApps.Count > 0)
+            Func<Task>? systemScan = systemApps.Count == 0 ? null : async () =>
             {
                 var options = ProviderOptions.From(settings);
                 var providers = ProviderFactory.Create(_loggerFactory, options);
@@ -328,16 +332,19 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                     results = await checker.CheckAsync(systemApps, inventory, ExecutionContextInfo.System, options, ct).ConfigureAwait(false);
                 }
                 finally { providers.DisposeAll(); }
-                foreach (var r in results)
+                lock (outcomes)
                 {
-                    var policy = systemApps.First(a => a.AppId.Equals(r.AppId, StringComparison.OrdinalIgnoreCase));
-                    outcomes.Add(new ScanOutcome(r, policy, InstallContext.System, null));
+                    foreach (var r in results)
+                    {
+                        var policy = systemApps.First(a => a.AppId.Equals(r.AppId, StringComparison.OrdinalIgnoreCase));
+                        outcomes.Add(new ScanOutcome(r, policy, InstallContext.System, null));
+                    }
+                    foreach (var a in systemApps) checkedKeys.Add(PendingUpdate.MakeKey(a.AppId, InstallContext.System, null));
                 }
-                foreach (var a in systemApps) checkedKeys.Add(PendingUpdate.MakeKey(a.AppId, InstallContext.System, null));
-            }
+            };
 
             // --- user context (delegated to tray agents, in parallel per user)
-            var userTasks = userApps.Select(async kv =>
+            var userScans = userApps.Select(kv => (Func<Task>)(async () =>
             {
                 var (sid, list) = (kv.Key, kv.Value);
                 var client = ClientFor(sid);
@@ -381,8 +388,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                     _logger.LogWarning("User-context scan for {Client} timed out", client);
                 }
                 finally { _pendingUserScans.TryRemove(msg.ScanId, out _); }
-            }).ToList();
-            await Task.WhenAll(userTasks).ConfigureAwait(false);
+            })).ToList();
+            await RunScanContextsAsync(systemScan, userScans).ConfigureAwait(false);
 
             // --- merge
             MergeSummary summary;
@@ -432,6 +439,19 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         await BroadcastStateAsync(ct).ConfigureAwait(false);
         await EvaluatePoliciesAsync(ct).ConfigureAwait(false);
         RaiseScanCompleted();
+    }
+
+    /// <summary>
+    /// Starts the system-context check and every user-context check at once and waits until all of them are done:
+    /// neither side waits for the other, the trays read their users' winget scope while the service reads the machine
+    /// scope. A failure is rethrown once every check has finished.
+    /// </summary>
+    public static async Task RunScanContextsAsync(Func<Task>? systemScan, IReadOnlyList<Func<Task>> userScans)
+    {
+        var tasks = new List<Task>(userScans.Count + 1);
+        if (systemScan is not null) tasks.Add(Task.Run(systemScan));
+        tasks.AddRange(userScans.Select(scan => Task.Run(scan)));
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
     /// <summary>

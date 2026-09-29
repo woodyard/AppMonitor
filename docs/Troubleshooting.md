@@ -402,7 +402,8 @@ Machine-wide installs are the service's job (LocalSystem, session 0, never a pro
   name passes the application's identity rule (`DetectDisplayNameRegex`, or the `DisplayName` as a
   whole-word prefix when no regex is set; winget has no publisher column, so `DetectPublisherRegex`
   plays no part here). Configured ids are hints that take precedence, in this order:
-  1. a configured id that `winget list --id <id> --exact` (or the full per-scope listing) finds;
+  1. a configured id that the full per-scope `winget list` (read once per scan and scope) lists, or
+     that `winget list --id <id> --exact` finds when the listing cannot settle it;
   2. otherwise the row of the full per-scope `winget list` whose name passes the rule - the log says
      *resolved winget id '...' from winget's ... listing by name* (Adobe Reader 32-bit resolves to
      `Adobe.Acrobat.Reader.32-bit` for a policy naming `Adobe.Acrobat.Reader.64-bit`);

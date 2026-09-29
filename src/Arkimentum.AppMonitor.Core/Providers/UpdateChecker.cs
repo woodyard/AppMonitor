@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Arkimentum.AppMonitor.Inventory;
 using Arkimentum.AppMonitor.Models;
 using Arkimentum.AppMonitor.Versioning;
@@ -33,17 +34,11 @@ public static class ProviderFactory
 /// </summary>
 public sealed class UpdateChecker
 {
-    /// <summary>How many apps are checked concurrently. Web checks are cheap; winget is additionally serialised.</summary>
+    /// <summary>How many non-winget apps are checked concurrently. winget apps are checked one after the other in their own lane.</summary>
     public const int MaxParallelChecks = 3;
 
     private readonly ILogger<UpdateChecker> _logger;
     private readonly IReadOnlyList<IUpdateProvider> _providers;
-
-    /// <summary>
-    /// winget keeps machine-wide state (source index, installed-package cache) and does not like concurrent
-    /// invocations, so every winget call is serialised while web checks run in parallel.
-    /// </summary>
-    private readonly SemaphoreSlim _wingetGate = new(1, 1);
 
     public UpdateChecker(ILogger<UpdateChecker> logger, IReadOnlyList<IUpdateProvider> providers)
     {
@@ -81,9 +76,15 @@ public sealed class UpdateChecker
         var results = new UpdateCheckResult[enabled.Count];
         using var throttle = new SemaphoreSlim(MaxParallelChecks, MaxParallelChecks);
 
-        var tasks = new List<Task>(enabled.Count);
+        // winget keeps machine-wide state (source index, installed-package cache) and does not like concurrent
+        // invocations, and it answers the whole scan from one snapshot (IScanSnapshotProvider): the winget apps are
+        // checked one after the other in a lane of their own, once that snapshot has been read. Every other source is
+        // checked in parallel alongside and never waits for winget.
+        var wingetLane = Enumerable.Range(0, enabled.Count).Where(i => enabled[i].Source == UpdateSource.Winget).ToList();
+        var tasks = new List<Task>(enabled.Count - wingetLane.Count + 1);
         for (var i = 0; i < enabled.Count; i++)
         {
+            if (enabled[i].Source == UpdateSource.Winget) continue;
             var index = i;
             var app = enabled[i];
             tasks.Add(Task.Run(async () =>
@@ -93,6 +94,8 @@ public sealed class UpdateChecker
                 finally { throttle.Release(); }
             }, ct));
         }
+        if (wingetLane.Count > 0)
+            tasks.Add(Task.Run(() => CheckWingetLaneAsync(enabled, wingetLane, results, scoped, context, options, ct), ct));
 
         try
         {
@@ -112,6 +115,37 @@ public sealed class UpdateChecker
         _logger.LogInformation("Update check finished in {Context} context: {Updates} update(s) available, {Installed} installed, {Errors} error(s).",
             context.Context, withUpdates, list.Count(r => r.IsInstalled), list.Count(r => r.Error is not null));
         return list;
+    }
+
+    /// <summary>
+    /// The winget apps of a scan, one after the other: first the provider's snapshot for all of them (one full listing
+    /// and one upgrade listing, see <see cref="IScanSnapshotProvider"/>), outside the per-app timeout, then each app
+    /// matched against it, then the summary of what the snapshot cost.
+    /// </summary>
+    private async Task CheckWingetLaneAsync(IReadOnlyList<AppPolicy> apps, IReadOnlyList<int> lane, UpdateCheckResult[] results,
+        IReadOnlyList<InstalledApp> scopedInventory, ExecutionContextInfo context, ProviderOptions options, CancellationToken ct)
+    {
+        var snapshot = options.WingetEnabled ? _providers.FirstOrDefault(p => p.Source == UpdateSource.Winget) as IScanSnapshotProvider : null;
+        if (snapshot is not null)
+        {
+            try
+            {
+                await snapshot.PrepareScanAsync(lane.Select(i => apps[i]).ToList(), context, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Reading winget's listings for the {Context} scan failed; the applications are looked up one by one.", context.Context);
+            }
+        }
+
+        var sw = Stopwatch.StartNew();
+        foreach (var index in lane)
+            results[index] = await CheckOneAsync(apps[index], scopedInventory, context, options, ct).ConfigureAwait(false);
+        snapshot?.LogScanSummary(context, lane.Count, sw.Elapsed);
     }
 
     private async Task<UpdateCheckResult> CheckOneAsync(AppPolicy app, IReadOnlyList<InstalledApp> scopedInventory,
@@ -140,18 +174,9 @@ public sealed class UpdateChecker
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
         UpdateCheckResult result;
-        var serialise = app.Source == UpdateSource.Winget;
         try
         {
-            if (serialise) await _wingetGate.WaitAsync(linked.Token).ConfigureAwait(false);
-            try
-            {
-                result = await provider.CheckAsync(app, installed, context, linked.Token).ConfigureAwait(false);
-            }
-            finally
-            {
-                if (serialise) _wingetGate.Release();
-            }
+            result = await provider.CheckAsync(app, installed, context, linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

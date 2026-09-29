@@ -94,10 +94,13 @@ sequenceDiagram
     S->>R: Read settings and app policies
     S->>I: Enumerate installed apps (HKLM + every loaded user hive)
     S->>S: Resolve Context for each app (auto -> system / user)
-    S->>P: Check system-context apps (winget serialised, web in parallel)
-    S->>T: RunUserScan (apps resolved to that user)
-    T->>P: Check in the user's session (HKCU inventory, winget --scope user)
-    T-->>S: UserScanResult
+    par system and user context at the same time
+        S->>P: Check system-context apps (one winget list + one winget upgrade --scope machine; web in parallel)
+    and
+        S->>T: RunUserScan (apps resolved to that user)
+        T->>P: Check in the user's session (HKCU inventory, one winget list + one winget upgrade --scope user)
+        T-->>S: UserScanResult
+    end
     S->>S: Merge results into the pending-update set, persist state.json
     S->>T: Notify / PromptClose / RunUserInstall as the policy state machine dictates
 ```
@@ -106,8 +109,23 @@ sequenceDiagram
   every `ScanIntervalMinutes`.
 - Between scans a lightweight tick every `PolicyTickSeconds` re-evaluates deferrals, deadlines,
   blocking processes and notification cadence; it does not contact any source.
-- Up to `UpdateChecker.MaxParallelChecks` (3) applications are checked at a time; winget calls are
-  additionally serialised because winget keeps machine-wide state.
+- The service checks the system-context applications and asks the tray agents for the user-context
+  checks at the same time, and merges once all of them are in (a tray gets 10 minutes to answer).
+- winget is started a fixed number of times per scan and scope, however many applications are
+  configured: one full `winget list` and one `winget upgrade` per winget source the applications use
+  (`--scope machine` in the service, `--scope user` in each tray). Every winget application is then
+  resolved in memory against that snapshot (`WingetProvider.ClassifyInListing`, then the name and upgrade-listing
+  rules in [Troubleshooting.md](Troubleshooting.md#an-install-asked-for-administrator-rights)).
+  `winget list --id <id> --exact` only runs for an id the listing cannot
+  settle (a truncated id cell, a row without a source, an id winget printed that the table parser did
+  not split into a row; at most 10 per scan and scope), and for every application when the full
+  listing failed (logged once as a warning). The log line *winget snapshot (System): list 0.6s (57
+  rows), upgrade 0.5s (0 rows); 56 app(s) matched in 27 ms; 0 per-app fallback(s); 2 winget
+  process(es)* shows what a scan cost. Installs and the checks after them still ask winget about their
+  one id, afresh.
+- Web applications are checked in parallel (up to `UpdateChecker.MaxParallelChecks`, 3, at a time)
+  alongside the winget applications and never wait for them; winget applications are checked one
+  after the other because winget keeps machine-wide state.
 - A single check may not take longer than `CheckTimeoutMinutes` (default 3); a single install may not
   take longer than `InstallTimeoutMinutes` (default 30).
 - A failure for one application never fails the scan: it is recorded as an error result for that

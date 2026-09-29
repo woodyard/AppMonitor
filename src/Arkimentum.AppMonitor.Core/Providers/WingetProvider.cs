@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Principal;
 using System.Text;
 using Arkimentum.AppMonitor.Install;
@@ -27,12 +29,21 @@ namespace Arkimentum.AppMonitor.Providers;
 /// The resolved id travels with the pending update and is the first id the install tries.
 /// </para>
 /// <para>
+/// A scan starts winget a fixed number of times per scope, however many applications it checks: one full
+/// <c>winget list</c> and one <c>winget upgrade</c> per winget source the applications use, both read once per provider
+/// instance (= once per scan, see <see cref="PrepareScanAsync"/>) and shared by every application. Every application is
+/// then resolved in memory against that snapshot by the rules above. winget's per-id lookup (<c>winget list --id X
+/// --exact</c>) only runs when the snapshot cannot answer: for every application when the full listing failed, and for
+/// the single id otherwise (see <see cref="ClassifyInListing"/>). Installs and the checks after them always ask winget
+/// afresh for the one id they handle; they never read the snapshot.
+/// </para>
+/// <para>
 /// winget lists a package once per installed version. When several versions are registered side by side, the highest
 /// installed version is the package's version everywhere - in the scan and in every check after an install (see
 /// <see cref="WingetOutputParser.CombineInstalls"/>).
 /// </para>
 /// </summary>
-public sealed class WingetProvider : IUpdateProvider
+public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
 {
     private readonly ILogger<WingetProvider> _logger;
     private readonly ProviderOptions _options;
@@ -48,6 +59,25 @@ public sealed class WingetProvider : IUpdateProvider
     /// <summary>Optional explicit winget.exe path (from configuration); normally left null.</summary>
     public string? WingetPathOverride { get; init; }
 
+    /// <summary>
+    /// Replaces the winget process for the read-only lookups (<c>list</c>, <c>upgrade</c>); arguments, timeout,
+    /// context. Tests feed captured winget output through it; null (the default) runs winget.
+    /// </summary>
+    internal Func<string, TimeSpan, ExecutionContextInfo, CancellationToken, Task<ProcessRunResult>>? LookupRunner { get; init; }
+
+    /// <summary>
+    /// Checks every id with winget's own per-id lookup, as the fallback for a failed full listing does, even when the
+    /// listing is complete. For tests that prove both paths reach the same result for the same winget output.
+    /// </summary>
+    internal bool ForcePerAppLookups { get; init; }
+
+    /// <summary>
+    /// The most per-id lookups one scan makes in one scope for ids the full listing cannot settle (see
+    /// <see cref="ClassifyInListing"/>). Beyond it the listing's answer stands, so a scan never slides back to one winget
+    /// process per application without saying so.
+    /// </summary>
+    internal const int MaxPerAppLookups = 10;
+
     public async Task<UpdateCheckResult> CheckAsync(AppPolicy app, InstalledApp? installed, ExecutionContextInfo context, CancellationToken ct)
     {
         if (!_options.WingetEnabled)
@@ -59,9 +89,14 @@ public sealed class WingetProvider : IUpdateProvider
         if (string.IsNullOrWhiteSpace(app.WingetId))
             return UpdateCheckResult.Failed(app.AppId, UpdateSource.Winget, $"No WingetId configured for '{app.AppId}'.");
 
-        var winget = WingetLocator.Find(_logger, context.IsSystem, WingetPathOverride);
+        var winget = LocateWinget(context);
         if (winget is null)
             return UpdateCheckResult.Failed(app.AppId, UpdateSource.Winget, "winget.exe was not found on this machine (see the log for the probed locations).");
+
+        // The scan's snapshot: winget's full per-scope listing, read once per provider instance (= once per scan) and
+        // shared by every application of the scan (see PrepareScanAsync). Each configured id is looked up in it in
+        // memory; winget is only asked about a single id when the listing cannot answer (see LookupIdAsync).
+        var listing = await GetFullListAsync(winget, context, ct).ConfigureAwait(false);
 
         // A WingetId may list alternatives ("Mozilla.Firefox;Mozilla.Firefox.MSIX"): the same product is often published
         // as a classic installer and as a Store/MSIX package with different ids. The first id that is installed wins.
@@ -73,23 +108,11 @@ public sealed class WingetProvider : IUpdateProvider
         string? firstError = null;
         foreach (var id in candidates)
         {
-            var attempt = await ListAsync(winget, app with { WingetId = id }, context, _options.CheckTimeout, ct).ConfigureAwait(false);
+            var attempt = await LookupIdAsync(winget, app, id, listing, context, ct).ConfigureAwait(false);
             if (attempt.NotInstalled)
             {
-                // winget (observed with 1.30) sometimes answers "no installed package" to `list --id X --exact` although the
-                // unfiltered listing shows the very same id (e.g. Microsoft.PowerShell installed via MSI). Fall back to the
-                // full per-scope listing, which is fetched once per provider instance (= once per scan).
-                var fromFullList = await FindInFullListAsync(winget, id, context, ct).ConfigureAwait(false);
-                if (fromFullList is not null)
-                {
-                    _logger.LogDebug("{AppId}: '{WingetId}' not returned by the id lookup but present in the full {Context}-scope listing ({Version}).", app.AppId, id, context.Context, fromFullList.Version);
-                    attempt = new ListLookup(fromFullList, false, null);
-                }
-                else
-                {
-                    _logger.LogDebug("{AppId}: winget reports '{WingetId}' is not installed in the {Context} scope.", app.AppId, id, context.Context);
-                    continue;
-                }
+                _logger.LogDebug("{AppId}: winget reports '{WingetId}' is not installed in the {Context} scope.", app.AppId, id, context.Context);
+                continue;
             }
             if (attempt.Error is not null) { firstError ??= attempt.Error; continue; }
             lookup = attempt;
@@ -103,7 +126,7 @@ public sealed class WingetProvider : IUpdateProvider
             // another id of the same vendor (Adobe.Acrobat.Reader.32-bit for a policy that names the 64-bit id, a
             // per-user Google.Chrome.EXE for Google.Chrome). The id of the row in winget's own listing whose name
             // passes the app's identity rule is the id winget manages the product by.
-            var byName = await FindByNameInFullListAsync(winget, app, candidates, context, ct).ConfigureAwait(false);
+            var byName = ResolveByName(listing.Rows, app, candidates);
             if (byName is not null)
             {
                 _logger.LogInformation("{AppId}: resolved winget id '{WingetId}' from winget's {Context}-scope listing by name ('{Name}'); configured '{Configured}' is not installed here.",
@@ -1097,15 +1120,113 @@ public sealed class WingetProvider : IUpdateProvider
     /// <summary>Result of a <c>winget list</c> lookup for a single package.</summary>
     private sealed record ListLookup(WingetRow? Row, bool NotInstalled, string? Error);
 
-    private readonly Dictionary<InstallContext, IReadOnlyList<WingetRow>> _fullListCache = new();
-    private readonly SemaphoreSlim _fullListGate = new(1, 1);
+    /// <summary>
+    /// The unfiltered per-scope <c>winget list</c> of one scan: the parsed rows, winget's raw output (for
+    /// <see cref="ClassifyInListing"/>), and whether it is <paramref name="Complete"/>, i.e. winget ran to the end and
+    /// answered with a table (or with "no installed package"), so that an id missing from it is not installed. An
+    /// incomplete listing still serves the per-id lookup's own fallbacks, as it always did.
+    /// </summary>
+    private sealed record FullListing(IReadOnlyList<WingetRow> Rows, string Output, bool Complete);
 
-    /// <summary>Looks a package id up in the unfiltered per-scope listing (cached for the lifetime of this provider instance).</summary>
-    private async Task<WingetRow?> FindInFullListAsync(string winget, string id, ExecutionContextInfo context, CancellationToken ct)
+    /// <summary>What the scan's winget snapshot cost in one scope, for the summary line (see <see cref="LogScanSummary"/>).</summary>
+    private sealed class ScanStats
     {
-        var rows = await GetFullListAsync(winget, context, ct).ConfigureAwait(false);
-        if (rows is null) return null;
+        public TimeSpan ListElapsed;
+        public int ListRows;
+        public bool ListComplete;
+        public TimeSpan UpgradeElapsed;
+        public int UpgradeRows;
+        public int Processes;
+        public int PerAppLookups;
+        public int CappedLookups;
+    }
 
+    private readonly Dictionary<InstallContext, FullListing> _fullListCache = new();
+    private readonly SemaphoreSlim _fullListGate = new(1, 1);
+    private readonly ConcurrentDictionary<InstallContext, ScanStats> _stats = new();
+
+    private ScanStats StatsFor(ExecutionContextInfo context) => _stats.GetOrAdd(context.Context, _ => new ScanStats());
+
+    /// <summary>
+    /// Reads the scan's snapshot for <paramref name="context"/> before the applications are checked: the full per-scope
+    /// listing and the upgrade listing of every winget source the applications use. Both are cached for the lifetime of
+    /// this provider instance, so <see cref="CheckAsync"/> then answers every application from memory. Never throws
+    /// except for cancellation: a listing that cannot be read leaves the per-app lookups to the checks.
+    /// </summary>
+    public async Task PrepareScanAsync(IReadOnlyList<AppPolicy> apps, ExecutionContextInfo context, CancellationToken ct)
+    {
+        if (!_options.WingetEnabled) return;
+        var wingetApps = apps.Where(a => a.Source == UpdateSource.Winget && !string.IsNullOrWhiteSpace(a.WingetId)).ToList();
+        if (wingetApps.Count == 0) return;
+        var winget = LocateWinget(context);
+        if (winget is null) return;
+
+        await GetFullListAsync(winget, context, ct).ConfigureAwait(false);
+        foreach (var source in wingetApps.GroupBy(a => SourceKey(a.WingetSourceName)).Select(g => g.First().WingetSourceName))
+            await GetUpgradeListingAsync(winget, source, context, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Logs what the scan's winget snapshot cost in <paramref name="context"/>: processes, listing times, matching time and per-app fallbacks.</summary>
+    public void LogScanSummary(ExecutionContextInfo context, int apps, TimeSpan matching)
+    {
+        if (!_stats.TryGetValue(context.Context, out var s)) return;
+        if (s.ListComplete)
+            _logger.LogInformation("winget snapshot ({Context}): list {ListSeconds:F1}s ({ListRows} rows), upgrade {UpgradeSeconds:F1}s ({UpgradeRows} rows); {Apps} app(s) matched in {MatchMs:F0} ms; {Fallbacks} per-app fallback(s); {Processes} winget process(es)",
+                context.Context, s.ListElapsed.TotalSeconds, s.ListRows, s.UpgradeElapsed.TotalSeconds, s.UpgradeRows, apps, matching.TotalMilliseconds, s.PerAppLookups, s.Processes);
+        else
+            _logger.LogInformation("winget snapshot ({Context}): the full listing could not be used, so {Apps} app(s) were checked with per-app lookups in {MatchSeconds:F1}s; upgrade {UpgradeSeconds:F1}s ({UpgradeRows} rows); {Processes} winget process(es)",
+                context.Context, apps, matching.TotalSeconds, s.UpgradeElapsed.TotalSeconds, s.UpgradeRows, s.Processes);
+    }
+
+    /// <summary>
+    /// Whether one configured id is installed in this scope, and its row. Normally answered from the scan's full listing
+    /// (see <see cref="ClassifyInListing"/>) without starting winget. winget's own per-id lookup
+    /// (<see cref="LookupByIdAsync"/>) runs when the listing is not complete (then for every id of the scan) and when
+    /// the listing cannot settle this one id, the latter at most <see cref="MaxPerAppLookups"/> times per scan and scope;
+    /// beyond that the listing's answer stands, exactly as the per-id lookup's own fallback would take it.
+    /// </summary>
+    private async Task<ListLookup> LookupIdAsync(string winget, AppPolicy app, string id, FullListing listing, ExecutionContextInfo context, CancellationToken ct)
+    {
+        if (listing.Complete && !ForcePerAppLookups)
+        {
+            var (kind, row, reason) = ClassifyInListing(listing.Rows, listing.Output, id);
+            if (kind == ListingMatch.Found) return new ListLookup(row, false, null);
+            if (kind == ListingMatch.Absent) return new ListLookup(null, true, null);
+
+            var stats = StatsFor(context);
+            if (Interlocked.Increment(ref stats.PerAppLookups) > MaxPerAppLookups)
+            {
+                Interlocked.Decrement(ref stats.PerAppLookups);
+                if (Interlocked.Increment(ref stats.CappedLookups) == 1)
+                    _logger.LogWarning("The full winget listing ({Context} scope) could not settle more than {Max} package id(s) in this scan; the listing's answer stands for the rest (first: '{WingetId}', {Reason}).",
+                        context.Context, MaxPerAppLookups, id, reason);
+                var fromList = FindInFullList(listing.Rows, id);
+                return fromList is null ? new ListLookup(null, true, null) : new ListLookup(fromList, false, null);
+            }
+            _logger.LogDebug("{AppId}: the full {Context}-scope listing cannot settle '{WingetId}' ({Reason}); asking winget about this id.", app.AppId, context.Context, id, reason);
+        }
+        return await LookupByIdAsync(winget, app, id, listing, context, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// winget's own lookup of one id (<c>winget list --id X --exact</c>), with the full listing as its fallback: winget
+    /// (observed with 1.30) sometimes answers "no installed package" to the id lookup although the unfiltered listing
+    /// shows the very same id (e.g. Microsoft.PowerShell installed via MSI).
+    /// </summary>
+    private async Task<ListLookup> LookupByIdAsync(string winget, AppPolicy app, string id, FullListing listing, ExecutionContextInfo context, CancellationToken ct)
+    {
+        var attempt = await ListAsync(winget, app with { WingetId = id }, context, _options.CheckTimeout, ct).ConfigureAwait(false);
+        if (!attempt.NotInstalled) return attempt;
+
+        var fromFullList = FindInFullList(listing.Rows, id);
+        if (fromFullList is null) return attempt;
+        _logger.LogDebug("{AppId}: '{WingetId}' not returned by the id lookup but present in the full {Context}-scope listing ({Version}).", app.AppId, id, context.Context, fromFullList.Version);
+        return new ListLookup(fromFullList, false, null);
+    }
+
+    /// <summary>Looks a package id up in the unfiltered per-scope listing: the per-id lookup's fallback.</summary>
+    private static WingetRow? FindInFullList(IReadOnlyList<WingetRow> rows, string id)
+    {
         var row = WingetOutputParser.FindById(rows, id);
         // Only trust rows that carry a real source; sourceless rows are unmapped ARP entries.
         if (row is null || string.IsNullOrWhiteSpace(row.Source)) return null;
@@ -1113,14 +1234,53 @@ public sealed class WingetProvider : IUpdateProvider
         return idMatches ? row : null;
     }
 
+    /// <summary>What a complete full listing says about one configured id (see <see cref="ClassifyInListing"/>).</summary>
+    internal enum ListingMatch { Found, Absent, Unsettled }
+
     /// <summary>
-    /// Searches the unfiltered per-scope listing (the same cached one as <see cref="FindInFullListAsync"/>) for the row
-    /// whose name passes the app's identity rule (see <see cref="ResolveByName"/>), or null when there is none.
+    /// What winget's complete full per-scope listing says about one configured id, as winget's per-id lookup would
+    /// answer it. Pure, so the rule is testable. <see cref="ListingMatch.Found"/>: rows with exactly this id
+    /// (case-insensitive), every one with a source; several rows (one per installed version) are combined
+    /// (<see cref="WingetOutputParser.CombineInstalls"/>), as the per-id lookup combines them.
+    /// <see cref="ListingMatch.Absent"/>: winget's output does not mention the id at all, so it is not installed in
+    /// this scope. <see cref="ListingMatch.Unsettled"/> otherwise, and winget's per-id lookup decides: a row with the id
+    /// but no source (the per-id lookup's answer depends on its <c>--source</c> filter), a truncated (ellipsised) id cell
+    /// the id starts with ("Microsoft.DotNet.DesktopRunti…" can stand for the 8 and the 9 runtime alike), or the id
+    /// standing in winget's output as a word of its own although no parsed row carries it (a row the table parser could
+    /// not split cleanly).
     /// </summary>
-    private async Task<WingetRow?> FindByNameInFullListAsync(string winget, AppPolicy app, IReadOnlyList<string> configuredIds, ExecutionContextInfo context, CancellationToken ct)
+    internal static (ListingMatch Kind, WingetRow? Row, string? Reason) ClassifyInListing(IReadOnlyList<WingetRow> rows, string? output, string id)
     {
-        var rows = await GetFullListAsync(winget, context, ct).ConfigureAwait(false);
-        return rows is null ? null : ResolveByName(rows, app, configuredIds);
+        if (string.IsNullOrWhiteSpace(id)) return (ListingMatch.Absent, null, null);
+
+        var exact = rows.Where(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (exact.Count > 0)
+        {
+            return exact.All(r => !string.IsNullOrWhiteSpace(r.Source))
+                ? (ListingMatch.Found, WingetOutputParser.CombineInstalls(exact), null)
+                : (ListingMatch.Unsettled, null, "listed without a source");
+        }
+        if (rows.Any(r => r.Id.EndsWith(WingetOutputParser.Ellipsis) && id.StartsWith(r.Id.TrimEnd(WingetOutputParser.Ellipsis), StringComparison.OrdinalIgnoreCase)))
+            return (ListingMatch.Unsettled, null, "its id cell is truncated in the listing");
+        if (ContainsIdToken(output, id))
+            return (ListingMatch.Unsettled, null, "in winget's output but in no parsed row");
+        return (ListingMatch.Absent, null, null);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="id"/> stands in <paramref name="output"/> as a word of its own (case-insensitive, with
+    /// whitespace or the text's start/end on both sides), so "Google.Chrome" is not found in "Google.Chrome.EXE". Pure.
+    /// </summary>
+    internal static bool ContainsIdToken(string? output, string id)
+    {
+        if (string.IsNullOrEmpty(output) || string.IsNullOrWhiteSpace(id)) return false;
+        for (var i = output.IndexOf(id, StringComparison.OrdinalIgnoreCase); i >= 0; i = output.IndexOf(id, i + 1, StringComparison.OrdinalIgnoreCase))
+        {
+            var end = i + id.Length;
+            if ((i == 0 || char.IsWhiteSpace(output[i - 1])) && (end == output.Length || char.IsWhiteSpace(output[end])))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -1186,33 +1346,79 @@ public sealed class WingetProvider : IUpdateProvider
                && string.Equals(installed.Name.Trim(), candidate.Name.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>The unfiltered per-scope <c>winget list</c> rows (cached for the lifetime of this provider instance), or null when the listing failed.</summary>
-    private async Task<IReadOnlyList<WingetRow>?> GetFullListAsync(string winget, ExecutionContextInfo context, CancellationToken ct)
+    /// <summary>
+    /// The unfiltered per-scope <c>winget list</c> (cached for the lifetime of this provider instance, i.e. once per
+    /// scan). A listing that failed is cached as well, as incomplete: the checks of that scan then use winget's per-id
+    /// lookup for every application, which is logged once here as a warning.
+    /// </summary>
+    private async Task<FullListing> GetFullListAsync(string winget, ExecutionContextInfo context, CancellationToken ct)
     {
-        IReadOnlyList<WingetRow>? rows;
         await _fullListGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (!_fullListCache.TryGetValue(context.Context, out rows))
+            if (_fullListCache.TryGetValue(context.Context, out var cached)) return cached;
+
+            var stats = StatsFor(context);
+            var sw = Stopwatch.StartNew();
+            FullListing listing;
+            string? failure = null;
+            try
             {
                 var args = new StringBuilder().Append("list --accept-source-agreements --disable-interactivity").Append(ScopeArgument(context));
                 AppendExtra(args, _options.WingetGlobalArgs);
-                var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout,
-                    environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
-                rows = run.Started && !run.TimedOut ? WingetOutputParser.ParseListOutput(run.StandardOutput) : [];
-                _logger.LogDebug("Full winget listing for the {Context} scope: {Count} row(s).", context.Context, rows.Count);
-                _fullListCache[context.Context] = rows;
+                var run = await RunLookupAsync(winget, args.ToString(), _options.CheckTimeout, context, ct).ConfigureAwait(false);
+                var rows = run.Started && !run.TimedOut ? WingetOutputParser.ParseListOutput(run.StandardOutput) : [];
+                // Complete means an id missing from it is not installed: winget ran to the end with exit 0 and printed
+                // a table, or answered that nothing is installed in this scope at all.
+                var nothingInstalled = rows.Count == 0 && WingetOutputParser.IsNotInstalledOutput(run.CombinedOutput)
+                                       && run.ExitCode is 0 or WingetOutputParser.ExitNoInstalledPackageFound;
+                var complete = run.Started && !run.TimedOut && ((rows.Count > 0 && run.ExitCode == 0) || nothingInstalled);
+                if (!complete)
+                    failure = !run.Started ? run.StartFailure
+                        : run.TimedOut ? $"timed out after {_options.CheckTimeout.TotalSeconds:0} seconds"
+                        : run.ExitCode != 0 ? $"exit 0x{run.ExitCode:X8}: {run.LastLines(2)}"
+                        : "no table in winget's output";
+                listing = new FullListing(rows, run.StandardOutput, complete);
             }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Full winget listing failed for the {Context} scope.", context.Context);
-            return null;
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Full winget listing failed for the {Context} scope.", context.Context);
+                failure = $"{ex.GetType().Name}: {ex.Message}";
+                listing = new FullListing([], string.Empty, false);
+            }
+
+            stats.ListElapsed = sw.Elapsed;
+            stats.ListRows = listing.Rows.Count;
+            stats.ListComplete = listing.Complete;
+            _logger.LogDebug("Full winget listing for the {Context} scope: {Count} row(s) in {Seconds:F1}s.", context.Context, listing.Rows.Count, sw.Elapsed.TotalSeconds);
+            if (failure is not null)
+                _logger.LogWarning("The full winget listing for the {Context} scope could not be used ({Reason}); this scan looks every application up with its own winget call.",
+                    context.Context, failure);
+            _fullListCache[context.Context] = listing;
+            return listing;
         }
         finally { _fullListGate.Release(); }
-        return rows;
     }
+
+    /// <summary>
+    /// Runs one of the scan's read-only winget lookups (<c>list</c>, <c>upgrade</c>) and counts it for the scan summary.
+    /// Goes through <see cref="LookupRunner"/> when a test set one.
+    /// </summary>
+    private Task<ProcessRunResult> RunLookupAsync(string winget, string arguments, TimeSpan timeout, ExecutionContextInfo context, CancellationToken ct)
+    {
+        Interlocked.Increment(ref StatsFor(context).Processes);
+        return LookupRunner is { } runner
+            ? runner(arguments, timeout, context, ct)
+            : ProcessRunner.RunAsync(_logger, winget, arguments, timeout, environment: ProcessRunner.ChildEnvironment(context), ct: ct);
+    }
+
+    /// <summary>winget.exe for this context, or null when it is not installed. A test runner needs no real winget.</summary>
+    private string? LocateWinget(ExecutionContextInfo context) =>
+        LookupRunner is not null ? "winget.exe" : WingetLocator.Find(_logger, context.IsSystem, WingetPathOverride);
+
+    /// <summary>The key the upgrade listing is cached under for a winget source name.</summary>
+    private static string SourceKey(string? sourceName) => (sourceName ?? string.Empty).Trim().ToLowerInvariant();
 
     private readonly Dictionary<(InstallContext Context, string Source), IReadOnlyList<WingetRow>> _upgradeListCache = new();
     private readonly SemaphoreSlim _upgradeListGate = new(1, 1);
@@ -1224,21 +1430,21 @@ public sealed class WingetProvider : IUpdateProvider
     /// </summary>
     private async Task<IReadOnlyList<WingetRow>> GetUpgradeListingAsync(string winget, string? sourceName, ExecutionContextInfo context, CancellationToken ct)
     {
-        var key = (context.Context, (sourceName ?? string.Empty).Trim().ToLowerInvariant());
+        var key = (context.Context, SourceKey(sourceName));
         await _upgradeListGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             if (_upgradeListCache.TryGetValue(key, out var cached)) return cached;
 
             IReadOnlyList<WingetRow> rows = [];
+            var sw = Stopwatch.StartNew();
             try
             {
                 var args = new StringBuilder().Append("upgrade");
                 AppendSource(args, sourceName);
                 args.Append(" --accept-source-agreements --disable-interactivity").Append(ScopeArgument(context));
                 AppendExtra(args, _options.WingetGlobalArgs);
-                var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), _options.CheckTimeout,
-                    environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+                var run = await RunLookupAsync(winget, args.ToString(), _options.CheckTimeout, context, ct).ConfigureAwait(false);
                 if (run.Started && !run.TimedOut)
                     rows = WingetOutputParser.ParseListOutput(run.StandardOutput);
                 else
@@ -1251,6 +1457,9 @@ public sealed class WingetProvider : IUpdateProvider
             {
                 _logger.LogDebug(ex, "winget upgrade listing failed for the {Context} scope; using the list-based matches.", context.Context);
             }
+            var stats = StatsFor(context);
+            stats.UpgradeElapsed += sw.Elapsed;
+            stats.UpgradeRows += rows.Count;
             _upgradeListCache[key] = rows;
             return rows;
         }
@@ -1292,8 +1501,7 @@ public sealed class WingetProvider : IUpdateProvider
             .Append(ScopeArgument(context));
         AppendExtra(args, _options.WingetGlobalArgs);
 
-        var run = await ProcessRunner.RunAsync(_logger, winget, args.ToString(), timeout,
-            environment: ProcessRunner.ChildEnvironment(context), ct: ct).ConfigureAwait(false);
+        var run = await RunLookupAsync(winget, args.ToString(), timeout, context, ct).ConfigureAwait(false);
 
         if (!run.Started) return new ListLookup(null, false, run.StartFailure);
         if (run.TimedOut)

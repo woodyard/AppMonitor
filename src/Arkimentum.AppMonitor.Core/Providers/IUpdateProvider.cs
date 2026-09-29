@@ -20,6 +20,20 @@ public interface IUpdateProvider
     Task<InstallResult> InstallAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, IProgress<string>? progress, CancellationToken ct);
 }
 
+/// <summary>
+/// A provider that answers a whole scan from one snapshot of its source instead of one query per application (winget:
+/// one full listing and one upgrade listing per scope). <see cref="UpdateChecker"/> reads the snapshot before the
+/// applications of that source are checked, and logs what it cost afterwards.
+/// </summary>
+public interface IScanSnapshotProvider
+{
+    /// <summary>Reads the snapshot for <paramref name="apps"/> in <paramref name="context"/>. Never throws except for cancellation.</summary>
+    Task PrepareScanAsync(IReadOnlyList<AppPolicy> apps, ExecutionContextInfo context, CancellationToken ct);
+
+    /// <summary>Logs the snapshot's cost for the scan: processes started, time spent reading it and matching <paramref name="apps"/> application(s).</summary>
+    void LogScanSummary(ExecutionContextInfo context, int apps, TimeSpan matching);
+}
+
 /// <summary>Options shared by providers (populated from <see cref="AgentSettings"/> or a <see cref="Ipc.RunUserScanMessage"/>).</summary>
 public sealed class ProviderOptions
 {

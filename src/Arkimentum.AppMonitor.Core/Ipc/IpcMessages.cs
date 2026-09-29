@@ -23,6 +23,7 @@ namespace Arkimentum.AppMonitor.Ipc;
 [JsonDerivedType(typeof(ProcessesClosedMessage), "processesClosed")]
 [JsonDerivedType(typeof(RepairPrerequisitesMessage), "repairPrerequisites")]
 [JsonDerivedType(typeof(UpdateAgentMessage), "updateAgent")]
+[JsonDerivedType(typeof(RequestSystemInstallMessage), "requestSystemInstall")]
 // server -> client
 [JsonDerivedType(typeof(StateMessage), "state")]
 [JsonDerivedType(typeof(NotifyMessage), "notify")]
@@ -32,6 +33,7 @@ namespace Arkimentum.AppMonitor.Ipc;
 [JsonDerivedType(typeof(RunUserPackageListMessage), "runUserPackageList")]
 [JsonDerivedType(typeof(CloseProcessesMessage), "closeProcesses")]
 [JsonDerivedType(typeof(AckMessage), "ack")]
+[JsonDerivedType(typeof(SystemInstallResultMessage), "systemInstallResult")]
 public abstract class IpcMessage
 {
     public string MessageId { get; set; } = Guid.NewGuid().ToString("N");
@@ -155,6 +157,25 @@ public sealed class UpdateAgentMessage : IpcMessage
 {
     /// <summary>True: only read the feed and report what it says. False: install the release when it is newer.</summary>
     public bool CheckOnly { get; set; }
+}
+
+/// <summary>
+/// During a user-context install the service asked for (<see cref="RunUserInstallMessage"/>), the tray agent asks the
+/// service to install the package for all users instead (added after 1.1.37): winget offers the user's session no
+/// installer it may run, and the installed copy is an MSIX package (see
+/// <see cref="Providers.SystemInstallHandOverRequest"/>). The service checks that the install is pending for this very
+/// connection and that the id is one of the update's own, acknowledges with an <see cref="AckMessage"/>, runs the
+/// install as SYSTEM, and answers with a <see cref="SystemInstallResultMessage"/> (or answers only with that when it
+/// refuses). An older service does not know the discriminator and never answers, so the tray gives up after its
+/// acknowledgement timeout.
+/// </summary>
+public sealed class RequestSystemInstallMessage : IpcMessage
+{
+    public required string UpdateKey { get; set; }
+    public required string WingetId { get; set; }
+    public required string PackageFamilyName { get; set; }
+    /// <summary>The highest MSIX package version registered for the user before the hand-over, when known.</summary>
+    public string? UserPackageVersion { get; set; }
 }
 
 // ------------------------------------------------------------------ server -> client
@@ -327,6 +348,21 @@ public sealed class AckMessage : IpcMessage
     public string? InReplyTo { get; set; }
     public bool Ok { get; set; } = true;
     public string? Message { get; set; }
+}
+
+/// <summary>The service's answer to a <see cref="RequestSystemInstallMessage"/> (added after 1.1.37).</summary>
+public sealed class SystemInstallResultMessage : IpcMessage
+{
+    /// <summary>The <see cref="IpcMessage.MessageId"/> of the request.</summary>
+    public string? InReplyTo { get; set; }
+    public string UpdateKey { get; set; } = string.Empty;
+    /// <summary>True when the machine-wide install succeeded (or winget found nothing newer to install); false when it failed or was refused.</summary>
+    public bool Ok { get; set; }
+    /// <summary>The service's summary: winget's exit code and the package registrations before and after the install, or why it refused.</summary>
+    public string? Message { get; set; }
+    public int ExitCode { get; set; }
+    /// <summary>The highest package version of the family on the machine after the install (any user, or provisioned); null when unknown.</summary>
+    public string? MachinePackageVersion { get; set; }
 }
 
 public static class IpcJson

@@ -364,6 +364,40 @@ because a user-scope installer started there would land in SYSTEM's profile; a m
 with the same problem keeps the original message and needs the vendor installer configured as a web
 source instead.
 
+### An MSIX package whose manifest only has an elevated installer is installed for all users by the service
+
+Some packages are registered for the user as MSIX packages while their winget manifest only ships an
+installer that needs elevation and declares no scope - `Microsoft.WindowsAppRuntime.1.6` is an exe
+(`windowsappruntimeinstall-x64.exe --quiet`) that provisions the runtime. Neither `--scope user` nor
+`--installer-type msix` (nor `--scope machine`) selects it, and the service never sees the package at
+all, because MSIX registrations are per user. When the user context would give up with the message
+above, the tray asks `winget list --id X --exact --details --scope user` what is installed; only when
+**every** installed row of that id has *Installer Category: msix* and one common *Package Family Name*
+does it hand the install to the service (`requestSystemInstall`, at most once per install). The
+service accepts only for the user-context install it is waiting for, from that very tray, for one of
+the update's own winget ids and a well-formed family name. It then runs an **unscoped**
+`winget install --id X --exact` as SYSTEM in session 0 (no UAC prompt is possible there), with
+`Get-AppxPackage -AllUsers` / `Get-AppxProvisionedPackage -Online` for that family before and after.
+Classic (exe/MSI) installs, portable-only packages and an older service (no answer within 60 seconds)
+keep the old failure unchanged.
+
+Reading the outcome from the cloud event alone (the tray's install result is the event text):
+
+- *... was installed for all users by the AppMonitor service; this user's copy is now 1.6.9 (package
+  A -> B)* - the user's registration moved at once.
+- *Installed ... for all users via the AppMonitor service (package B); your copy is still 1.6.6
+  (package A -> A) and switches over at your next sign-in or restart* - recorded as installed with a
+  restart pending; the next scan after the sign-in shows whether it took.
+- *... no newer <family> package is on the device (user package ..., machine ...)* - winget reported
+  success but nothing newer arrived.
+- *... could not install it for all users: <reason>* - refused, failed, or no answer.
+
+Every message ends with `Service: winget install for all users: exit 0x........; after: <packages>;
+before: <packages>`, where each package reads `<version> <arch> [<SID> <InstallState>, ...]`,
+followed by `provisioned <version>` or `not provisioned` (S-1-5-18 is SYSTEM). A user SID with
+*Staged* or missing next to the new version, while the old version is still *Installed* for it, is the
+"pending sign-in" case; the old failure text always comes first when the hand-over did not succeed.
+
 ## Several installs of one application
 
 Symptom (agents up to 1.1.35): *winget reported success (exit 0x00000000) but 'X' is still at

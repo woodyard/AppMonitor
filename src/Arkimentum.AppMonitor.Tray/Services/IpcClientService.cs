@@ -174,6 +174,7 @@ public sealed class IpcClientService : IHostedService
         UserScanResultMessage m => $"scan {m.ScanId}: {m.Results.Count} result(s)",
         ProcessesClosedMessage m => $"{m.UpdateKey}: stillRunning={m.StillRunning.Count} declined={m.Declined}",
         UpdateAgentMessage m => m.CheckOnly ? "check only" : "check and install",
+        RequestSystemInstallMessage m => $"{m.UpdateKey}: {m.WingetId} ({m.PackageFamilyName}) for all users",
         _ => string.Empty,
     };
 }

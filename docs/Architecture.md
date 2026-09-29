@@ -454,6 +454,7 @@ session id from the pipe handle, so one user cannot act on another user's update
 | `processesClosed` | `ProcessesClosedMessage` | `UpdateKey`, `StillRunning`, `Declined` | Result of a close request. |
 | `repairPrerequisites` | `RepairPrerequisitesMessage` | - | Admin console only: check and repair winget now. |
 | `updateAgent` | `UpdateAgentMessage` | `CheckOnly` | Check the release feed for a newer agent and, unless `CheckOnly`, install it. Tray and admin console. Refused when `AgentAutoUpdate` is off, while an application install runs, or while another agent update runs; the answer is the `ack` text. |
+| `requestSystemInstall` | `RequestSystemInstallMessage` | `UpdateKey`, `WingetId`, `PackageFamilyName`, `UserPackageVersion` (optional) | During a `runUserInstall`, hand the install to the service: the package is installed for the user as MSIX and winget offers the user no installer it may run. Accepted only for the pending install of that connection, once, for one of the update's own winget ids and a well-formed family name; acknowledged with `ack`, answered with `systemInstallResult` (a refusal only with the latter). An older service never answers; the tray gives up after 60 seconds. See [Context resolution](#context-resolution). |
 
 ### Server → client
 
@@ -467,6 +468,7 @@ session id from the pipe handle, so one user cannot act on another user's update
 | `runUserPackageList` | `RunUserPackageListMessage` | `ListId`, `WingetPath` (optional) | Run `winget list --scope user` in the user's session and answer with `userPackageListResult`. An older tray does not know the discriminator, logs the line as a bad message and never answers; the service falls back to its timeout. |
 | `closeProcesses` | `CloseProcessesMessage` | `UpdateKey`, `ProcessNames`, `Force`, `GracefulWaitSeconds` | Close (or with `Force`, kill) those processes in the user's session. |
 | `ack` | `AckMessage` | `InReplyTo`, `Ok`, `Message` | Acknowledgement / error text. |
+| `systemInstallResult` | `SystemInstallResultMessage` | `InReplyTo`, `UpdateKey`, `Ok`, `Message`, `ExitCode`, `MachinePackageVersion` | The outcome of a `requestSystemInstall`: winget's exit code and the package family's registrations after and before (the `Message`), and the highest package version of the family on the machine afterwards. |
 
 Every message carries a `MessageId` and `SentUtc`.
 
@@ -535,6 +537,15 @@ Notes:
   application produces exactly one (`AppId|System|-`).
 - If a user-context update is pending but no tray agent is connected for that user, nothing is
   installed for them until they log on again.
+- One exception runs a user-context update as SYSTEM: an MSIX package registered for the user whose
+  winget manifest offers no installer the user may run (`Microsoft.WindowsAppRuntime.1.6`, an elevated
+  exe without a declared scope). The tray hands it to the service (`requestSystemInstall`), which runs
+  an unscoped `winget install` in session 0 and reports the family's `Get-AppxPackage -AllUsers`
+  registrations before and after; the service's `InstallAsync` for that update keeps waiting (its
+  timeout is pushed out, the install lock stays with it), and the tray judges and reports the result
+  as usual - installed, or installed with a restart pending when only the user's next sign-in moves
+  their registration. See Troubleshooting, *An MSIX package whose manifest only has an elevated
+  installer*.
 
 ## Files and paths
 

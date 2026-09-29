@@ -74,6 +74,9 @@ public static partial class AppxPackageProbe
     [GeneratedRegex(@"^[A-Za-z0-9.\-]{1,100}_[a-z0-9]{13}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PackageFamilyNameRegex();
 
+    [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
+    private static partial Regex WhitespaceRegex();
+
     /// <summary>Whether <paramref name="packageFamilyName"/> is a well-formed package family name (see <see cref="PackageFamilyNameRegex"/>).</summary>
     public static bool IsValidPackageFamilyName(string? packageFamilyName) =>
         !string.IsNullOrEmpty(packageFamilyName) && PackageFamilyNameRegex().IsMatch(packageFamilyName);
@@ -128,7 +131,8 @@ public static partial class AppxPackageProbe
                 .Where(p => p.ValueKind == JsonValueKind.Object)
                 .Select(p => new AppxProvisionedPackage(Text(p, "displayName"), Text(p, "version")))
                 .ToList();
-            var errors = Items(root, "errors").Select(TextOf).Where(e => e.Length > 0).ToList();
+            // Cmdlet messages come with line breaks ("Access is denied.\r\n\r\nAccess is denied.\r\n"); one line each.
+            var errors = Items(root, "errors").Select(e => WhitespaceRegex().Replace(TextOf(e), " ").Trim()).Where(e => e.Length > 0).ToList();
             return new AppxProbeResult(packages, provisioned, errors);
         }
         catch (JsonException ex)

@@ -141,8 +141,11 @@ public static class PolicyEngine
                 var sameTarget = string.Equals(existing.AvailableVersion, r.AvailableVersion, StringComparison.OrdinalIgnoreCase);
                 // The grace period covers "installed, but the scan still shows the old version" (pending reboot, stale
                 // cache). It does not apply when the install itself already reported a version below the target: that
-                // install did not take, so the update is simply still pending.
-                var installKnownIncomplete = !VersionComparer.IsUnknown(existing.InstalledVersion) && !string.IsNullOrWhiteSpace(existing.AvailableVersion)
+                // install did not take, so the update is simply still pending - unless a restart is pending, which is
+                // exactly when an install reports the old version (a package installed for all users by the service
+                // that the user's own registration only picks up at the next sign-in).
+                var installKnownIncomplete = !existing.RebootPending
+                                             && !VersionComparer.IsUnknown(existing.InstalledVersion) && !string.IsNullOrWhiteSpace(existing.AvailableVersion)
                                              && VersionComparer.Compare(existing.InstalledVersion, existing.AvailableVersion) < 0;
                 // Nor does it apply when the install read the new version back from the very source the scan uses and
                 // no reboot is pending: a lower version now is a real change on the device (someone reinstalled an

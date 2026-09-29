@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using Arkimentum.AppMonitor.Cloud;
+using Arkimentum.AppMonitor.Install;
 using Arkimentum.AppMonitor.Inventory;
 using Arkimentum.AppMonitor.Ipc;
 using Arkimentum.AppMonitor.Models;
@@ -40,6 +41,15 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// </summary>
     private readonly ConcurrentDictionary<string, IReadOnlyList<UserPackageRow>> _userPackageLists = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<InstallResult> Tcs, string ConnectionId)> _pendingUserInstalls = new();
+    /// <summary>
+    /// The timeout of each user-context install the service is waiting for, by update key, so a hand-over to SYSTEM
+    /// (<see cref="RequestSystemInstallMessage"/>) can push it out while the service itself installs for that tray.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _userInstallTimeouts = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The pending user-context installs that have already been handed to SYSTEM once (at most one hand-over each).</summary>
+    private readonly ConcurrentDictionary<string, byte> _systemHandOvers = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The hand-overs whose SYSTEM install is still running; outlives the pending install when that timed out, so no second one starts meanwhile.</summary>
+    private readonly ConcurrentDictionary<string, byte> _systemHandOversRunning = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<ProcessesClosedMessage> Tcs, string ConnectionId)> _pendingCloses = new();
     private readonly HashSet<string> _installsInFlight = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>
@@ -890,6 +900,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 }
                 var tcs = new TaskCompletionSource<InstallResult>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _pendingUserInstalls[key] = (tcs, client.ConnectionId);
+                _userInstallTimeouts[key] = timeout;
                 try
                 {
                     var msg = new RunUserInstallMessage
@@ -903,7 +914,12 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                     else result = await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { result = InstallResult.Fail("Install timed out waiting for the user session"); }
-                finally { _pendingUserInstalls.TryRemove(key, out _); }
+                finally
+                {
+                    _pendingUserInstalls.TryRemove(key, out _);
+                    _userInstallTimeouts.TryRemove(key, out _);
+                    _systemHandOvers.TryRemove(key, out _);
+                }
             }
         }
         finally { _installLock.Release(); }
@@ -924,7 +940,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             var entry = await FinishAsync(key, snapshot, x => PolicyEngine.MarkInstalled(x, result, doneAt), x => InstallHistory.Succeeded(x, result, doneAt), ct).ConfigureAwait(false);
             // The history entry was taken before MarkInstalled overwrote the installed version, so it still has the old one.
             RecordEvent(ReportedEventKind.InstallSucceeded, snapshot.AppId,
-                $"{snapshot.DisplayName} installed{(result.RebootRequired ? " (reboot required)" : "")}", entry.FromVersion, result.InstalledVersion ?? snapshot.AvailableVersion);
+                InstallSucceededEventText(snapshot.DisplayName, result), entry.FromVersion, result.InstalledVersion ?? snapshot.AvailableVersion);
             if (settings.NotificationsEnabled && settings.ShowInstalledNotifications && Get(key) is { } done)
                 await SendNotificationAsync(done, NotificationKind.Installed, ct, result.RebootRequired ? "A restart is required to finish the update." : null).ConfigureAwait(false);
         }
@@ -993,7 +1009,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 $"Please close {string.Join(", ", u.BlockingProcesses)} so {u.DisplayName}{version} can be installed." +
                 (u.ForceCloseAtUtc is { } f ? $" It will be closed automatically at {f.ToLocalTime():t}." : "")),
             NotificationKind.Installing => ($"Installing {u.DisplayName}", $"{u.DisplayName}{version} is being installed."),
-            NotificationKind.Installed => ($"{u.DisplayName} updated", $"{u.DisplayName} {u.InstalledVersion ?? u.AvailableVersion} was installed successfully."),
+            NotificationKind.Installed => ($"{u.DisplayName} updated", $"{u.DisplayName} {(u.RebootPending ? u.AvailableVersion : u.InstalledVersion ?? u.AvailableVersion)} was installed successfully."),
             NotificationKind.Failed => ($"Update failed: {u.DisplayName}", $"{u.DisplayName}{version} could not be installed. {u.LastError}".Trim()),
             _ => (AgentSettings.ProductName, u.DisplayName),
         };
@@ -1106,6 +1122,10 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 _logger.LogDebug("[{Key}] {Status}", m.UpdateKey, m.Status);
                 break;
 
+            case RequestSystemInstallMessage m:
+                await HandleSystemInstallRequestAsync(conn, m, ct).ConfigureAwait(false);
+                break;
+
             case UserInstallResultMessage m:
                 if (_pendingUserInstalls.TryGetValue(m.UpdateKey, out var pending) && IsOwner(conn, m.UpdateKey)) pending.Tcs.TrySetResult(m.Result);
                 else _logger.LogWarning("Unexpected install result for {Key} from {Client}", m.UpdateKey, conn);
@@ -1165,6 +1185,184 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
     private bool IsOwner(PipeClientConnection conn, string key) =>
         _state.Updates.TryGetValue(key, out var u) && IsVisibleTo(u, conn);
+
+    // =====================================================================================================================
+    // Hand-over: a tray asks the service to install a package for all users (RequestSystemInstallMessage)
+    // =====================================================================================================================
+
+    /// <summary>How much longer the service waits for the tray once a hand-over has started: the SYSTEM install, its two probes and the tray's check afterwards.</summary>
+    private static TimeSpan HandOverWait(AgentSettings settings) => TimeSpan.FromMinutes(Math.Max(1, settings.InstallTimeoutMinutes) + 15);
+
+    /// <summary>How long the service still waits for the tray's result once the hand-over has answered: the tray only re-reads its version then.</summary>
+    private static readonly TimeSpan AfterHandOverWait = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The winget ids the service may install for an update on a tray's behalf: the update's resolved id, its
+    /// alternatives and the application's configured id(s). Pure, so the rule is testable. Never an id merely because
+    /// the tray named it.
+    /// </summary>
+    public static IReadOnlyList<string> SystemInstallCandidateIds(PendingUpdate update, AppPolicy? policy) =>
+        WingetProvider.SplitIds(update.WingetId).Concat(WingetProvider.SplitIds(update.WingetIdAlternatives)).Concat(WingetProvider.SplitIds(policy?.WingetId))
+            .Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>
+    /// Why the service refuses to install a package for all users on a tray's behalf, or null when it may. Pure, so the
+    /// rule is testable. Only for a user-context winget install the service is waiting for right now, from the very
+    /// connection it sent the install to; at most once per pending install; only for one of the update's own winget ids
+    /// (<see cref="SystemInstallCandidateIds"/>); and only with a well-formed package family name, because that goes
+    /// into a PowerShell command line (<see cref="AppxPackageProbe.IsValidPackageFamilyName"/>).
+    /// </summary>
+    public static string? RefuseSystemInstall(bool installPending, bool requesterOwnsInstall, bool alreadyHandedOver,
+        PendingUpdate? update, AppPolicy? policy, string? wingetId, string? packageFamilyName)
+    {
+        if (!installPending || update is null) return "no user-context install of this update is waiting for an answer";
+        if (!requesterOwnsInstall) return "the install is not waiting for this agent";
+        if (alreadyHandedOver) return "this install has already been handed to the service once";
+        if (update.Context != InstallContext.User) return "only per-user installs are handed to the service";
+        if (update.Source != UpdateSource.Winget) return "only winget installs are handed to the service";
+        if (policy is null) return "the application is no longer configured";
+        if (string.IsNullOrWhiteSpace(wingetId) || !SystemInstallCandidateIds(update, policy).Contains(wingetId.Trim(), StringComparer.OrdinalIgnoreCase))
+            return $"'{wingetId}' is not one of this update's winget ids";
+        if (!AppxPackageProbe.IsValidPackageFamilyName(packageFamilyName?.Trim())) return $"'{packageFamilyName}' is not a valid package family name";
+        return null;
+    }
+
+    /// <summary>
+    /// The service's summary of a hand-over: winget's outcome, then the family's packages after and before the install.
+    /// Pure, so the format is testable. This text reaches the cloud inside the tray's install result, so what matters most
+    /// (the exit code and the state afterwards) comes first.
+    /// </summary>
+    public static string DescribeSystemInstall(InstallResult install, AppxProbeResult before, AppxProbeResult after)
+    {
+        var outcome = install.Success
+            ? $"winget install for all users: exit 0x{install.ExitCode:X8}{(install.RebootRequired ? ", restart required" : string.Empty)}"
+            : $"winget install for all users failed: {WingetProvider.Bound(install.Message, 300) ?? $"exit 0x{install.ExitCode:X8}"}";
+        return $"{outcome}; after: {after.Summarize()}; before: {before.Summarize()}";
+    }
+
+    /// <summary>
+    /// Handles <see cref="RequestSystemInstallMessage"/>: refuses it (<see cref="RefuseSystemInstall"/>) with a
+    /// <see cref="SystemInstallResultMessage"/>, or acknowledges it and runs the install on a background task. Never
+    /// takes the install lock: the <see cref="InstallAsync"/> waiting for this very tray holds it. Instead its timeout
+    /// is pushed out for as long as the SYSTEM install may take.
+    /// </summary>
+    private async Task HandleSystemInstallRequestAsync(PipeClientConnection conn, RequestSystemInstallMessage m, CancellationToken ct)
+    {
+        var settings = _settings.Current;
+        var key = m.UpdateKey ?? string.Empty;
+        var pending = _pendingUserInstalls.TryGetValue(key, out var waiting);
+        var owns = pending && waiting.ConnectionId == conn.ConnectionId && IsOwner(conn, key);
+        var update = Get(key);
+        var policy = update is null ? null : settings.Apps.FirstOrDefault(a => a.AppId.Equals(update.AppId, StringComparison.OrdinalIgnoreCase));
+        var refusal = RefuseSystemInstall(pending, owns, _systemHandOvers.ContainsKey(key) || _systemHandOversRunning.ContainsKey(key),
+            update, policy, m.WingetId, m.PackageFamilyName);
+        if (refusal is null && !_systemHandOvers.TryAdd(key, 0)) refusal = "this install has already been handed to the service once";
+        if (refusal is null && !_systemHandOversRunning.TryAdd(key, 0))
+        {
+            _systemHandOvers.TryRemove(key, out _);
+            refusal = "an install for all users of this update is still running";
+        }
+
+        _logger.LogInformation("{Client} asked the service to install '{WingetId}' (package family {Family}, user package {Version}) for all users for {Key}{Refusal}",
+            conn, m.WingetId, m.PackageFamilyName, m.UserPackageVersion ?? "unknown", key, refusal is null ? "" : $"; refused: {refusal}");
+        if (refusal is not null)
+        {
+            await _pipe.SendAsync(conn, new SystemInstallResultMessage
+            {
+                InReplyTo = m.MessageId,
+                UpdateKey = key,
+                Ok = false,
+                Message = $"the service refused: {refusal}",
+                ExitCode = WingetOutputParser.ExitNoApplicableInstaller,
+            }, ct).ConfigureAwait(false);
+            return;
+        }
+
+        ExtendUserInstallTimeout(key, HandOverWait(settings));
+        await _pipe.SendAsync(conn, new AckMessage { InReplyTo = m.MessageId, Ok = true, Message = "Installing for all users" }, ct).ConfigureAwait(false);
+        var request = new SystemInstallHandOverRequest(key, m.WingetId.Trim(), m.PackageFamilyName.Trim(), m.UserPackageVersion);
+        _ = Task.Run(() => RunSystemInstallHandOverAsync(conn, m.MessageId, request, update!.Clone(), policy!, settings), CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The hand-over's work, as SYSTEM: the family's package registrations before, the unscoped <c>winget install</c>
+    /// (<see cref="WingetProvider.InstallForAllUsersAsync"/>), the registrations after, and the answer to the tray,
+    /// whose install result carries the summary to the cloud. Every step is logged at Information.
+    /// </summary>
+    private async Task RunSystemInstallHandOverAsync(PipeClientConnection conn, string requestId, SystemInstallHandOverRequest request,
+        PendingUpdate update, AppPolicy policy, AgentSettings settings)
+    {
+        // A pool thread that is still impersonating a pipe client must not start an installer.
+        ImpersonationGuard.RevertIfImpersonating(_logger, $"install for all users of {update.DisplayName}");
+        SystemInstallResultMessage reply;
+        try
+        {
+            _logger.LogInformation("{App} ({AppId}): installing '{WingetId}' for all users for {Client} (user {Sid})", update.DisplayName, update.AppId,
+                request.WingetId, conn, update.UserSid);
+            var before = await AppxPackageProbe.RunAsync(_logger, request.PackageFamilyName, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogInformation("{App}: package family {Family} before the install for all users: {Packages}", update.DisplayName, request.PackageFamilyName, before.Summarize());
+
+            var options = ProviderOptions.From(settings);
+            var provider = new WingetProvider(_loggerFactory.CreateLogger<WingetProvider>(), options) { WingetPathOverride = options.WingetPath };
+            var progress = new Progress<string>(line => _logger.LogDebug("[{App}] {Line}", update.DisplayName, line));
+            InstallResult install;
+            try { install = await provider.InstallForAllUsersAsync(policy, update, request.WingetId, progress, CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception ex) { install = InstallResult.Fail(ex.Message); _logger.LogError(ex, "The install for all users of {App} threw", update.DisplayName); }
+
+            var after = await AppxPackageProbe.RunAsync(_logger, request.PackageFamilyName, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogInformation("{App}: package family {Family} after the install for all users: {Packages}", update.DisplayName, request.PackageFamilyName, after.Summarize());
+
+            var summary = DescribeSystemInstall(install, before, after);
+            _logger.LogInformation("{App}: install for all users for {Client}: ok={Ok}, machine package {Machine}; {Summary}", update.DisplayName, conn,
+                install.Success, after.HighestVersion ?? "unknown", summary);
+            reply = new SystemInstallResultMessage
+            {
+                InReplyTo = requestId,
+                UpdateKey = request.UpdateKey,
+                Ok = install.Success,
+                Message = summary,
+                ExitCode = install.ExitCode,
+                MachinePackageVersion = after.HighestVersion,
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "The install for all users of {App} for {Client} failed", update.DisplayName, conn);
+            reply = new SystemInstallResultMessage { InReplyTo = requestId, UpdateKey = request.UpdateKey, Ok = false, Message = $"the service failed: {ex.Message}", ExitCode = -1 };
+        }
+        finally
+        {
+            _systemHandOversRunning.TryRemove(request.UpdateKey, out _);
+            // The tray still re-reads its own version before it answers.
+            ExtendUserInstallTimeout(request.UpdateKey, AfterHandOverWait);
+        }
+
+        if (!await _pipe.SendAsync(conn, reply, CancellationToken.None).ConfigureAwait(false))
+            _logger.LogWarning("{App}: the result of the install for all users could not be sent to {Client} (disconnected)", update.DisplayName, conn);
+    }
+
+    /// <summary>Restarts the timeout of the user-context install the service waits for, if it is still waiting.</summary>
+    private void ExtendUserInstallTimeout(string key, TimeSpan from)
+    {
+        if (!_userInstallTimeouts.TryGetValue(key, out var timeout)) return;
+        try { timeout.CancelAfter(from); }
+        catch (ObjectDisposedException) { /* the install has just finished */ }
+    }
+
+    /// <summary>
+    /// The cloud event text of a successful install: "{App} installed[ (reboot required)]", followed by the provider's
+    /// message unless that is only the generic "Installed successfully..." - a hand-over to SYSTEM, for one, says there
+    /// how the install went and what the package registrations were, and the event is the only place that reaches the
+    /// cloud. Pure, so the format is testable.
+    /// </summary>
+    public static string InstallSucceededEventText(string displayName, InstallResult result)
+    {
+        var text = $"{displayName} installed{(result.RebootRequired ? " (reboot required)" : "")}";
+        var detail = result.Message?.Trim();
+        return string.IsNullOrEmpty(detail) || detail.StartsWith("Installed successfully", StringComparison.OrdinalIgnoreCase)
+            ? text
+            : $"{text}: {detail}";
+    }
 
     private StateMessage BuildState(PipeClientConnection conn)
     {

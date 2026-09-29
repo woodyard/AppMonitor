@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -24,6 +25,17 @@ public sealed class UserContextExecutor : IHostedService
     private static readonly TimeSpan ProgressInterval = TimeSpan.FromSeconds(2);
     /// <summary>winget can take a while on a cold source cache; the service gives up long before this.</summary>
     private static readonly TimeSpan PackageListTimeout = TimeSpan.FromMinutes(3);
+    /// <summary>
+    /// How long the tray waits for the service to accept a hand-over (<see cref="RequestSystemInstallMessage"/>). An
+    /// older service does not know the message and never answers, so this is what keeps the install from waiting for
+    /// the whole install timeout in that case.
+    /// </summary>
+    private static readonly TimeSpan HandOverAcceptTimeout = TimeSpan.FromSeconds(60);
+    /// <summary>
+    /// On top of the install timeout, how long an accepted hand-over may take: the service checks the package
+    /// registrations before and after its install (up to a minute each).
+    /// </summary>
+    private static readonly TimeSpan HandOverSlack = TimeSpan.FromMinutes(5);
 
     private readonly ILogger<UserContextExecutor> _log;
     private readonly ILoggerFactory _loggerFactory;
@@ -34,6 +46,16 @@ public sealed class UserContextExecutor : IHostedService
 
     private RunUserScanMessage? _pendingScan;
     private bool _scanRunning;
+
+    /// <summary>A hand-over waiting for the service: its acknowledgement, then its result (null: disconnected).</summary>
+    private sealed class HandOverWait
+    {
+        public TaskCompletionSource<bool> Accepted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<SystemInstallResultMessage?> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    /// <summary>Hand-overs to the service in flight, by the request's message id.</summary>
+    private readonly ConcurrentDictionary<string, HandOverWait> _pendingHandOvers = new();
 
     public UserContextExecutor(
         ILogger<UserContextExecutor> log,
@@ -50,12 +72,15 @@ public sealed class UserContextExecutor : IHostedService
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _ipc.MessageReceived += OnMessage;
+        _ipc.ConnectionChanged += OnConnectionChanged;
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _ipc.MessageReceived -= OnMessage;
+        _ipc.ConnectionChanged -= OnConnectionChanged;
+        FailPendingHandOvers();
         _cts.Cancel();
         _cts.Dispose();
         _installGate.Dispose();
@@ -75,9 +100,39 @@ public sealed class UserContextExecutor : IHostedService
             case RunUserPackageListMessage list:
                 _ = RunPackageListAsync(list);
                 break;
+            case SystemInstallResultMessage result:
+                if (result.InReplyTo is not null && _pendingHandOvers.TryGetValue(result.InReplyTo, out var answered))
+                {
+                    answered.Accepted.TrySetResult(true);
+                    answered.Result.TrySetResult(result);
+                }
+                else _log.LogWarning("Ignoring a late or unexpected install-for-all-users result for {Key}", result.UpdateKey);
+                break;
             case AckMessage ack:
+                if (ack.InReplyTo is not null && _pendingHandOvers.TryGetValue(ack.InReplyTo, out var accepted))
+                {
+                    _log.LogInformation("The service {Answer} the install for all users: {Message}", ack.Ok ? "accepted" : "rejected", ack.Message);
+                    accepted.Accepted.TrySetResult(ack.Ok);
+                    if (!ack.Ok) accepted.Result.TrySetResult(new SystemInstallResultMessage { InReplyTo = ack.InReplyTo, Ok = false, Message = ack.Message });
+                    break;
+                }
                 _log.LogDebug("Ack for {InReplyTo}: ok={Ok} {Message}", ack.InReplyTo, ack.Ok, ack.Message);
                 break;
+        }
+    }
+
+    /// <summary>A dropped pipe ends every hand-over wait: the service can no longer answer on this connection.</summary>
+    private void OnConnectionChanged(bool connected)
+    {
+        if (!connected) FailPendingHandOvers();
+    }
+
+    private void FailPendingHandOvers()
+    {
+        foreach (var wait in _pendingHandOvers.Values)
+        {
+            wait.Accepted.TrySetResult(false);
+            wait.Result.TrySetResult(null);
         }
     }
 
@@ -158,6 +213,9 @@ public sealed class UserContextExecutor : IHostedService
             WebSourcesEnabled = true,
             DownloadDirectory = AppInfo.DownloadDirectory,
             InstallTimeout = TimeSpan.FromMinutes(Math.Max(1, message.TimeoutMinutes)),
+            // An installed MSIX package winget offers no per-user installer for is handed to the service, which
+            // installs it for all users as SYSTEM (see WingetProvider.HandOverToSystemAsync).
+            SystemInstallHandOver = (request, ct) => RequestSystemInstallAsync(request, message.TimeoutMinutes, ct),
         };
         AppInfo.EnsureDirectories();
 
@@ -199,6 +257,59 @@ public sealed class UserContextExecutor : IHostedService
     {
         _store.SetLocalStatus(key, status);
         _log.LogDebug("Install progress for {Key}: {Status}", key, status);
+    }
+
+    /// <summary>
+    /// Asks the service to install a package for all users (<see cref="RequestSystemInstallMessage"/>) and waits for its
+    /// answer: first the acknowledgement (at most <see cref="HandOverAcceptTimeout"/>; an older service never gives one),
+    /// then the result (at most the install timeout plus <see cref="HandOverSlack"/>). Null when there is no answer -
+    /// not sent, not acknowledged, timed out, or the pipe dropped - which the provider reports as a failed hand-over.
+    /// </summary>
+    private async Task<SystemInstallHandOverReply?> RequestSystemInstallAsync(SystemInstallHandOverRequest request, int timeoutMinutes, CancellationToken ct)
+    {
+        var message = new RequestSystemInstallMessage
+        {
+            UpdateKey = request.UpdateKey,
+            WingetId = request.WingetId,
+            PackageFamilyName = request.PackageFamilyName,
+            UserPackageVersion = request.UserPackageVersion,
+        };
+        var wait = new HandOverWait();
+        _pendingHandOvers[message.MessageId] = wait;
+        try
+        {
+            _log.LogInformation("Asking the service to install {WingetId} (package family {Family}, user package {Version}) for all users for {Key}",
+                request.WingetId, request.PackageFamilyName, request.UserPackageVersion ?? "unknown", request.UpdateKey);
+            if (!await _ipc.SendAsync(message).ConfigureAwait(false)) return null;
+
+            await Task.WhenAny(wait.Accepted.Task, wait.Result.Task, Task.Delay(HandOverAcceptTimeout, ct)).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (!wait.Accepted.Task.IsCompleted && !wait.Result.Task.IsCompleted)
+            {
+                _log.LogWarning("The service did not acknowledge the install for all users of {WingetId} within {Seconds:F0}s (a service older than this agent?)",
+                    request.WingetId, HandOverAcceptTimeout.TotalSeconds);
+                return null;
+            }
+
+            var result = await wait.Result.Task.WaitAsync(TimeSpan.FromMinutes(Math.Max(1, timeoutMinutes)) + HandOverSlack, ct).ConfigureAwait(false);
+            if (result is null)
+            {
+                _log.LogWarning("The connection to the service dropped while it installed {WingetId} for all users", request.WingetId);
+                return null;
+            }
+            _log.LogInformation("The service's install for all users of {WingetId}: ok={Ok} exitCode={ExitCode} machine package {Machine}: {Message}",
+                request.WingetId, result.Ok, result.ExitCode, result.MachinePackageVersion ?? "unknown", result.Message);
+            return new SystemInstallHandOverReply(result.Ok, result.Message, result.ExitCode, result.MachinePackageVersion);
+        }
+        catch (TimeoutException)
+        {
+            _log.LogWarning("The service did not finish the install for all users of {WingetId} in time", request.WingetId);
+            return null;
+        }
+        finally
+        {
+            _pendingHandOvers.TryRemove(message.MessageId, out _);
+        }
     }
 
     // ---------------------------------------------------------------- scans

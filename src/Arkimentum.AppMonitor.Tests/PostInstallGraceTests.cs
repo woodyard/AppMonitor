@@ -106,6 +106,34 @@ public class PostInstallGraceTests
     }
 
     [Fact]
+    public void A_pending_restart_keeps_the_grace_period_even_when_the_install_reported_the_old_version()
+    {
+        // A package installed for all users by the service that the user's own registration only picks up at the next
+        // sign-in: the tray reports the user's (old) version with a restart pending.
+        var (state, u) = InstalledAt(T0, InstallResult.Ok("pending sign-in", 0, reboot: true) with { InstalledVersion = "8.9.1" });
+        Assert.False(u.InstallVerified);
+        Assert.True(u.RebootPending);
+
+        var again = Scan("8.9.1");
+        PolicyEngine.Merge(state, [again], new HashSet<string> { again.Key }, T0.AddMinutes(5));
+        Assert.Equal(UpdateState.Installed, u.State);
+
+        PolicyEngine.Merge(state, [again], new HashSet<string> { again.Key }, T0 + PolicyEngine.PostInstallGrace + TimeSpan.FromMinutes(1));
+        Assert.Equal(UpdateState.Available, u.State);
+    }
+
+    [Fact]
+    public void Without_a_pending_restart_an_install_that_reported_the_old_version_is_still_pending_at_once()
+    {
+        var (state, u) = InstalledAt(T0, InstallResult.Ok("done", 0) with { InstalledVersion = "8.9.1" });
+
+        var again = Scan("8.9.1");
+        PolicyEngine.Merge(state, [again], new HashSet<string> { again.Key }, T0.AddMinutes(5));
+
+        Assert.Equal(UpdateState.Available, u.State);
+    }
+
+    [Fact]
     public void After_the_grace_period_the_old_rule_still_counts_a_repeat_as_a_failure()
     {
         var (state, u) = InstalledAt(T0, InstallResult.Ok("done", 0));

@@ -940,7 +940,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     }
 
     /// <summary>Trims <paramref name="text"/> to at most <paramref name="max"/> characters (with an ellipsis), or null when it is empty.</summary>
-    internal static string? Bound(string? text, int max)
+    public static string? Bound(string? text, int max)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
         var t = text.Trim();

@@ -110,10 +110,10 @@ public static class Strings
     public static string StateWaitingForClose(string processes) => $"Waiting for you to close: {processes}";
 
     /// <summary>
-    /// The same status with the way out: the close-apps dialog can be closed (or dismissed with its X) and the card
-    /// is then the only thing left saying what is wrong. Appended whenever the card offers to reopen the dialog.
+    /// The same status with the way out: the close-apps prompt is a toast that goes away after half a minute, and the
+    /// card is then the only thing left saying what is wrong. Appended whenever the card offers the prompt again.
     /// </summary>
-    public const string StateWaitingForCloseReopenHint = "Choose “Close apps and update” to open the dialog again.";
+    public const string StateWaitingForCloseReopenHint = "Choose “Close apps and update” to be asked again.";
 
     public static string StateWaitingForCloseWithHint(string processes) =>
         $"{StateWaitingForClose(processes)} {StateWaitingForCloseReopenHint}";
@@ -189,19 +189,14 @@ public static class Strings
     /// <summary>The same banner before a version is known (the check is still running).</summary>
     public const string AgentUpdateProgressUnknown = "Updating " + ProductName + "… the agent restarts by itself";
 
-    // ---------------------------------------------------------------- close-apps dialog
-    public const string CloseAppsIntro = "These applications must be closed before the update can be installed:";
-    public const string CloseAppsIntroSingle = "This application must be closed before the update can be installed:";
+    // ---------------------------------------------------------------- close-apps prompt (a toast)
     public const string CloseAppsSaveHint = "Save your work first — unsaved changes may be lost.";
+    /// <summary>The prompt's main button, and the update card's button that brings the prompt back.</summary>
     public const string CloseAppsAndUpdate = "Close apps and update";
     public const string CloseAppsNotNow = "Not now";
-    public const string CloseAppsClosing = "Closing applications…";
-    public const string CloseAppsForcing = "Closing what did not respond…";
+    /// <summary>The prompt's line once a forced close is due, and the toast shown while the service closes the apps.</summary>
     public const string CloseAppsCountdownElapsed = "Your apps are being closed now.";
-    public const string CloseAppsAllClosed = "All applications closed. Starting the update…";
-    /// <summary>Shown when something is left that only the service can end; the dialog then closes instead of re-asking.</summary>
-    public const string CloseAppsHandedToService = "The update service is closing the rest and then installs the update…";
-    /// <summary>Explains the "elevated" / "another session" markers below the list of blocking applications.</summary>
+    /// <summary>Explains the "elevated" / "another session" markers in the list of blocking applications.</summary>
     public const string CloseAppsServiceCloses =
         "Some of these run as an administrator or in another user's session, so this app cannot close them — " +
         "the update service closes those for you when you choose \"Close apps and update\".";
@@ -211,12 +206,14 @@ public static class Strings
     public const string CloseAppsOtherSession = "another session";
 
     public static string CloseAppsTitle(string displayName) => $"Close apps to update {displayName}";
-    public static string CloseAppsCountdown(string remaining) => $"Your apps will be closed automatically in {remaining}";
-    public static string CloseAppsStillRunning(string processes) => $"Still running: {processes}. Close them and try again.";
     /// <summary>"another session (H-SURFACELAP5\bob)" — who else has the application open.</summary>
     public static string CloseAppsOtherSessionAs(string userName) => $"{CloseAppsOtherSession} ({userName})";
-    /// <summary>Wraps the markers so they read as an aside: "pwsh — elevated, another session (CONTOSO\bob)".</summary>
-    public static string CloseAppsQualifier(string markers) => $"— {markers}";
+    /// <summary>One entry of the prompt's list with its markers: "PowerShell 7 (elevated, another session (CONTOSO\bob))".</summary>
+    public static string CloseAppsProcessWithMarkers(string name, string markers) => $"{name} ({markers})";
+    /// <summary>The prompt's body: what to close, and the warning the "Close apps and update" button needs.</summary>
+    public static string CloseAppsToastBody(string processes) => $"Please close {processes} so the update can be installed. {CloseAppsSaveHint}";
+    /// <summary>A forced close is scheduled: the clock time it happens, in the user's locale.</summary>
+    public static string CloseAppsForcedCloseAt(string clock) => $"Your apps will be closed automatically at {clock}.";
 
     // ---------------------------------------------------------------- about dialog
     public const string AboutTitle = "About " + ProductName;

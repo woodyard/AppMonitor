@@ -127,7 +127,7 @@ public sealed class IpcClientService : IHostedService
 
     /// <summary>
     /// Asks the service to install one update now. <paramref name="closeBlockingProcesses"/> is only set from the
-    /// close-apps dialog: it tells the service it may end the processes this agent could not reach itself (elevated,
+    /// close-apps prompt's "Close apps and update": it tells the service it may end the processes this agent could not reach itself (elevated,
     /// or in another user's session), which it can because it runs as LocalSystem.
     /// </summary>
     public Task<bool> InstallNowAsync(string updateKey, bool closeBlockingProcesses = false) =>

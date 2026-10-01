@@ -29,10 +29,11 @@ public interface IUpdateActions
     void Dismiss(PendingUpdate update);
 
     /// <summary>
-    /// Reopens the "Close apps to update" dialog for an update that is waiting for the user. The dialog is a local
-    /// window, so this never needs the service: the tray already holds the update with its blocking detail. Without
-    /// it a user who closed the dialog was stuck with a card saying "Waiting for you to close: pwsh" and no way back
-    /// until the service prompted again, which in Quiet mode is one notification interval away.
+    /// Shows the "Close apps to update" prompt (a toast) again for an update that is waiting for the user. The prompt
+    /// is built locally, so this never needs the service: the tray already holds the update with its blocking detail.
+    /// Without it a user whose prompt went away (answered "Not now", closed, or unanswered for half a minute) was stuck
+    /// with a card saying "Waiting for you to close: pwsh" and no way back until the service prompted again, which is
+    /// one notification interval away.
     /// </summary>
     void ShowCloseApps(PendingUpdate update);
 }
@@ -65,7 +66,7 @@ public sealed class UpdateViewModel : ObservableObject
 
         _installCommand = new RelayCommand(() => _actions.Install(_update), () => IsInstallEnabled);
         _dismissCommand = new RelayCommand(() => _actions.Dismiss(_update), () => _isConnected);
-        // Purely local: the dialog is reopened from the update the tray already holds, so it works even when the
+        // Purely local: the prompt is shown from the update the tray already holds, so it works even when the
         // service is momentarily unreachable.
         _closeAppsCommand = new RelayCommand(() => _actions.ShowCloseApps(_update));
         DeferralOptions = [];
@@ -81,7 +82,7 @@ public sealed class UpdateViewModel : ObservableObject
 
     public ICommand DismissCommand => _dismissCommand;
 
-    /// <summary>Reopens the close-apps dialog for this update; shown only while it is waiting for the user.</summary>
+    /// <summary>Shows the close-apps prompt again for this update; offered only while it is waiting for the user.</summary>
     public ICommand CloseAppsCommand => _closeAppsCommand;
 
     public ObservableCollection<DeferOptionViewModel> DeferralOptions { get; }
@@ -124,8 +125,8 @@ public sealed class UpdateViewModel : ObservableObject
                 UpdateState.Deferred => Strings.StateDeferred(
                     _update.DeferredUntilUtc is { } until ? TimeFormat.Absolute(until) : Strings.DetailsNone),
                 UpdateState.Scheduled => Strings.StateScheduled,
-                // The card is the only place left explaining this once the dialog is gone, so it also says how to
-                // get the dialog back - the user may have dismissed it with the window's X.
+                // The card is the only place left explaining this once the prompt's toast is gone, so it also says how
+                // to get the prompt back - it goes away by itself after half a minute.
                 UpdateState.WaitingForClose => ShowCloseApps
                     ? Strings.StateWaitingForCloseWithHint(BlockingProcessText)
                     : Strings.StateWaitingForClose(BlockingProcessText),

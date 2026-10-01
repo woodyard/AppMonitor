@@ -43,6 +43,13 @@ public sealed record InstallResult
     public string? Message { get; init; }
     public bool RebootRequired { get; init; }
     public string? InstalledVersion { get; init; }
+    /// <summary>
+    /// A success without an install: the provider found the product already at the target version and ran nothing
+    /// (winget answered "no applicable upgrade"). The scan that offered the update read the device differently, or the
+    /// product was updated in the meantime; either way it is not an install to announce or to record. Added after
+    /// 1.1.39; an IPC message without it means false.
+    /// </summary>
+    public bool NothingInstalled { get; init; }
 
     public static InstallResult Ok(string? message = null, int exitCode = 0, bool reboot = false) =>
         new() { Success = true, ExitCode = exitCode, Message = message, RebootRequired = reboot };

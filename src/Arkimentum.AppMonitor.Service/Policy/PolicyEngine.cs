@@ -87,6 +87,7 @@ public static class PolicyEngine
         int added = 0, updated = 0, resolved = 0, removed = 0;
         var newUpdates = new List<PendingUpdate>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var held = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var o in outcomes)
         {
@@ -139,6 +140,11 @@ public static class PolicyEngine
             {
                 var installedRecently = existing.InstalledAtUtc is { } t && now - t < PostInstallGrace;
                 var sameTarget = string.Equals(existing.AvailableVersion, r.AvailableVersion, StringComparison.OrdinalIgnoreCase);
+                // The install found this very version already installed and ran nothing: the scan and the install read
+                // the device differently (a leftover registration of an older build next to the current one), and
+                // another install would end the same way. Held, without a time limit, until a newer version is offered
+                // or the scan stops offering this one. Seen on the owner's device: Firefox "installed" every hour.
+                if (existing.NothingToInstall && sameTarget) { existing.LastSeenUtc = now; held.Add(key); continue; }
                 // The grace period covers "installed, but the scan still shows the old version" (pending reboot, stale
                 // cache). It does not apply when the install itself already reported a version below the target: that
                 // install did not take, so the update is simply still pending - unless a restart is pending, which is
@@ -169,6 +175,7 @@ public static class PolicyEngine
                 existing.Dismissed = false;
                 if (sameTarget && !realChange) existing.FailureCount++;
                 existing.InstallVerified = false;
+                existing.NothingToInstall = false;
                 existing.RebootPending = false;
             }
 
@@ -204,11 +211,11 @@ public static class PolicyEngine
             removed++;
         }
 
-        // Purge old "Installed" entries
+        // Purge old "Installed" entries - but not one this scan is held back by: without it the update would be new again.
         foreach (var key in state.Keys.ToList())
         {
             var u = state[key];
-            if (u.State == UpdateState.Installed && u.InstalledAtUtc is { } t && now - t > InstalledRetention) state.Remove(key);
+            if (u.State == UpdateState.Installed && u.InstalledAtUtc is { } t && now - t > InstalledRetention && !held.Contains(key)) state.Remove(key);
         }
 
         return new MergeSummary(added, updated, resolved, removed, newUpdates);
@@ -484,10 +491,13 @@ public static class PolicyEngine
         u.BlockingDetails = [];
         if (!string.IsNullOrWhiteSpace(result.InstalledVersion)) u.InstalledVersion = result.InstalledVersion;
         else if (u.AvailableVersion is not null) u.InstalledVersion = u.AvailableVersion;
-        // Verified = the provider read the target version back after installing; an assumed version is not a verification.
-        u.InstallVerified = !string.IsNullOrWhiteSpace(result.InstalledVersion) && !VersionComparer.IsUnknown(result.InstalledVersion)
+        // Verified = the provider read the target version back after installing; an assumed version is not a verification,
+        // and neither is a reading that made the provider install nothing: the scan read the same device differently.
+        u.InstallVerified = !result.NothingInstalled
+                            && !string.IsNullOrWhiteSpace(result.InstalledVersion) && !VersionComparer.IsUnknown(result.InstalledVersion)
                             && !string.IsNullOrWhiteSpace(u.AvailableVersion)
                             && VersionComparer.Compare(result.InstalledVersion, u.AvailableVersion) >= 0;
+        u.NothingToInstall = result.NothingInstalled;
         u.RebootPending = result.RebootRequired;
     }
 

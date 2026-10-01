@@ -3,7 +3,7 @@ using Arkimentum.AppMonitor.Native;
 namespace Arkimentum.AppMonitor.Models;
 
 /// <summary>
-/// What the close-apps dialog needs to know about one blocking process *name*, folded together from the per-instance
+/// What the close-apps prompt needs to know about one blocking process *name*, folded together from the per-instance
 /// detail the service (running as LocalSystem) could read: does any instance run elevated, does any run in a session
 /// this agent does not own, and who owns it.
 ///

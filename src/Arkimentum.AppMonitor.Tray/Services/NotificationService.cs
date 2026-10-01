@@ -21,7 +21,8 @@ namespace Arkimentum.AppMonitor.Tray.Services;
 /// </summary>
 public sealed class NotificationService : IHostedService
 {
-    private const string ToastGroup = "ArkimentumAppMonitor";
+    /// <summary>The group of every toast of the agent; the close-apps prompt (<see cref="CloseAppsCoordinator"/>) uses it too.</summary>
+    internal const string ToastGroup = "ArkimentumAppMonitor";
 
     /// <summary>
     /// A scan that finds several updates sends one <see cref="NotifyMessage"/> per update within a few hundred
@@ -306,17 +307,20 @@ public sealed class NotificationService : IHostedService
     /// Puts the application's own icon on a toast about one update, when the icon cache has a PNG for it. Without one the
     /// toast keeps the agent's logo; an icon never stops a toast from showing.
     /// </summary>
-    private void AddAppLogo(ToastContentBuilder builder, PendingUpdate? update)
+    private void AddAppLogo(ToastContentBuilder builder, PendingUpdate? update) => AddAppLogo(builder, update, _icons, _log);
+
+    /// <summary>The same for a toast built elsewhere (the close-apps prompt).</summary>
+    internal static void AddAppLogo(ToastContentBuilder builder, PendingUpdate? update, AppIconProvider icons, ILogger log)
     {
         if (update is null) return;
         try
         {
-            if (_icons.ToastLogoPath(AppIconRequest.For(update), AppLogoWait) is { } png)
+            if (icons.ToastLogoPath(AppIconRequest.For(update), AppLogoWait) is { } png)
                 builder.AddAppLogoOverride(new Uri(png), ToastGenericAppLogoCrop.Default);
         }
         catch (Exception ex)
         {
-            _log.LogDebug(ex, "No app logo on the toast for {App}", update.DisplayName);
+            log.LogDebug(ex, "No app logo on the toast for {App}", update.DisplayName);
         }
     }
 
@@ -386,8 +390,11 @@ public sealed class NotificationService : IHostedService
     /// <summary>Tag of the summary toast, so a newer summary replaces the previous one instead of stacking.</summary>
     private const string SummaryTag = "summary";
 
-    /// <summary>A toast tag is limited to 64 characters, so the update key is hashed into one.</summary>
-    private static string TagFor(string? key)
+    /// <summary>
+    /// A toast tag is limited to 64 characters, so the update key is hashed into one. Every toast of one update shares
+    /// it, the close-apps prompt included, so a newer one replaces the older instead of stacking.
+    /// </summary>
+    internal static string TagFor(string? key)
     {
         if (string.IsNullOrEmpty(key)) return "general";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(key));
@@ -399,12 +406,22 @@ public sealed class NotificationService : IHostedService
     private void OnToastActivated(ToastNotificationActivatedEventArgsCompat e)
     {
         var argument = e.Argument ?? string.Empty;
-        _log.LogInformation("Toast activated: {Argument}", argument);
-        if (_dispatcher.CheckAccess()) Handle(argument);
-        else _dispatcher.BeginInvoke(() => Handle(argument));
+        // The close-apps prompt's selection box of deferral options; read here, because UserInput is only valid now.
+        string? selectedMinutes = null;
+        try
+        {
+            if (e.UserInput is { } input && input.TryGetValue(ToastAction.InputDeferMinutes, out var value)) selectedMinutes = value as string;
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "Could not read the toast's user input");
+        }
+        _log.LogInformation("Toast activated: {Argument}{Input}", argument, selectedMinutes is null ? string.Empty : $" ({ToastAction.InputDeferMinutes}={selectedMinutes})");
+        if (_dispatcher.CheckAccess()) Handle(argument, selectedMinutes);
+        else _dispatcher.BeginInvoke(() => Handle(argument, selectedMinutes));
     }
 
-    private void Handle(string argument)
+    private void Handle(string argument, string? selectedMinutes = null)
     {
         try
         {
@@ -416,6 +433,15 @@ public sealed class NotificationService : IHostedService
 
             switch (action)
             {
+                // The close-apps prompt belongs to the coordinator: it holds the prompt's timer and sends the one answer.
+                case ToastAction.PromptCloseAndUpdate or ToastAction.PromptDefer or ToastAction.PromptNotNow or ToastAction.PromptOpen
+                    when key is not null:
+                    var promptMinutes = args.Contains(ToastAction.ArgumentMinutes)
+                        ? int.Parse(args.Get(ToastAction.ArgumentMinutes), CultureInfo.InvariantCulture)
+                        : int.TryParse(selectedMinutes, NumberStyles.Integer, CultureInfo.InvariantCulture, out var picked) ? picked : 0;
+                    _closeApps.OnToastAction(action, key, promptMinutes);
+                    break;
+
                 case ToastAction.Install when key is not null:
                     _log.LogInformation("User chose Install now from a toast for {Key}", key);
                     _ = _ipc.InstallNowAsync(key);
@@ -433,6 +459,7 @@ public sealed class NotificationService : IHostedService
                     break;
 
                 case ToastAction.CloseApps when key is not null:
+                    // An older toast's "Close apps" button: it opened the dialog, and now shows the prompt instead.
                     _log.LogInformation("User chose Close apps from a toast for {Key}", key);
                     var update = _store.Find(key);
                     if (update is not null) _closeApps.ShowFor(update);

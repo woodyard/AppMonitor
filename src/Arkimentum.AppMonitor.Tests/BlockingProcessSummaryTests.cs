@@ -4,10 +4,10 @@ using Xunit;
 namespace Arkimentum.AppMonitor.Tests;
 
 /// <summary>
-/// The logic behind the close-apps dialog's per-process rows (Qualifier / HasQualifier / ServiceCloseHint) and the
-/// two inputs its <c>Apply</c> and <c>SetProcesses</c> feed on. It lives in Core precisely so it can be tested here:
-/// the dialog runs inside a WPF layout pass, where the tray's unhandled-exception handler swallows the exception and
-/// leaves a blank window behind. Every shape the service can hand it - no detail, an empty list, a null entry, an
+/// The logic behind the close-apps prompt's per-process markers and its service hint (CloseAppsPrompt.Compose; once
+/// the dialog's rows) and the inputs they feed on. It lives in Core precisely so it can be tested here: the old dialog
+/// ran inside a WPF layout pass, where the tray's unhandled-exception handler swallowed the exception and left a blank
+/// window behind. Every shape the service can hand it - no detail, an empty list, a null entry, an
 /// unreadable session or owner - has to come out as an answer rather than a throw.
 /// </summary>
 public class BlockingProcessSummaryTests

@@ -30,5 +30,8 @@
     <Compile Include="..\Arkimentum.AppMonitor.Tray\Services\InstallRound.cs" Link="Tray\InstallRound.cs" />
     <Compile Include="..\Arkimentum.AppMonitor.Tray\Resources\Strings.cs" Link="Tray\Strings.cs" />
     <Compile Include="..\Arkimentum.AppMonitor.Tray\Services\AppIconLookup.cs" Link="Tray\AppIconLookup.cs" />
+    <!-- The close-apps prompt's rules (what the toast says, and what no answer means), with the time formatting it uses. -->
+    <Compile Include="..\Arkimentum.AppMonitor.Tray\Services\CloseAppsPrompt.cs" Link="Tray\CloseAppsPrompt.cs" />
+    <Compile Include="..\Arkimentum.AppMonitor.Tray\Infrastructure\TimeFormat.cs" Link="Tray\TimeFormat.cs" />
   </ItemGroup>
 </Project>

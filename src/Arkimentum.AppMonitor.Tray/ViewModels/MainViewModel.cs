@@ -394,12 +394,12 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     }
 
     /// <summary>
-    /// Brings the close-apps dialog back for an update that is waiting for the user. Nothing goes over the pipe:
-    /// the tray holds the update with its blocking detail, and the coordinator opens (or re-activates) the window.
+    /// Brings the close-apps prompt back for an update that is waiting for the user. Nothing goes over the pipe:
+    /// the tray holds the update with its blocking detail, and the coordinator shows the prompt's toast again.
     /// </summary>
     public void ShowCloseApps(PendingUpdate update)
     {
-        _log.LogInformation("User reopened the close-apps dialog for {App} (blocking: {Processes})",
+        _log.LogInformation("User asked for the close-apps prompt again for {App} (blocking: {Processes})",
             update.DisplayName, string.Join(", ", BlockingProcessSummary.NamesFor(update)));
         // Prefer the service's latest snapshot: the card may be a tick behind on what is still running.
         _closeApps.ShowFor(_store.Find(update.Key) ?? update);

@@ -326,7 +326,7 @@ Rules encoded in the model (`PendingUpdate`):
 | Past deadline | `Mandatory` and `now >= DeadlineUtc`: deferral is refused and the install is forced. |
 | Blocking processes | The `ProcessNames` of the application that are currently running. For user-context updates only processes in that user's session count. |
 | Forced close | When the deadline has passed and `ForceCloseAtDeadline = 1`, the user is warned and `ForceCloseAtUtc = now + CloseGracePeriodMinutes`. From then on, when the update's install turn comes, the tray agent asks the windows to close (`WM_CLOSE`), waits the graceful period, and kills what is left; the service then terminates every survivor in every session. With `ForceCloseAtDeadline = 0` the update simply waits. |
-| Close apps and update | The user pressing the button in the close-apps dialog sets `ForceCloseRequestedUtc`, which lets the service terminate blocking processes for the next hour - see "Closing blocking applications" below. |
+| Close apps and update | The user pressing the button on the close-apps prompt sets `ForceCloseRequestedUtc`, which lets the service terminate blocking processes for the next hour - see "Closing blocking applications" below. |
 | Auto install | `AutoInstall = 1` installs without asking as soon as no blocking process is running - no notification other than the optional "installed" toast (`ShowInstalledNotifications`, off by default). |
 | Notification style | `NotificationMode` (global, per-app override). `Quiet` (default) announces an update once - `PendingUpdate.Announced` records it - and afterwards only notifies about a deadline approaching, applications to close, or a failed install; there is no "installing" toast. `Reminders` is the pre-1.2 behaviour: one reminder per `NotificationIntervalMinutes` for as long as the update is pending. |
 | Dismiss | A non-mandatory update the user dismissed is re-announced after `NotificationIntervalMinutes` in `Reminders` mode; in `Quiet` mode it stays dismissed until a new version appears or a deadline approaches. |
@@ -379,11 +379,11 @@ The flow when the user presses **Close apps and update**:
 
 1. The tray sends `WM_CLOSE` to every blocking process in its own session and waits 30 seconds, so an
    application with unsaved work still gets its say.
-2. Whatever ignored that is killed - the button says what it does, and the dialog warns beforehand
+2. Whatever ignored that is killed - the button says what it does, and the prompt warns beforehand
    that unsaved changes may be lost. A console process such as `pwsh` in Windows Terminal has no main
    window at all, so this is the only step that ever ends it.
-3. The tray sends `installNow` with `CloseBlockingProcesses = true` and **closes the dialog**. It does
-   not stay open waiting for something it can never close.
+3. The tray sends `installNow` with `CloseBlockingProcesses = true`; the prompt is already gone. It does
+   not ask again for something it can never close.
 4. The service records `PendingUpdate.ForceCloseRequestedUtc`. On its blocking re-check just before the
    install (`UpdateCoordinator.InstallAsync`), `PolicyEngine.MayServiceForceClose` is now true, so it
    terminates the remaining processes with their process trees - in every session for a machine-wide
@@ -393,7 +393,7 @@ The flow when the user presses **Close apps and update**:
    its session, its owner, **the executable behind it and why the kill failed** - the exception type,
    its message and, for a `Win32Exception`, the Win32 error code:
    `Could not close pwsh (pid 9, session 0, NT AUTHORITY\SYSTEM, elevated, C:\Program Files\PowerShell\7\pwsh.exe): Win32Exception: Access is denied (Win32 error 5 / 0x00000005); PowerShell 7 was not updated.`
-   It never prompts again for the same thing: that is what used to make the dialog reappear forever for
+   It never prompts again for the same thing: that is what used to make the prompt reappear forever for
    an elevated or cross-session `pwsh`.
 6. After the settle wait the service looks again, in the same scope. A process with the same name but a
    **new pid** means something restarted it - a service, a scheduled task, an RMM agent - and the install
@@ -410,21 +410,45 @@ cycle, or a newer version superseding a pending one, clears `ForceCloseRequested
 never honoured.
 
 `PendingUpdate.BlockingDetails` carries what the service could read about each running instance - pid,
-session, owner, elevation - so the tray dialog can mark the ones it cannot close itself
-("pwsh — elevated", "pwsh — another session (H-SURFACELAP5\bob)") and explain that the service will
+session, owner, elevation - so the tray's prompt can mark the ones it cannot close itself
+("pwsh (elevated)", "pwsh (another session (H-SURFACELAP5\bob))") and explain that the service will
 close those. `BlockingProcessInfo` also has an optional `ExecutablePath` and `Reason`, filled in only
 for processes that survived or restarted a forced close. All of these are optional and additive: an
 older tray or an older service simply does not see them.
 
-The dialog is not the only way out. Closing it with the window's **X** is treated exactly like
-**Not now** (`CloseAppsCoordinator.NotNow`), so the service learns the user declined instead of leaving
-the update parked in `WaitingForClose` - in `Quiet` mode nothing would prompt again until the next
-notification interval. A close driven by the agent itself (a button that already answered, or the
-coordinator pruning a dialog whose update moved on) goes through `CloseAppsWindow.CloseFromApp` and
-sends nothing; the view model refuses to answer twice in any case. While an update is waiting, its card
-in the main window offers **Close apps and update**, which reopens the dialog locally through
-`ICloseAppsLauncher.ShowFor` - no round trip to the service, because the tray already holds the update
-and its blocking detail.
+#### The close-apps prompt is a toast
+
+The service's `promptClose` is shown by the tray (`CloseAppsCoordinator`, rules in `CloseAppsPrompt`)
+as a toast, not a window: "Close apps to update X", the blocking applications with their markers, the
+save-your-work warning, the forced-close time when one is scheduled ("Your apps will be closed
+automatically at 14:32") and the service hint when something is out of the agent's reach. Its buttons are
+**Close apps and update**, the deferral (one option: a "Defer 1 hour" button; several: a selection box
+with up to five of them and a **Defer** button) when the update can still be deferred, and **Not now**
+unless a mandatory update is past its deadline. It uses the reminder scenario, so it stays on screen
+rather than sliding into the notification centre after a few seconds. It is shown whether or not
+notifications are switched on in the agent's settings: it is a question, not a notification.
+
+The tray waits **30 seconds** (`CloseAppsPrompt.AnswerTimeout`, measured by the tray; the toast's own
+expiry is only a backstop) and then removes the toast and answers **Not now**. Every way out that is not a
+button is the same **Not now**: the timeout, the toast's **X**, a click on the toast body (which opens the
+main window) and a toast Windows refuses to show (notifications for the agent switched off in Windows).
+"Not now" sends `dismiss` for an optional update and nothing for a mandatory one, exactly as the dialog's
+button did, so the service learns the user declined instead of leaving the update parked in
+`WaitingForClose`, and the next prompt comes at the notification interval as before. The tray log says
+which it was (`No answer to the close-apps prompt for X within 30 s; taking it as Not now`, `User closed
+the close-apps prompt …`, `User chose Not now …`).
+
+A forced close is never weakened by this: it is only scheduled for a mandatory update past its deadline,
+for which "Not now" sends nothing, and `PolicyEngine.Dismiss` keeps `ForceCloseAtUtc` past the deadline
+anyway. When such a prompt times out, the tray leaves a silent notice in the notification centre ("Your
+apps will be closed automatically at 14:32", with **Close apps and update**) that expires at the close,
+and when the service starts the forced close the tray shows "Your apps are being closed now."
+
+A prompt whose update moves on while it is on screen (installing, installed, gone, or deferred from the
+main window) is taken down without an answer, and so is every prompt when the agent stops. While an
+update is waiting, its card in the main window offers **Close apps and update**, which shows the prompt
+again locally through `ICloseAppsLauncher.ShowFor` - no round trip to the service, because the tray
+already holds the update and its blocking detail.
 
 ## IPC
 
@@ -444,7 +468,7 @@ session id from the pipe handle, so one user cannot act on another user's update
 | `hello` | `HelloMessage` | `SessionId`, `UserSid`, `UserName`, `AgentVersion`, `ClientKind` | Sent on every (re)connect. The server uses its own impersonated values for identity. |
 | `getState` | `GetStateMessage` | - | Ask for a fresh snapshot. |
 | `requestScan` | `RequestScanMessage` | - | User pressed "Check for updates". |
-| `installNow` | `InstallNowMessage` | `UpdateKey`, `CloseBlockingProcesses` (optional) | Install this update now. `CloseBlockingProcesses` is set by the close-apps dialog: the tray has already closed and killed what it could reach in its own session, so the service may terminate the rest (elevated processes, other sessions). An older tray omits it and the service keeps prompting. |
+| `installNow` | `InstallNowMessage` | `UpdateKey`, `CloseBlockingProcesses` (optional) | Install this update now. `CloseBlockingProcesses` is set by the close-apps prompt's **Close apps and update**: the tray has already closed and killed what it could reach in its own session, so the service may terminate the rest (elevated processes, other sessions). An older tray omits it and the service keeps prompting. |
 | `defer` | `DeferMessage` | `UpdateKey`, `Minutes` | Postpone by the chosen number of minutes. |
 | `dismiss` | `DismissMessage` | `UpdateKey` | Hide a non-mandatory update until the next notification interval. |
 | `userInstallProgress` | `UserInstallProgressMessage` | `UpdateKey`, `Status` | Progress text from a user-context install. |

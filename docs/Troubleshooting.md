@@ -421,6 +421,25 @@ Consequence: an older copy that stays registered is never updated or reported on
 matters (an old PuTTY that users still start), remove it:
 `winget uninstall --id X --exact --version <old version>`.
 
+### The same update is "installed" at every scan (agents up to 1.1.39)
+
+Symptom: *Installed Mozilla Firefox 157.0.0.0: already up to date* in the service log once per scan,
+an "installed" toast and a Recent entry each time, and the next scan offers 156.0.1 -> 157.0 again.
+The installs sat under **two of the application's configured winget ids**: the current MSIX package
+(`Mozilla.Firefox.MSIX` 157.0.0.0) and a leftover Uninstall entry of the classic build
+(`Mozilla.Firefox` 156.0.1, in HKCU, pointing at a folder that does not exist - an unelevated run of
+the machine-wide installer had written it). winget's full listing shows each under its own id, so the
+scan took the first configured id and read 156.0.1; asked by id after the install, winget lists the
+MSIX build under `Mozilla.Firefox` as well, so the check found 157.0.0.0 and reported success.
+
+Since 1.1.40 the highest-install rule spans every configured id of the application, in the scan as
+in the check after an install (Debug: *winget lists the product under 2 configured ids ... the highest
+installed version, ..., counts*). And an install for which winget ran nothing is no longer an install:
+the service logs *Nothing to install for X: ... is already installed ... not recorded as an install*,
+shows no toast, records no history entry or event, and does not offer that version again until a newer
+one appears. The leftover entry itself is harmless then; to remove it, delete the key under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall` whose `InstallLocation` no longer exists.
+
 ## winget says the install technology is different
 
 Symptom: the update fails and winget's output contains
@@ -549,7 +568,9 @@ covers the flow. `ImpersonationGuard` still logs and reverts should any thread e
 impersonating (`Thread N was still impersonating ...` in the service log); on 1.1.8 that line should
 never appear.
 
-## The close-apps dialog keeps coming back
+## The close-apps prompt keeps coming back
+(Before the prompt became a toast it was a dialog window; what follows applies to both.)
+
 Since 1.1.6 a process running in session 0 (as SYSTEM, a scheduled task, an RMM agent's script) is not
 treated as blocking at all and is left to the installer; only processes in interactive user sessions
 are prompted for or closed. If a device on 1.1.4 or 1.1.5 reported "Could not close pwsh (pid …,
@@ -565,7 +586,7 @@ reach:
 - **Processes in another session** - another signed-in user, a scheduled task, or anything in session 0.
 
 Before 1.2 the service re-checked the blocking processes just before installing, found one of those,
-and prompted again - so pressing the button simply brought the dialog straight back, forever.
+and prompted again - so pressing the button simply brought the prompt straight back, forever.
 
 Now the tray kills what it can in its own session and then hands the rest to the service, which runs
 as LocalSystem and can end any of them. In the service log this looks like:
@@ -575,10 +596,13 @@ PowerShell 7: closing pwsh (pid 4242, session 3, H-SURFACELAP5\bob) before the i
 Terminated pwsh (pid 4242, session 3, H-SURFACELAP5\bob) to install PowerShell 7
 ```
 
-The dialog itself now marks those processes - "pwsh — elevated", "pwsh — another session
-(H-SURFACELAP5\bob)" - and says that the service closes them.
+The prompt itself marks those processes - "pwsh (elevated)", "pwsh (another session
+(H-SURFACELAP5\bob))" - and says that the service closes them.
 
-If the dialog still reappears:
+A prompt that comes back at the notification interval after nobody answered it is by design: no answer
+within 30 seconds is "Not now", and "Not now" means "ask me again later" (see the next section).
+
+If the prompt still reappears straight after **Close apps and update**:
 
 - Check the **tray version**: an agent older than 1.2 does not send `CloseBlockingProcesses`, so the
   service keeps the old prompt-and-wait behaviour. Update the agent on that device.
@@ -602,30 +626,38 @@ If the dialog still reappears:
 
 ## An update is stuck on "Waiting for you to close"
 
-A card that sits on `Waiting for you to close: pwsh` and never moves used to mean the close-apps dialog
-had been dismissed with the window's **X**: the service never heard an answer, the update stayed in
+A card that sits on `Waiting for you to close: pwsh` and never moves used to mean the close-apps prompt
+had been dismissed without an answer: the service never heard one, the update stayed in
 `WaitingForClose`, and in `Quiet` mode nothing prompted again until the next notification interval.
 
-Since 1.2:
+Now:
 
-- Closing the dialog with **X** is treated as **Not now**, so the service knows the user declined.
+- The prompt is a toast that waits 30 seconds. Every way it ends without a button - no answer, its
+  **X**, a click on the toast body - is treated as **Not now**, so the service knows the user declined.
+  For a mandatory update "Not now" sends nothing (it cannot be dismissed); the update waits, still
+  `WaitingForClose`, until the service asks again at the notification interval.
 - The card itself carries a **Close apps and update** button while an update is waiting, and its status
-  says so. Pressing it reopens the dialog locally - no waiting for the service to prompt again.
+  says so. Pressing it shows the prompt again locally - no waiting for the service to prompt again.
 
-If a card is still stuck, check the tray log (`%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\`):
+To see how each prompt ended, check the tray log (`%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\`):
 
 ```powershell
 Select-String -Path "$env:LOCALAPPDATA\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Tray_*.log" `
-  -Pattern 'close-apps dialog'
+  -Pattern 'close-apps prompt|Close apps and update|Not now'
 ```
 
-`Could not build the close-apps dialog for …` or `Applying the update to the close-apps dialog … failed`
-is the agent telling you the dialog itself threw; the line carries the update key and the full blocking
-detail, and the exception follows it. That is also what a **blank white dialog** used to look like with
-nothing in the log at all: the tray's `DispatcherUnhandledException` handler marks such exceptions
-handled, so a half-built window simply stayed on screen. Restarting the tray agent (sign out and in, or
-kill `Arkimentum.AppMonitor.Tray.exe` - the service starts it again) clears the window; the log line is
-what to report.
+| Tray log line | Meaning |
+| --- | --- |
+| `Showing the close-apps prompt for X (blocking: …)` | The toast went up; the 30 seconds start. |
+| `User chose Close apps and update` / `User deferred X by N minutes` / `User chose Not now` | A button. |
+| `No answer to the close-apps prompt for X within 30 s; taking it as Not now` | The timeout. |
+| `User closed the close-apps prompt` / `User opened the main window from the close-apps prompt` | The toast's X / its body; both "Not now". |
+| `Cannot show the close-apps prompt for X: Windows reports the agent's notifications as DisabledForUser` | Notifications for Arkimentum AppMonitor are switched off in Windows (Settings > System > Notifications, or by policy). The user is never asked and every prompt ends as "Not now"; switch them back on. |
+| `Took down the close-apps prompt for X: the update moved on` | Installed, installing or deferred meanwhile; nothing was answered. |
+
+Focus assist / Do not disturb also keeps the toast off the screen (it goes straight to the notification
+centre), so a user in a meeting is "asked" without seeing it and the prompt ends as "Not now"; the next
+one comes at the notification interval.
 
 ## The tray lists applications that are not installed here
 

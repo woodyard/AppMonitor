@@ -40,6 +40,14 @@ public sealed class PendingUpdate
     /// </summary>
     public bool InstallVerified { get; set; }
 
+    /// <summary>
+    /// The install ran nothing because the product was already at the target version (see
+    /// <see cref="InstallResult.NothingInstalled"/>). A scan that still offers that same version disagrees with the
+    /// install's own reading, and installing again cannot settle it, so the update is not offered again until a newer
+    /// version appears. Added after 1.1.39; a state file or an IPC message without it means false.
+    /// </summary>
+    public bool NothingToInstall { get; set; }
+
     /// <summary>The installer asked for a reboot; the version on disk may lag until then.</summary>
     public bool RebootPending { get; set; }
 
@@ -104,7 +112,7 @@ public sealed class PendingUpdate
     /// <summary>
     /// Whether the user may defer the update right now. False while a deferral is still running: deferring again
     /// before it has expired would only extend it and use up another of the allowed deferrals, so the tray, the toast
-    /// and the close-apps dialog hide the buttons and the service refuses the request until the period is over.
+    /// and the close-apps prompt hide the buttons and the service refuses the request until the period is over.
     /// </summary>
     public bool CanDefer(DateTimeOffset now)
     {

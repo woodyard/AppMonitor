@@ -113,10 +113,16 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         var listing = await GetFullListAsync(winget, context, ct).ConfigureAwait(false);
 
         // A WingetId may list alternatives ("Mozilla.Firefox;Mozilla.Firefox.MSIX"): the same product is often published
-        // as a classic installer and as a Store/MSIX package with different ids. The first id that is installed wins.
-        // Alternatives are optional hints: when none of them is installed the id is resolved from winget's listing by
-        // the app's identity rule (below).
+        // as a classic installer and as a Store/MSIX package with different ids. Every alternative that is installed
+        // counts, and the highest installed version among them is the product's (on a tie the first configured id), as
+        // for several installs under one id. The full listing shows each install under one id only, while the check
+        // after an install asks by id, and then winget lists the MSIX build under Mozilla.Firefox as well: a leftover
+        // registration of the classic build (156.0.1 under Mozilla.Firefox) next to the current MSIX package
+        // (157.0.0.0 under Mozilla.Firefox.MSIX) was flagged by every scan and found "already up to date" by every
+        // install. Alternatives are optional hints: when none of them is installed the id is resolved from winget's
+        // listing by the app's identity rule (below).
         var candidates = SplitIds(app.WingetId);
+        var installs = new List<(string Id, WingetRow Row)>();
         ListLookup? lookup = null;
         string? matchedId = null;
         string? firstError = null;
@@ -129,9 +135,16 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
                 continue;
             }
             if (attempt.Error is not null) { firstError ??= attempt.Error; continue; }
-            lookup = attempt;
-            matchedId = id;
-            break;
+            installs.Add((id, attempt.Row!));
+        }
+        if (installs.Count > 0)
+        {
+            // The same order as WingetOutputParser.CombineInstalls, so the id is the one of the row that counts.
+            matchedId = installs.OrderBy(i => VersionComparer.IsUnknown(i.Row.Version)).ThenByDescending(i => i.Row.Version, VersionComparer.Instance).First().Id;
+            lookup = new ListLookup(WingetOutputParser.CombineInstalls(installs.Select(i => i.Row).ToList()), false, null);
+            if (installs.Count > 1)
+                _logger.LogDebug("{AppId}: winget lists the product under {Count} configured ids in the {Context} scope ({Installs}); the highest installed version, {Version} ('{WingetId}'), counts.",
+                    app.AppId, installs.Count, context.Context, string.Join(", ", installs.Select(i => $"{i.Id} {i.Row.Version}")), lookup.Row!.Version, matchedId);
         }
 
         if (lookup is null && firstError is null)
@@ -182,28 +195,37 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         // winget upgrade refuses (Perplexity.Comet, Microsoft.BingWallpaper) are still detected and go to the scoped
         // install fallback.
         var upgradeRows = await GetUpgradeListingAsync(winget, app.WingetSourceName, context, ct).ConfigureAwait(false);
-        var upgradeRow = PickFromUpgradeListing(upgradeRows, candidates, app, row);
+        // With several configured ids installed, the upgrade row of the id whose install counts comes first.
+        IReadOnlyList<string> upgradeIds = installs.Count > 1
+            ? [matchedId!, .. candidates.Where(c => !string.Equals(c, matchedId, StringComparison.OrdinalIgnoreCase))]
+            : candidates;
+        var upgradeRow = PickFromUpgradeListing(upgradeRows, upgradeIds, app, row);
         if (upgradeRow is not null)
         {
-            var configured = candidates.FirstOrDefault(c => string.Equals(c, upgradeRow.Id, StringComparison.OrdinalIgnoreCase));
-            if (!string.Equals(upgradeRow.Id, matchedId, StringComparison.OrdinalIgnoreCase))
-            {
-                if (configured is not null)
-                    _logger.LogDebug("{AppId}: winget's upgrade listing names '{UpgradeId}' (list matched '{ListId}').", app.AppId, upgradeRow.Id, matchedId);
-                else
-                    _logger.LogInformation("{AppId}: resolved winget id '{UpgradeId}' from winget's {Context}-scope upgrade listing by name ('{Name}'); the installed product was listed as '{ListId}'.",
-                        app.AppId, upgradeRow.Id, context.Context, upgradeRow.Name, matchedId);
-            }
-            matchedId = configured ?? upgradeRow.Id;
-
             // Several installs of the product can be registered at once (.NET keeps every patch release side by side,
             // two PuTTY builds), and winget keeps offering the upgrade for an older one although a newer install is
             // there too. The highest installed version counts - the same rule the check after an install applies (see
             // WingetOutputParser.CombineInstalls) - so an update is only flagged when the newest install is outdated.
             var combined = WingetOutputParser.CombineInstalls([upgradeRow, row])!;
-            if (upgradeRow.HasAvailable && !combined.HasAvailable)
+            if (!combined.HasAvailable)
+            {
+                // The id stays the one of the install that counts, not the one of the older install winget offers to upgrade.
                 _logger.LogDebug("{AppId}: winget's upgrade listing offers {Available} for the {Older} install of '{UpgradeId}', but {Installed} is installed as well; the highest installed version counts, so there is no update.",
                     app.AppId, upgradeRow.Available, upgradeRow.Version, upgradeRow.Id, combined.Version);
+            }
+            else
+            {
+                var configured = candidates.FirstOrDefault(c => string.Equals(c, upgradeRow.Id, StringComparison.OrdinalIgnoreCase));
+                if (!string.Equals(upgradeRow.Id, matchedId, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (configured is not null)
+                        _logger.LogDebug("{AppId}: winget's upgrade listing names '{UpgradeId}' (list matched '{ListId}').", app.AppId, upgradeRow.Id, matchedId);
+                    else
+                        _logger.LogInformation("{AppId}: resolved winget id '{UpgradeId}' from winget's {Context}-scope upgrade listing by name ('{Name}'); the installed product was listed as '{ListId}'.",
+                            app.AppId, upgradeRow.Id, context.Context, upgradeRow.Name, matchedId);
+                }
+                matchedId = configured ?? upgradeRow.Id;
+            }
             row = combined;
         }
         var installedVersion = string.IsNullOrWhiteSpace(row.Version) ? null : row.Version;
@@ -607,7 +629,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         if (run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade)
         {
             _logger.LogInformation("{AppId}: already up to date ({Version}).", app.AppId, newVersion);
-            return UpgradeOutcome.Final(InstallResult.Ok("already up to date", run.ExitCode) with { InstalledVersion = newVersion });
+            return UpgradeOutcome.Final(InstallResult.Ok("already up to date", run.ExitCode) with { InstalledVersion = newVersion, NothingInstalled = true });
         }
 
         if (!result.Success)

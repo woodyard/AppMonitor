@@ -593,7 +593,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
                 var sessionId = u.Context == InstallContext.User ? SessionFor(u.UserSid) : null;
                 // Detailed, because only the service (SYSTEM) can read the session and the elevation of a process the
-                // tray agent cannot even open; the tray needs both to explain the list in the close-apps dialog.
+                // tray agent cannot even open; the tray needs both to explain the list in the close-apps prompt.
                 var details = ProcessHelper.GetRunningDetails(u.ProcessNames, sessionId);
                 var blocking = details.Select(d => d.ProcessName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 if (!blocking.SequenceEqual(u.BlockingProcesses, StringComparer.OrdinalIgnoreCase)) { u.BlockingProcesses = [.. blocking]; changed = true; }
@@ -933,7 +933,15 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
 
         var doneAt = DateTimeOffset.UtcNow;
-        if (result.Success)
+        if (result.Success && result.NothingInstalled)
+        {
+            // Nothing ran, so there is no install to show: no history entry, no cloud event, no "installed" toast. The
+            // update is settled all the same, and PolicyEngine.Merge keeps a scan that still offers it from starting over.
+            _logger.LogInformation("Nothing to install for {App}: {Version} is already installed (the scan read {Scanned}, target {Target}); not recorded as an install",
+                snapshot.DisplayName, result.InstalledVersion ?? "the target version", snapshot.InstalledVersion, snapshot.AvailableVersion);
+            await MutateAsync(key, x => PolicyEngine.MarkInstalled(x, result, doneAt), ct).ConfigureAwait(false);
+        }
+        else if (result.Success)
         {
             _logger.LogInformation("Installed {App} {Version}{Reboot}: {Message}", snapshot.DisplayName, result.InstalledVersion ?? snapshot.AvailableVersion,
                 result.RebootRequired ? " (reboot required)" : "", result.Message ?? "ok");

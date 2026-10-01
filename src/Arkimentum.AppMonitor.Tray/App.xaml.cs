@@ -43,7 +43,7 @@ public partial class App : Application
         _instance = new SingleInstance();
         if (!_instance.TryAcquire())
         {
-            // Another agent already owns this session: ask it to come forward and leave.
+            // Another agent already owns this session: hand it the command line (it comes forward only for --show) and leave.
             SingleInstance.SignalPrimary(e.Args);
             _instance.Dispose();
             _instance = null;
@@ -162,6 +162,12 @@ public partial class App : Application
     {
         Dispatcher.BeginInvoke(() =>
         {
+            if (!CommandLineOptions.OpensWindowOfRunningAgent(args))
+            {
+                // The logon's second start (service launcher and Run value both start the agent): nothing to show.
+                _log?.LogInformation("A second instance started ({Args}) and left; this one stays in the tray", string.Join(" ", args));
+                return;
+            }
             _log?.LogInformation("A second instance asked this one to come forward ({Args})", string.Join(" ", args));
             _host?.Services.GetRequiredService<IWindowService>().ShowMain();
         });

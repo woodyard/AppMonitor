@@ -33,5 +33,6 @@
     <!-- The close-apps prompt's rules (what the toast says, and what no answer means), with the time formatting it uses. -->
     <Compile Include="..\Arkimentum.AppMonitor.Tray\Services\CloseAppsPrompt.cs" Link="Tray\CloseAppsPrompt.cs" />
     <Compile Include="..\Arkimentum.AppMonitor.Tray\Infrastructure\TimeFormat.cs" Link="Tray\TimeFormat.cs" />
+    <Compile Include="..\Arkimentum.AppMonitor.Tray\Infrastructure\CommandLineOptions.cs" Link="Tray\CommandLineOptions.cs" />
   </ItemGroup>
 </Project>

@@ -17,7 +17,10 @@ public sealed class SingleInstance : IDisposable
     private RegisteredWaitHandle? _registration;
     private bool _owned;
 
-    /// <summary>Raised on a thread-pool thread when another instance asks this one to come forward.</summary>
+    /// <summary>
+    /// Raised on a thread-pool thread when another instance started and left, with its command line. Whether that
+    /// brings the window forward is the command line's say (<see cref="CommandLineOptions.OpensWindowOfRunningAgent"/>).
+    /// </summary>
     public event Action<string[]>? Activated;
 
     public bool IsPrimary => _owned;

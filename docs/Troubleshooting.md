@@ -173,7 +173,9 @@ Check in this order:
 5. Start it by hand in the user's session and read the tray log:
    `& "$env:ProgramFiles\Arkimentum\AppMonitor\Tray\Arkimentum.AppMonitor.Tray.exe"`
 6. Only one instance runs per session (mutex `Local\Arkimentum.AppMonitor.Tray`); a second start exits
-   silently by design.
+   and leaves the running agent in the notification area. Add `--show` to make it open its window.
+   (Agents up to 1.1.40 opened the window on any second start, and every logon has one - the service
+   and the Run value both start the agent - so the window appeared about half a minute after sign-in.)
 7. The icon may be hidden in the notification-area overflow - check Taskbar settings.
 8. No toasts at all, but the icon works: `NotificationsEnabled` is 0, or Windows Focus assist /
    notification settings suppress them for `Arkimentum.AppMonitor.Tray`.

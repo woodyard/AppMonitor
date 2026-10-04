@@ -62,12 +62,22 @@ else
                 <thead>
                     <tr>
                         <th class="tick"></th>
-                        <th>Application</th>
-                        <th>winget id</th>
-                        <th class="num">Devices</th>
-                        <th class="num">Updatable</th>
+                        <th aria-sort="@AriaSort(InventorySortKey.Name)">
+                            <button type="button" class="th-sort @Active(InventorySortKey.Name)" @onclick="() => SortBy(InventorySortKey.Name)">Application @Arrow(InventorySortKey.Name)</button>
+                        </th>
+                        <th aria-sort="@AriaSort(InventorySortKey.WingetId)">
+                            <button type="button" class="th-sort @Active(InventorySortKey.WingetId)" @onclick="() => SortBy(InventorySortKey.WingetId)">winget id @Arrow(InventorySortKey.WingetId)</button>
+                        </th>
+                        <th class="num" aria-sort="@AriaSort(InventorySortKey.Devices)">
+                            <button type="button" class="th-sort @Active(InventorySortKey.Devices)" @onclick="() => SortBy(InventorySortKey.Devices)">Devices @Arrow(InventorySortKey.Devices)</button>
+                        </th>
+                        <th class="num" aria-sort="@AriaSort(InventorySortKey.Updatable)">
+                            <button type="button" class="th-sort @Active(InventorySortKey.Updatable)" @onclick="() => SortBy(InventorySortKey.Updatable)">Updatable @Arrow(InventorySortKey.Updatable)</button>
+                        </th>
                         <th>Versions</th>
-                        <th>Last seen</th>
+                        <th aria-sort="@AriaSort(InventorySortKey.LastSeen)">
+                            <button type="button" class="th-sort @Active(InventorySortKey.LastSeen)" @onclick="() => SortBy(InventorySortKey.LastSeen)">Last seen @Arrow(InventorySortKey.LastSeen)</button>
+                        </th>
                     </tr>
                 </thead>
                 <tbody>
@@ -120,11 +130,30 @@ else
     private readonly HashSet<string> _selected = new(StringComparer.OrdinalIgnoreCase);
     private string _search = string.Empty;
     private bool _onlyUnmonitored;
+    private InventorySortKey _sortKey = InventorySortKey.Name;
+    private bool _sortDescending;
 
     /// <summary>The server searches these fields too, so a filter typed here finds what its search would find.</summary>
-    private List<OrganizationInventoryItem> Filtered => _items
-        .Where(i => Matches(i, _search))
-        .ToList();
+    private List<OrganizationInventoryItem> Filtered =>
+        InventorySort.Apply(_items.Where(i => Matches(i, _search)), _sortKey, _sortDescending);
+
+    /// <summary>A click on the sorted column flips the direction; a click on another column sorts by it in its natural direction.</summary>
+    private void SortBy(InventorySortKey key)
+    {
+        if (_sortKey == key) _sortDescending = !_sortDescending;
+        else
+        {
+            _sortKey = key;
+            _sortDescending = InventorySort.DefaultDescending(key);
+        }
+    }
+
+    private string? Active(InventorySortKey key) => _sortKey == key ? "th-sort-active" : null;
+
+    private string AriaSort(InventorySortKey key) => _sortKey != key ? "none" : _sortDescending ? "descending" : "ascending";
+
+    private MarkupString Arrow(InventorySortKey key) =>
+        new(_sortKey != key ? "<span class=\"sort-arrow\">&#8597;</span>" : _sortDescending ? "<span class=\"sort-arrow\">&#9660;</span>" : "<span class=\"sort-arrow\">&#9650;</span>");
 
     private int SelectedCount => _selected.Count;
 

@@ -227,7 +227,11 @@ public sealed partial class ConfigDocumentEditor
     {
         var id = item.CatalogAppId ?? (string.IsNullOrWhiteSpace(item.WingetId) ? null : item.WingetId.Trim());
         if (id is null) return Slug(CleanDisplayName(item.DisplayName));
-        return AppIdPattern.IsMatch(id) ? id : null;
+        if (AppIdPattern.IsMatch(id)) return id;
+        // A winget id may carry characters a registry key name must not ("Microsoft.VCRedist.2015+.x64",
+        // "Notepad++.Notepad++"). The AppId is then a slug of the id - the two VC++ architectures stay distinct
+        // ("microsoft-vcredist-2015-x64" / "-x86") - and the winget id itself is written verbatim.
+        return Slug(id) ?? Slug(CleanDisplayName(item.DisplayName));
     }
 
     /// <summary>

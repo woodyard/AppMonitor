@@ -28,13 +28,21 @@
             </Authorized>
         </AuthorizeView>
 
-        <main class="shell-content">
-            @if (Organizations.Error is { } error)
-            {
-                <Banner Kind="error" Message="@error" />
-            }
-            @Body
-        </main>
+        <div class="shell-main">
+            <main class="shell-content">
+                @if (Organizations.Error is { } error)
+                {
+                    <Banner Kind="error" Message="@error" />
+                }
+                @Body
+            </main>
+            @* The publish bar and its notifications belong to the layout: a real bottom bar under the scrolling content. *@
+            <AuthorizeView>
+                <Authorized>
+                    <PublishFooter />
+                </Authorized>
+            </AuthorizeView>
+        </div>
     </div>
 </div>
 

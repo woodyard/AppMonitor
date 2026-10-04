@@ -1,18 +1,33 @@
 @inject ConfigWorkspace Workspace
+@inject NavigationManager Navigation
 @implements IDisposable
 
 @*
-    The footer the Applications page and the Settings page share, because they edit one document between them.
+    The bottom bar of the layout for the one pending organization document, plus its notifications.
+
+    The bar lives in the layout, not in a page: it is a real bottom bar, never a sticky element floating in the
+    content. On the Applications and Settings pages it is always there (a quiet status line when nothing is pending);
+    on every other page it appears only while there are unpublished changes or a conflict, so a change started on the
+    Inventory page cannot be forgotten.
 
     Publishing is optimistic: the PUT carries the version the editor started from, and a 409 means somebody else
     published in the meantime. The two answers are spelled out rather than resolved silently - reload theirs, or
-    re-read and publish these edits on top.
+    re-read and publish these edits on top. Outcomes ("Published …", errors, the conflict) are notifications at the top
+    right: compact, dismissable, and a plain notice fades out by itself.
 *@
 
-@if (Workspace.HasDocument)
+@if (Workspace.HasDocument && (OnEditorPage || Workspace.IsDirty || Workspace.HasConflict))
 {
     <div class="publish-footer @(Workspace.IsDirty || Workspace.HasConflict ? "publish-open" : "publish-quiet")">
         <div class="publish-status">
+            @if (Workspace.HasConflict)
+            {
+                <span class="publish-badge publish-badge-conflict">Publish conflict</span>
+            }
+            else if (Workspace.IsDirty)
+            {
+                <span class="publish-badge">Unpublished changes</span>
+            }
             <span class="mono" title="The version this editor started from">@Display.OrNone(Workspace.ConfigVersion)</span>
             <span class="muted">
                 published @TimeFormat.Relative(Workspace.UpdatedUtc)
@@ -52,28 +67,100 @@
     </div>
 }
 
-@if (Workspace.HasConflict)
+@if (Workspace.Error is { Length: > 0 } || Workspace.Notice is { Length: > 0 })
 {
-    <Banner Kind="error" Message="@Workspace.Error">
-        <button type="button" class="btn btn-quiet" @onclick="Workspace.ResolveWithTheirsAsync">Reload theirs</button>
-        <button type="button" class="btn btn-danger" @onclick="Workspace.ResolveWithMineAsync">Publish mine over it</button>
-    </Banner>
+    <div class="toasts" aria-live="polite">
+        @if (Workspace.HasConflict)
+        {
+            <div class="toast toast-error" role="alert">
+                <div class="toast-body">
+                    <div class="toast-title">Somebody else published first</div>
+                    <div>@Workspace.Error</div>
+                    <div class="toast-actions">
+                        <button type="button" class="btn btn-quiet" @onclick="Workspace.ResolveWithTheirsAsync">Reload theirs</button>
+                        <button type="button" class="btn btn-danger" @onclick="Workspace.ResolveWithMineAsync">Publish mine over it</button>
+                    </div>
+                </div>
+            </div>
+        }
+        else if (Workspace.Error is { Length: > 0 } error)
+        {
+            <div class="toast toast-error" role="alert">
+                <div class="toast-body">
+                    <div class="toast-title">Not published</div>
+                    <div>@error</div>
+                </div>
+                <button type="button" class="toast-dismiss" title="Dismiss" @onclick="Workspace.ClearError">&times;</button>
+            </div>
+        }
+        @if (Workspace.Notice is { Length: > 0 } notice)
+        {
+            <div class="toast toast-notice" role="status">
+                <div class="toast-body">
+                    <div class="toast-title">Published</div>
+                    <div>@notice</div>
+                </div>
+                <button type="button" class="toast-dismiss" title="Dismiss" @onclick="Workspace.ClearNotice">&times;</button>
+            </div>
+        }
+    </div>
 }
-else
-{
-    <Banner Kind="error" Message="@Workspace.Error" OnDismiss="Workspace.ClearError" />
-}
-<Banner Kind="notice" Message="@Workspace.Notice" OnDismiss="Workspace.ClearNotice" />
 
 <HistoryDrawer IsOpen="_historyOpen" OnClose="() => _historyOpen = false" />
 
 @code {
+    /// <summary>How long a plain notice stays before it fades out on its own. Errors and conflicts stay until dismissed or resolved.</summary>
+    private static readonly TimeSpan NoticeLifetime = TimeSpan.FromSeconds(8);
+
     private string _comment = string.Empty;
     private bool _historyOpen;
+    private string? _timedNotice;
+    private CancellationTokenSource? _noticeTimer;
 
-    protected override void OnInitialized() => Workspace.Changed += OnChanged;
+    private bool OnEditorPage
+    {
+        get
+        {
+            var path = Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', '#')[0].Trim('/');
+            return path.Equals("applications", StringComparison.OrdinalIgnoreCase) || path.Equals("settings", StringComparison.OrdinalIgnoreCase);
+        }
+    }
 
-    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+    protected override void OnInitialized()
+    {
+        Workspace.Changed += OnChanged;
+        Navigation.LocationChanged += OnLocationChanged;
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e) => _ = InvokeAsync(StateHasChanged);
+
+    private void OnChanged() => _ = InvokeAsync(() =>
+    {
+        ArmNoticeTimer();
+        StateHasChanged();
+    });
+
+    /// <summary>Starts the fade-out clock for a new notice; a notice that changed or vanished cancels the previous clock.</summary>
+    private void ArmNoticeTimer()
+    {
+        var notice = Workspace.Notice;
+        if (notice == _timedNotice) return;
+        _timedNotice = notice;
+        _noticeTimer?.Cancel();
+        _noticeTimer = null;
+        if (string.IsNullOrEmpty(notice)) return;
+
+        var timer = _noticeTimer = new CancellationTokenSource();
+        _ = Task.Delay(NoticeLifetime, timer.Token).ContinueWith(t =>
+        {
+            if (t.IsCanceled) return;
+            _ = InvokeAsync(() =>
+            {
+                // Only the notice this clock was started for; a newer one has its own clock.
+                if (ReferenceEquals(_noticeTimer, timer) && Workspace.Notice == notice) Workspace.ClearNotice();
+            });
+        }, TaskScheduler.Default);
+    }
 
     private async Task PublishAsync()
     {
@@ -82,5 +169,10 @@ else
         if (!Workspace.IsDirty && !Workspace.HasConflict) _comment = string.Empty;
     }
 
-    public void Dispose() => Workspace.Changed -= OnChanged;
+    public void Dispose()
+    {
+        Workspace.Changed -= OnChanged;
+        Navigation.LocationChanged -= OnLocationChanged;
+        _noticeTimer?.Cancel();
+    }
 }

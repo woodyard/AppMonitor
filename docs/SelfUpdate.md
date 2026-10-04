@@ -64,8 +64,9 @@ zip. `.github/workflows/release.yml` writes it on every `v*` tag:
 1. **Check** - every `AgentUpdateCheckIntervalHours` (and on the `UpdateAgent` cloud command or the CLI switches), the
    manifest is resolved and the decision is logged: `UpToDate`, `ChannelMismatch`, `PinnedByTargetVersion`,
    `NoManifest` or `UpdateAvailable`.
-2. **Guard** - an update is postponed while an application install is in progress, or while an earlier agent update
-   started less than 30 minutes ago.
+2. **Guard** - an update is postponed while an application install is running or queued (checked again right before
+   the installer is started), or while an earlier agent update started less than 30 minutes ago. A scheduled check that
+   was postponed by an install is tried again after 5 minutes instead of at the next interval.
 3. **Download** - to `<StateDirectory>\AgentUpdates\<version>\` (`%ProgramData%\Arkimentum\AppMonitor\AgentUpdates`),
    then the SHA-256 is verified and the zip extracted into the same folder. The package must contain
    `Install-ArkimentumAppMonitor.ps1` and `Service\Arkimentum.AppMonitor.Service.exe`, or the update is abandoned.
@@ -85,6 +86,19 @@ zip. `.github/workflows/release.yml` writes it on every `v*` tag:
 
 In `--user-config` testing mode everything up to step 4 runs, but the installer is never started: the log says exactly
 what would have been executed.
+
+### Agent updates and application scans never overlap
+
+- An agent update check (scheduled, cloud command, tray or admin console) waits for a running application scan to
+  finish, and no scan starts while the check runs. The scheduled check is simply not started during a scan; it runs at
+  the next cloud sync tick (15 s).
+- Once a newer release is being downloaded, and until the installer has replaced the service (at most 30 minutes after
+  it was started), no scan runs and no application install, close prompt or forced close starts. Scheduled installs
+  stay scheduled and run in the restarted service.
+- At service start the first scan waits for the first agent update check (it runs about 10 seconds after the start,
+  right after the configuration poll; at most 10 minutes). A device that is behind therefore updates the agent first
+  and looks for application updates with the new one. Due or requested scans are postponed, never dropped, and the
+  log says why (`Scan (scheduled) postponed: ...`).
 
 ## Command line
 

@@ -206,6 +206,43 @@ public class AgentUpdaterTests
         finally { File.Delete(path); }
     }
 
+    // ------------------------------------------------------------------ agent updates before application scans
+
+    [Fact]
+    public void A_scan_waits_for_the_agent_update_check_that_runs_at_start() =>
+        Assert.NotNull(UpdateCoordinator.ScanHold(updaterAvailable: true, agentUpdateActivity: null, replacementUnderway: null,
+            firstAgentCheckSettled: false, sinceStart: TimeSpan.FromSeconds(5)));
+
+    [Fact]
+    public void A_scan_runs_once_the_first_agent_update_check_is_over() =>
+        Assert.Null(UpdateCoordinator.ScanHold(updaterAvailable: true, agentUpdateActivity: null, replacementUnderway: null,
+            firstAgentCheckSettled: true, sinceStart: TimeSpan.FromSeconds(30)));
+
+    [Fact]
+    public void A_first_agent_update_check_that_never_ends_holds_scans_only_for_a_while() =>
+        Assert.Null(UpdateCoordinator.ScanHold(updaterAvailable: true, agentUpdateActivity: null, replacementUnderway: null,
+            firstAgentCheckSettled: false, sinceStart: UpdateCoordinator.FirstAgentCheckWait));
+
+    [Fact]
+    public void A_scan_waits_while_an_agent_update_check_runs() =>
+        Assert.Equal("Agent update check (scheduled)",
+            UpdateCoordinator.ScanHold(updaterAvailable: true, agentUpdateActivity: "Agent update check (scheduled)", replacementUnderway: null,
+                firstAgentCheckSettled: true, sinceStart: TimeSpan.FromHours(3)));
+
+    [Fact]
+    public void A_scan_waits_for_the_restart_while_the_agent_is_being_replaced()
+    {
+        var hold = UpdateCoordinator.ScanHold(updaterAvailable: true, agentUpdateActivity: null, replacementUnderway: "the agent is being replaced by 1.1.42",
+            firstAgentCheckSettled: true, sinceStart: TimeSpan.FromHours(3));
+        Assert.NotNull(hold);
+        Assert.StartsWith("the agent is being replaced by 1.1.42", hold);
+    }
+
+    [Fact]
+    public void Without_a_self_updater_nothing_holds_a_scan() =>
+        Assert.Null(UpdateCoordinator.ScanHold(updaterAvailable: false, agentUpdateActivity: null, replacementUnderway: null,
+            firstAgentCheckSettled: false, sinceStart: TimeSpan.Zero));
+
     // ------------------------------------------------------------------ client-initiated update (UpdateAgentMessage)
 
     [Fact]

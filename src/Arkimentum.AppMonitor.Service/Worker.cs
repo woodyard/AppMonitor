@@ -50,6 +50,7 @@ public sealed class Worker : BackgroundService
             var lastTray = DateTimeOffset.MinValue;
             var lastPolicy = DateTimeOffset.MinValue;
             var lastPrerequisites = DateTimeOffset.MinValue;
+            string? lastHold = null;
 
             // Prerequisites (winget) are checked once before the first scan so a fresh image gets winget without any user action.
             if (settings.WingetEnabled)
@@ -84,11 +85,21 @@ public sealed class Worker : BackgroundService
                     if (_coordinator.ScanRequested || (_coordinator.NextScanUtc is { } due && now >= due))
                     {
                         var reason = _coordinator.ScanRequested ? "requested" : "scheduled";
-                        await _coordinator.RunScanAsync(reason, stoppingToken).ConfigureAwait(false);
-                        if (_coordinator.NextScanUtc is null || _coordinator.NextScanUtc <= DateTimeOffset.UtcNow)
-                            _coordinator.NextScanUtc = DateTimeOffset.UtcNow + _settings.Current.ScanInterval;
-                        lastPolicy = DateTimeOffset.UtcNow;
-                        continue;
+                        // Agent updates come first: the scan stays due (or requested) and runs once the hold is gone,
+                        // in the restarted service when the agent was replaced.
+                        if (_coordinator.ScanHoldReason() is { } hold)
+                        {
+                            if (hold != lastHold) _logger.LogInformation("Scan ({Reason}) postponed: {Hold}", reason, hold);
+                            lastHold = hold;
+                        }
+                        else if (await _coordinator.RunScanAsync(reason, stoppingToken).ConfigureAwait(false))
+                        {
+                            lastHold = null;
+                            if (_coordinator.NextScanUtc is null || _coordinator.NextScanUtc <= DateTimeOffset.UtcNow)
+                                _coordinator.NextScanUtc = DateTimeOffset.UtcNow + _settings.Current.ScanInterval;
+                            lastPolicy = DateTimeOffset.UtcNow;
+                            continue;
+                        }
                     }
 
                     if (now - lastPolicy >= _settings.Current.PolicyTick)

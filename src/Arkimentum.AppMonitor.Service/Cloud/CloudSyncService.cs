@@ -169,12 +169,9 @@ public sealed class CloudSyncService : BackgroundService
             await _pollLock.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                if (now >= _retryAfterUtc && await EnsureEnrolledAsync(settings, ct).ConfigureAwait(false))
-                {
-                    if (settings.CloudConfigEnabled && now >= _nextConfigUtc) await PollConfigAsync(settings, ct).ConfigureAwait(false);
-                    if (settings.CloudReportingEnabled && (_reportRequested || DateTimeOffset.UtcNow >= _nextReportUtc))
-                        await SendReportAsync(settings, "scheduled", ct).ConfigureAwait(false);
-                }
+                if (now >= _retryAfterUtc && await EnsureEnrolledAsync(settings, ct).ConfigureAwait(false)
+                    && settings.CloudConfigEnabled && now >= _nextConfigUtc)
+                    settings = await PollConfigAsync(settings, ct).ConfigureAwait(false);
             }
             finally { _pollLock.Release(); }
         }
@@ -184,12 +181,58 @@ public sealed class CloudSyncService : BackgroundService
             _logger.LogInformation("Cloud sync is idle: CloudServerUrl/CloudOrganizationId are not configured");
         }
 
-        if (DateTimeOffset.UtcNow >= _nextAgentCheckUtc)
+        // After the configuration poll (it may pin AgentTargetVersion) and before the report: the first scan waits for
+        // this check, so a device that is behind updates the agent before it looks for application updates.
+        await CheckAgentUpdateIfDueAsync(settings, ct).ConfigureAwait(false);
+
+        if (settings.CloudConfigured && settings.CloudReportingEnabled && (_reportRequested || DateTimeOffset.UtcNow >= _nextReportUtc))
+        {
+            await _pollLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (DateTimeOffset.UtcNow >= _retryAfterUtc && await EnsureEnrolledAsync(settings, ct).ConfigureAwait(false))
+                    await SendReportAsync(settings, "scheduled", ct).ConfigureAwait(false);
+            }
+            finally { _pollLock.Release(); }
+        }
+    }
+
+    /// <summary>How soon a scheduled agent update check is tried again when an application install stood in its way.</summary>
+    private static readonly TimeSpan AgentCheckRetryAfterBlocked = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The scheduled agent update check. Never during a scan: it waits for the next tick instead of holding up the
+    /// configuration polls (the updater would wait for the scan itself). An install that kept the agent from replacing
+    /// itself gets it tried again in a few minutes rather than at the next interval.
+    /// </summary>
+    private async Task CheckAgentUpdateIfDueAsync(AgentSettings settings, CancellationToken ct)
+    {
+        if (DateTimeOffset.UtcNow < _nextAgentCheckUtc) return;
+        if (!settings.AgentAutoUpdate)
         {
             _nextAgentCheckUtc = DateTimeOffset.UtcNow + TimeSpan.FromHours(Math.Clamp(settings.AgentUpdateCheckIntervalHours, 1, 720));
-            if (settings.AgentAutoUpdate) await _updater.UpdateAsync("scheduled", null, ct).ConfigureAwait(false);
-            else _logger.LogDebug("Agent self-update is disabled (AgentAutoUpdate=0)");
+            _logger.LogDebug("Agent self-update is disabled (AgentAutoUpdate=0)");
+            _coordinator.AgentUpdateCheckSettled();
+            return;
         }
+        if (_coordinator.ScanInProgress)
+        {
+            _logger.LogDebug("Agent update check postponed: a scan is running");
+            return;
+        }
+
+        _nextAgentCheckUtc = DateTimeOffset.UtcNow + TimeSpan.FromHours(Math.Clamp(settings.AgentUpdateCheckIntervalHours, 1, 720));
+        try
+        {
+            var outcome = await _updater.UpdateAsync("scheduled", null, ct).ConfigureAwait(false);
+            if (outcome.Action == AgentUpdateAction.Blocked && outcome.Manifest is not null)
+            {
+                _nextAgentCheckUtc = DateTimeOffset.UtcNow + AgentCheckRetryAfterBlocked;
+                _logger.LogInformation("Agent update to {Version} will be tried again at {Time}: {Reason}",
+                    outcome.Manifest.Version, _nextAgentCheckUtc.ToLocalTime().ToString("t"), outcome.Reason);
+            }
+        }
+        finally { _coordinator.AgentUpdateCheckSettled(); }
     }
 
     // =================================================================================================================
@@ -305,7 +348,8 @@ public sealed class CloudSyncService : BackgroundService
     // Configuration polling + commands
     // =================================================================================================================
 
-    private async Task PollConfigAsync(AgentSettings settings, CancellationToken ct)
+    /// <summary>Polls the organization configuration; returns the settings as they are afterwards (reloaded when it changed).</summary>
+    private async Task<AgentSettings> PollConfigAsync(AgentSettings settings, CancellationToken ct)
     {
         _etag ??= _cache.Load()?.ConfigVersion;
         var url = _credential!.ServerUrl + CloudRoutes.Config;
@@ -357,6 +401,7 @@ public sealed class CloudSyncService : BackgroundService
             _logger.LogError(ex, "Polling the organization configuration from {Url} failed", url);
             Backoff(ex.Message);
         }
+        return settings;
     }
 
     private TimeSpan ConfigInterval(AgentSettings settings)

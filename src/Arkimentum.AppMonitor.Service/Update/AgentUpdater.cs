@@ -80,6 +80,12 @@ public interface IAgentSelfUpdate
 
     /// <summary>Checks and, when a newer release applies, downloads it, verifies it and starts its installer.</summary>
     Task<AgentUpdateOutcome> UpdateAsync(string reason, string? targetVersionOverride, CancellationToken ct);
+
+    /// <summary>
+    /// Non-null from the moment a newer release is being downloaded until the service is replaced (at most 30 minutes
+    /// after the installer was started): what is happening, for a log line. Scans and installs wait meanwhile.
+    /// </summary>
+    string? ReplacementUnderway(DateTimeOffset now);
 }
 
 /// <summary>
@@ -114,6 +120,7 @@ public sealed class AgentUpdater : IAgentSelfUpdate
     private AgentUpdateOutcome? _lastOutcome;
     private DateTimeOffset? _lastCheckUtc;
     private bool _inProgress;
+    private DateTimeOffset? _launchedUtc;
 
     public AgentUpdater(ILogger<AgentUpdater> logger, ILoggerFactory loggerFactory, SettingsProvider settings,
         UpdateCoordinator coordinator, AgentUpdaterOptions options)
@@ -159,6 +166,18 @@ public sealed class AgentUpdater : IAgentSelfUpdate
                     Enabled = _settings.Current.AgentAutoUpdate,
                 };
             }
+        }
+    }
+
+    public string? ReplacementUnderway(DateTimeOffset now)
+    {
+        lock (_statusLock)
+        {
+            if (!_inProgress) return null;
+            var version = _lastOutcome?.Manifest?.Version ?? "a newer release";
+            if (_launchedUtc is not { } launched) return $"the agent update to {version} is being downloaded";
+            // An installer that has not replaced the service after this long has failed; the agent carries on as it is.
+            return now - launched < MarkerTimeout ? $"the agent is being replaced by {version}" : null;
         }
     }
 
@@ -231,9 +250,10 @@ public sealed class AgentUpdater : IAgentSelfUpdate
         return null;
     }
 
-    /// <summary>Resolves and decides, without downloading anything (<c>--check-update</c>).</summary>
+    /// <summary>Resolves and decides, without downloading anything (<c>--check-update</c>). Never runs during a scan.</summary>
     public async Task<AgentUpdateOutcome> CheckAsync(string reason, string? targetVersionOverride, CancellationToken ct) =>
-        Remember(await CheckCoreAsync(reason, targetVersionOverride, ct).ConfigureAwait(false));
+        Remember(await _coordinator.ExclusiveOfScansAsync($"Agent update check ({reason})",
+            () => CheckCoreAsync(reason, targetVersionOverride, ct), ct).ConfigureAwait(false));
 
     private async Task<AgentUpdateOutcome> CheckCoreAsync(string reason, string? targetVersionOverride, CancellationToken ct)
     {
@@ -261,7 +281,8 @@ public sealed class AgentUpdater : IAgentSelfUpdate
 
     /// <summary>
     /// The full pipeline: resolve, decide, download, verify SHA-256, extract, and hand over to the release's installer.
-    /// Safe to call concurrently - only one run at a time; never throws.
+    /// Safe to call concurrently - only one run at a time; never throws. Waits for a running scan and keeps scans out
+    /// meanwhile; once the installer is started they stay held until the restart (<see cref="ReplacementUnderway"/>).
     /// </summary>
     public async Task<AgentUpdateOutcome> UpdateAsync(string reason, string? targetVersionOverride, CancellationToken ct)
     {
@@ -272,7 +293,8 @@ public sealed class AgentUpdater : IAgentSelfUpdate
         // last outcome may still name an older release, which clients would show as "Updating to <old version>").
         try
         {
-            return Remember(await UpdateCoreAsync(reason, targetVersionOverride, ct).ConfigureAwait(false));
+            return Remember(await _coordinator.ExclusiveOfScansAsync($"Agent update ({reason})",
+                () => UpdateCoreAsync(reason, targetVersionOverride, ct), ct).ConfigureAwait(false));
         }
         finally
         {
@@ -283,6 +305,7 @@ public sealed class AgentUpdater : IAgentSelfUpdate
             {
                 cleared = _inProgress && _lastOutcome?.Action != AgentUpdateAction.Launched;
                 _inProgress = _lastOutcome?.Action == AgentUpdateAction.Launched;
+                _launchedUtc = _inProgress ? DateTimeOffset.UtcNow : null;
             }
             _gate.Release();
             // A download or verification that failed takes the banner down in every client, not at the next scan.
@@ -345,6 +368,13 @@ public sealed class AgentUpdater : IAgentSelfUpdate
             {
                 _logger.LogError(ex, "Agent update: downloading or extracting {Package} failed", manifest.PackageUrl);
                 return outcome with { Action = AgentUpdateAction.Failed, Reason = "Download or extraction failed: " + ex.Message };
+            }
+
+            // Installs are held from the moment the download began, but one queued just before may have started since.
+            if (_coordinator.InstallInProgress)
+            {
+                _logger.LogInformation("Agent update to {Version} postponed: an application install started while the package was downloaded", manifest.Version);
+                return outcome with { Action = AgentUpdateAction.Blocked, Reason = "An application install is in progress; the agent update is postponed", PackageDirectory = directory };
             }
 
             WriteMarker(new AgentUpdateMarker

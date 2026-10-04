@@ -29,6 +29,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     private readonly InstalledAppScanner _scanner;
     private readonly TrayLauncher _trayLauncher;
 
+    /// <summary>Held by a scan, and by every agent update check or update (<see cref="ExclusiveOfScansAsync"/>): the two never overlap.</summary>
     private readonly SemaphoreSlim _scanLock = new(1, 1);
     private readonly SemaphoreSlim _policyLock = new(1, 1);
     private readonly SemaphoreSlim _installLock = new(1, 1);
@@ -96,6 +97,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     }
 
     public bool ScanRequested => _scanRequested;
+    public bool ScanInProgress => _scanInProgress;
     public DateTimeOffset? NextScanUtc { get => _state.NextScanUtc; set => _state.NextScanUtc = value; }
     public DateTimeOffset? LastScanUtc => _state.LastScanUtc;
 
@@ -103,6 +105,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     {
         var s = _settings.Reload();
         _state = _store.Load(s);
+        _startedUtc = DateTimeOffset.UtcNow;
         BackfillInstallHistory(s);
         ImpersonationGuard.EnableDebugPrivilege(_logger);
         _pipe.Start();
@@ -251,10 +254,16 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     // Scanning
     // =====================================================================================================================
 
-    public async Task RunScanAsync(string reason, CancellationToken ct)
+    /// <summary>Runs one scan. False when it did not run: another scan, or an agent update check, holds the scan lock.</summary>
+    public async Task<bool> RunScanAsync(string reason, CancellationToken ct)
     {
         ImpersonationGuard.RevertIfImpersonating(_logger, $"scan ({reason})");
-        if (!await _scanLock.WaitAsync(0, ct).ConfigureAwait(false)) { _logger.LogDebug("Scan already running; ignoring request ({Reason})", reason); return; }
+        if (!await _scanLock.WaitAsync(0, ct).ConfigureAwait(false))
+        {
+            if (_agentUpdateActivity is { } activity) _logger.LogInformation("Scan ({Reason}) postponed: {Activity}", reason, activity);
+            else _logger.LogDebug("Scan already running; ignoring request ({Reason})", reason);
+            return false;
+        }
         var sw = Stopwatch.StartNew();
         _scanInProgress = true;
         _scanRequested = false;
@@ -449,6 +458,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         await BroadcastStateAsync(ct).ConfigureAwait(false);
         await EvaluatePoliciesAsync(ct).ConfigureAwait(false);
         RaiseScanCompleted();
+        return true;
     }
 
     /// <summary>
@@ -571,6 +581,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     public async Task EvaluatePoliciesAsync(CancellationToken ct)
     {
         ImpersonationGuard.RevertIfImpersonating(_logger, "policy evaluation");
+        // Nothing new starts while the agent replaces itself: the installer stops this service, and an application
+        // install it interrupted would be lost. What is scheduled stays scheduled and runs after the restart.
+        if (SelfUpdater?.ReplacementUnderway(DateTimeOffset.UtcNow) is { } replacing)
+        {
+            _logger.LogDebug("Policy evaluation held: {Reason}", replacing);
+            return;
+        }
         if (!await _policyLock.WaitAsync(0, ct).ConfigureAwait(false)) return;
         var toInstall = new List<PendingUpdate>();
         try
@@ -1530,6 +1547,70 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// points, where a client-initiated update is refused.
     /// </summary>
     public IAgentSelfUpdate? SelfUpdater { get; set; }
+
+    // =====================================================================================================================
+    // Agent updates before application scans
+    // =====================================================================================================================
+
+    /// <summary>
+    /// How long after the start the first scan waits for the first scheduled agent update check. Only a safety net:
+    /// the cloud sync loop runs that check about ten seconds after the start (<see cref="AgentUpdateCheckSettled"/>).
+    /// </summary>
+    public static readonly TimeSpan FirstAgentCheckWait = TimeSpan.FromMinutes(10);
+
+    private DateTimeOffset _startedUtc = DateTimeOffset.UtcNow;
+    private volatile bool _firstAgentCheckSettled;
+    /// <summary>What the agent updater is doing while it holds the scan lock, for the log line of a postponed scan.</summary>
+    private volatile string? _agentUpdateActivity;
+
+    /// <summary>Called by the cloud sync loop once its first scheduled agent update check is over, whatever it concluded.</summary>
+    public void AgentUpdateCheckSettled()
+    {
+        if (_firstAgentCheckSettled) return;
+        _firstAgentCheckSettled = true;
+        _logger.LogDebug("First agent update check settled {Elapsed:F0}s after the start", (DateTimeOffset.UtcNow - _startedUtc).TotalSeconds);
+    }
+
+    /// <summary>
+    /// Runs an agent update check or update while no scan runs: waits for a running scan to finish and keeps new
+    /// scans out until <paramref name="work"/> is done. Agent and application updates are never looked for at once.
+    /// </summary>
+    public async Task<T> ExclusiveOfScansAsync<T>(string activity, Func<Task<T>> work, CancellationToken ct)
+    {
+        if (!await _scanLock.WaitAsync(0, ct).ConfigureAwait(false))
+        {
+            _logger.LogInformation("{Activity}: waiting for the running scan to finish", activity);
+            await _scanLock.WaitAsync(ct).ConfigureAwait(false);
+        }
+        _agentUpdateActivity = activity;
+        try { return await work().ConfigureAwait(false); }
+        finally
+        {
+            _agentUpdateActivity = null;
+            _scanLock.Release();
+        }
+    }
+
+    /// <summary>Why a scan that is due must wait now, or null when it may run (see <see cref="ScanHold"/>).</summary>
+    public string? ScanHoldReason()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var updater = SelfUpdater;
+        return ScanHold(updater is not null, _agentUpdateActivity, updater?.ReplacementUnderway(now), _firstAgentCheckSettled, now - _startedUtc);
+    }
+
+    /// <summary>
+    /// Pure rule for <see cref="ScanHoldReason"/>: a scan waits while an agent update check or update runs, while a
+    /// downloaded agent release replaces the service (the scan resumes in the restarted service), and after the start
+    /// until the first agent update check is over (at most <see cref="FirstAgentCheckWait"/>), so a device that is
+    /// behind updates the agent first and looks for application updates with the new one.
+    /// </summary>
+    public static string? ScanHold(bool updaterAvailable, string? agentUpdateActivity, string? replacementUnderway, bool firstAgentCheckSettled, TimeSpan sinceStart) =>
+        !updaterAvailable ? null
+        : replacementUnderway is not null ? replacementUnderway + "; application scans resume after the restart"
+        : agentUpdateActivity is not null ? agentUpdateActivity
+        : !firstAgentCheckSettled && sinceStart < FirstAgentCheckWait ? "waiting for the agent update check that runs at start"
+        : null;
 
     /// <summary>1 while a client-initiated check or update is running; a second request is refused rather than queued.</summary>
     private int _agentUpdateRequestRunning;

@@ -167,5 +167,15 @@
     "detectPublisherRegex": "Node\\.js Foundation|OpenJS Foundation",
     "processNames": [ "node" ],
     "notes": "winget only. The Node.js MSI product code appears in more than one winget manifest (OpenJS.NodeJS.LTS and the OpenJS.NodeJS.<major> lines), so `winget list` reports the install without a package id (\"multiple packages with strong match fields\"); the ids here settle it, LTS first. Verified 2026-09-29 on two devices with 24.19.0 and 26.4.0."
+  },
+  {
+    "appId": "jabradirect",
+    "displayName": "Jabra Direct",
+    "source": "winget",
+    "context": "system",
+    "wingetId": "Jabra.Direct",
+    "detectDisplayNameRegex": "^Jabra Direct$",
+    "processNames": [ "jabra-direct" ],
+    "notes": "winget only (burn bundle). Installs machine-wide to C:\\Program Files (x86)\\Jabra\\Direct6; publisher GN Hearing A/S. Seen 2026-10-06 on H-SURFACELAP5 with 6.27.3702, winget offering 8.3.26701."
   }
 ]

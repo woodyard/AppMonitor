@@ -72,7 +72,14 @@ public sealed record AgentSettings
     // ---- agent self-update ----
     public bool AgentAutoUpdate { get; init; } = true;
     /// <summary>URL of the release manifest: a GitHub "latest release" API URL or a direct manifest.json URL. The keyword "cloud" uses the cloud API's mirror. Default: the official AppMonitor releases.</summary>
-    public const string DefaultUpdateFeedUrl = "https://api.github.com/repos/woodyard/AppMonitor/releases/latest";
+    /// <summary>
+    /// GitHub's download link for the latest release's <c>manifest.json</c>. Not the releases API: that allows 60
+    /// unauthenticated requests an hour per public IP, which networks shared with many others (Cloudflare WARP) use up
+    /// ("No release manifest could be resolved" on a 1.1.44 device, 2026-10-06). Before 1.1.46 the default was
+    /// <c>https://api.github.com/repos/woodyard/AppMonitor/releases/latest</c>; that form still works and falls back to
+    /// this link when the API refuses.
+    /// </summary>
+    public const string DefaultUpdateFeedUrl = "https://github.com/woodyard/AppMonitor/releases/latest/download/manifest.json";
     public string AgentUpdateFeedUrl { get; init; } = DefaultUpdateFeedUrl;
     public string AgentUpdateChannel { get; init; } = "stable";
     public int AgentUpdateCheckIntervalHours { get; init; } = 12;

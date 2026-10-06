@@ -117,6 +117,66 @@ public class AgentUpdaterTests
         Assert.Null(await feed.ResolveAsync(GitHubLatest, default));
     }
 
+    [Theory]
+    [InlineData(GitHubLatest, "https://github.com/acme/appmonitor/releases/latest/download/manifest.json")]
+    [InlineData("https://api.github.com/repos/acme/appmonitor/releases/tags/v1.2.3", "https://github.com/acme/appmonitor/releases/download/v1.2.3/manifest.json")]
+    [InlineData("https://api.github.com/repos/acme/appmonitor/releases", null)]
+    [InlineData(ManifestUrl, null)]
+    public void A_github_api_url_maps_to_the_releases_download_link(string apiUrl, string? expected) =>
+        Assert.Equal(expected, ReleaseFeed.DownloadLinkFor(apiUrl));
+
+    [Fact]
+    public void The_default_feed_is_the_download_link_not_the_rate_limited_api() =>
+        Assert.Equal(FeedKind.Manifest, ReleaseFeed.Classify(Models.AgentSettings.DefaultUpdateFeedUrl));
+
+    [Fact]
+    public async Task A_rate_limited_github_api_falls_back_to_the_download_link()
+    {
+        const string link = "https://github.com/acme/appmonitor/releases/latest/download/manifest.json";
+        var handler = new FakeUpdateHandler(request =>
+        {
+            if (request.RequestUri!.ToString() == link) return FakeUpdateHandler.Json(ManifestJson("2.1.0"));
+            var refused = new HttpResponseMessage(HttpStatusCode.Forbidden);
+            refused.Headers.TryAddWithoutValidation("x-ratelimit-remaining", "0");
+            return refused;
+        });
+        using var feed = new ReleaseFeed(NullLogger.Instance, handler);
+
+        var manifest = await feed.ResolveAsync(GitHubLatest, default);
+
+        Assert.Equal("2.1.0", manifest?.Version);
+        Assert.Null(feed.LastProblem);
+        Assert.Equal([GitHubLatest, link], handler.Requests.Select(r => r.RequestUri!.ToString()));
+    }
+
+    [Fact]
+    public async Task When_both_the_api_and_the_download_link_fail_the_reason_names_the_rate_limit()
+    {
+        var handler = new FakeUpdateHandler(request =>
+        {
+            if (request.RequestUri!.Host == "github.com") return new HttpResponseMessage(HttpStatusCode.NotFound);
+            var refused = new HttpResponseMessage(HttpStatusCode.Forbidden);
+            refused.Headers.TryAddWithoutValidation("x-ratelimit-remaining", "0");
+            return refused;
+        });
+        using var feed = new ReleaseFeed(NullLogger.Instance, handler);
+
+        Assert.Null(await feed.ResolveAsync(GitHubLatest, default));
+        Assert.Contains("403", feed.LastProblem);
+        Assert.Contains("rate limit", feed.LastProblem);
+        Assert.Contains("404", feed.LastProblem);
+    }
+
+    [Fact]
+    public async Task A_failed_manifest_url_says_what_answered()
+    {
+        var handler = new FakeUpdateHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        using var feed = new ReleaseFeed(NullLogger.Instance, handler);
+
+        Assert.Null(await feed.ResolveAsync(ManifestUrl, default));
+        Assert.Equal($"{ManifestUrl} answered 503 Service Unavailable", feed.LastProblem);
+    }
+
     [Fact]
     public async Task An_unsupported_feed_url_is_never_fetched()
     {

@@ -5,7 +5,7 @@ running, downloads and verifies the release package and hands over to that relea
 `Install-ArkimentumAppMonitor.ps1`, which stops the service, replaces the binaries and starts it again. Nothing else
 in the fleet has to be scripted.
 
-Self-update is on by default and reads the official releases at `https://api.github.com/repos/woodyard/AppMonitor/releases/latest`; set `AgentAutoUpdate=0` to turn it off, or point `AgentUpdateFeedUrl` at your own manifest, or at the keyword `cloud` to use the cloud API's mirror.
+Self-update is on by default and reads the official releases through `https://github.com/woodyard/AppMonitor/releases/latest/download/manifest.json` (GitHub's download link for the latest release's manifest; before 1.1.46 the releases API, whose 60 unauthenticated requests an hour per IP shared networks such as Cloudflare WARP can use up - a configured API URL now falls back to the download link when the API refuses); set `AgentAutoUpdate=0` to turn it off, or point `AgentUpdateFeedUrl` at your own manifest, or at the keyword `cloud` to use the cloud API's mirror.
 
 
 ## Configuration
@@ -16,7 +16,7 @@ Registry values under `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` (or the pre
 | Value | Meaning |
 | --- | --- |
 | `AgentAutoUpdate` | `1` (default) lets the service update itself on a timer. `0` = only on request. |
-| `AgentUpdateFeedUrl` | Where the manifest comes from (see below). Default: `https://api.github.com/repos/woodyard/AppMonitor/releases/latest`. The keyword `cloud` (or an empty value under policy) asks the cloud API's mirror instead. |
+| `AgentUpdateFeedUrl` | Where the manifest comes from (see below). Default: `https://github.com/woodyard/AppMonitor/releases/latest/download/manifest.json`. The keyword `cloud` (or an empty value under policy) asks the cloud API's mirror instead. |
 | `AgentUpdateChannel` | `stable` (default) or `preview`. A manifest from another channel is ignored. |
 | `AgentUpdateCheckIntervalHours` | How often the check runs (default 12, clamped to 1-720). |
 | `AgentTargetVersion` | Pins this device: a manifest **newer** than this version is skipped. Empty = always the latest. |

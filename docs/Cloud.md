@@ -130,7 +130,7 @@ to change the behaviour:
 | `CloudConfigEnabled` | DWORD | 1 | Apply the organization configuration. 0 = enrol and report, configure locally. |
 | `CloudReportingEnabled` | DWORD | 1 | Send inventory and update state. 0 = fetch configuration only. |
 | `AgentAutoUpdate` | DWORD | 1 | Let the agent replace itself with a newer release. |
-| `AgentUpdateFeedUrl` | SZ | `https://api.github.com/repos/woodyard/AppMonitor/releases/latest` | A GitHub releases API URL (`.../releases/latest` or `.../releases/tags/v1.2.0`) or a direct `manifest.json` URL. Empty = the cloud API's mirror. Public repositories only - no token is ever sent. |
+| `AgentUpdateFeedUrl` | SZ | `https://github.com/woodyard/AppMonitor/releases/latest/download/manifest.json` | A direct `manifest.json` URL (default: the latest release's manifest download link) or a GitHub releases API URL (`.../releases/latest` or `.../releases/tags/v1.2.0`) or a direct `manifest.json` URL. Empty = the cloud API's mirror. Public repositories only - no token is ever sent. |
 | `AgentUpdateChannel` | SZ | `stable` | `stable` or `preview`. |
 | `AgentUpdateCheckIntervalHours` | DWORD | 12 (1-720) | Hours between release checks. |
 | `AgentTargetVersion` | SZ | *(empty)* | Ceiling: a published version newer than this is skipped. Empty = newest in the channel. |

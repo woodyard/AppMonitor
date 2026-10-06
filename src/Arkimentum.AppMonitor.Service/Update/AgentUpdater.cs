@@ -234,20 +234,25 @@ public sealed class AgentUpdater : IAgentSelfUpdate
     // =================================================================================================================
 
     /// <summary>Resolves the manifest from the configured feed, or from the cloud API when no feed URL is set.</summary>
-    public async Task<ReleaseManifest?> ResolveManifestAsync(AgentSettings settings, CancellationToken ct)
+    public async Task<ReleaseManifest?> ResolveManifestAsync(AgentSettings settings, CancellationToken ct) =>
+        (await ResolveManifestWithReasonAsync(settings, ct).ConfigureAwait(false)).Manifest;
+
+    /// <summary>As <see cref="ResolveManifestAsync"/>, plus why the feed gave nothing (null when it did, or when it cannot say).</summary>
+    private async Task<(ReleaseManifest? Manifest, string? Problem)> ResolveManifestWithReasonAsync(AgentSettings settings, CancellationToken ct)
     {
         var channel = string.IsNullOrWhiteSpace(settings.AgentUpdateChannel) ? "stable" : settings.AgentUpdateChannel.Trim();
         if (!string.IsNullOrWhiteSpace(settings.AgentUpdateFeedUrl))
         {
             using var feed = new ReleaseFeed(_logger, _options.Handler, settings.ProxyUrl);
-            return await feed.ResolveAsync(settings.AgentUpdateFeedUrl, ct).ConfigureAwait(false);
+            var manifest = await feed.ResolveAsync(settings.AgentUpdateFeedUrl, ct).ConfigureAwait(false);
+            return (manifest, manifest is null ? feed.LastProblem : null);
         }
         if (CloudManifestResolver is not null && settings.CloudConfigured)
         {
             _logger.LogInformation("Agent update: no AgentUpdateFeedUrl configured; asking the cloud API for the {Channel} release", channel);
-            return await CloudManifestResolver(channel, ct).ConfigureAwait(false);
+            return (await CloudManifestResolver(channel, ct).ConfigureAwait(false), null);
         }
-        return null;
+        return (null, null);
     }
 
     /// <summary>Resolves and decides, without downloading anything (<c>--check-update</c>). Never runs during a scan.</summary>
@@ -266,7 +271,8 @@ public sealed class AgentUpdater : IAgentSelfUpdate
             string.IsNullOrWhiteSpace(targetVersionOverride ?? settings.AgentTargetVersion) ? "" : $", pinned to {targetVersionOverride ?? settings.AgentTargetVersion}");
 
         ReleaseManifest? manifest;
-        try { manifest = await ResolveManifestAsync(settings, ct).ConfigureAwait(false); }
+        string? problem;
+        try { (manifest, problem) = await ResolveManifestWithReasonAsync(settings, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
@@ -275,6 +281,8 @@ public sealed class AgentUpdater : IAgentSelfUpdate
         }
 
         var outcome = Decide(manifest, CurrentVersion, targetVersionOverride ?? settings.AgentTargetVersion, settings.AgentUpdateChannel, _logger);
+        // "No release manifest could be resolved" alone sent the user to the service log; the tray shows the reason.
+        if (outcome.Action == AgentUpdateAction.NoManifest && problem is not null) outcome = outcome with { Reason = $"{outcome.Reason}: {problem}" };
         _logger.LogInformation("Agent update decision: {Outcome}", outcome);
         return outcome;
     }

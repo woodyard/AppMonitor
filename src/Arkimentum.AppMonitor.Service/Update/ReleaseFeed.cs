@@ -20,8 +20,11 @@ public enum FeedKind
 
 /// <summary>
 /// Resolves a <see cref="ReleaseManifest"/> from the configured update feed. Two forms are supported: a direct
-/// <c>manifest.json</c> URL, and a GitHub releases API URL whose release carries a <c>manifest.json</c> asset (the
-/// manifest's <c>packageUrl</c> then points at the zip asset's <c>browser_download_url</c>). Public repositories only -
+/// <c>manifest.json</c> URL (the default is GitHub's "latest release" download link for that asset), and a GitHub
+/// releases API URL whose release carries a <c>manifest.json</c> asset (the manifest's <c>packageUrl</c> then points at
+/// the zip asset's <c>browser_download_url</c>). The API allows 60 unauthenticated requests an hour per public IP, which
+/// a network shared with many others (Cloudflare WARP's egress addresses) can use up before the agent asks, so a refused
+/// API request falls back to the release's download link, which is not counted. Public repositories only -
 /// authenticated/private feeds are a follow-up; use the cloud API's mirror for those.
 /// </summary>
 public sealed class ReleaseFeed : IDisposable
@@ -30,6 +33,9 @@ public sealed class ReleaseFeed : IDisposable
 
     private readonly ILogger _logger;
     private readonly HttpClient _http;
+
+    /// <summary>Why the last <see cref="ResolveAsync"/> returned null, in words for the tray and the console; null after a success.</summary>
+    public string? LastProblem { get; private set; }
 
     public ReleaseFeed(ILogger logger, HttpMessageHandler? handler = null, string? proxyUrl = null)
     {
@@ -63,6 +69,7 @@ public sealed class ReleaseFeed : IDisposable
     /// <summary>Fetches the manifest the feed points at, or null when the feed is unusable (always logged).</summary>
     public async Task<ReleaseManifest?> ResolveAsync(string? feedUrl, CancellationToken ct)
     {
+        LastProblem = null;
         var kind = Classify(feedUrl);
         switch (kind)
         {
@@ -75,6 +82,7 @@ public sealed class ReleaseFeed : IDisposable
                 return null;
             default:
                 _logger.LogWarning("Agent update: AgentUpdateFeedUrl '{Url}' is neither a manifest.json URL nor a GitHub releases API URL; ignoring it", feedUrl);
+                LastProblem = $"the update feed '{feedUrl}' is neither a manifest.json URL nor a GitHub releases API URL";
                 return null;
         }
     }
@@ -83,7 +91,11 @@ public sealed class ReleaseFeed : IDisposable
     {
         using var response = await _http.GetAsync(url, ct).ConfigureAwait(false);
         _logger.LogInformation("Agent update: GET {Url} -> {Status}", url, (int)response.StatusCode);
-        if (!response.IsSuccessStatusCode) return null;
+        if (!response.IsSuccessStatusCode)
+        {
+            LastProblem = $"{url} answered {(int)response.StatusCode} {response.ReasonPhrase}";
+            return null;
+        }
         var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         try
         {
@@ -91,8 +103,10 @@ public sealed class ReleaseFeed : IDisposable
             if (manifest is null || string.IsNullOrWhiteSpace(manifest.Version) || string.IsNullOrWhiteSpace(manifest.PackageUrl) || string.IsNullOrWhiteSpace(manifest.Sha256))
             {
                 _logger.LogWarning("Agent update: the manifest at {Url} is missing version, packageUrl or sha256", url);
+                LastProblem = $"the manifest at {url} is missing version, packageUrl or sha256";
                 return null;
             }
+            LastProblem = null;
             _logger.LogInformation("Agent update: manifest {Version} ({Channel}) published {Published}, package {Package} ({Size} bytes)",
                 manifest.Version, manifest.Channel, manifest.PublishedUtc?.ToString("u") ?? "?", manifest.PackageUrl, manifest.SizeBytes?.ToString() ?? "?");
             return manifest;
@@ -100,8 +114,33 @@ public sealed class ReleaseFeed : IDisposable
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "Agent update: the manifest at {Url} is not valid ReleaseManifest JSON", url);
+            LastProblem = $"the manifest at {url} is not valid JSON";
             return null;
         }
+    }
+
+    /// <summary>
+    /// The release's own download link for <c>manifest.json</c> that a GitHub releases API URL stands for:
+    /// <c>.../repos/{owner}/{repo}/releases/latest</c> → <c>https://github.com/{owner}/{repo}/releases/latest/download/manifest.json</c>,
+    /// <c>.../releases/tags/{tag}</c> → <c>.../releases/download/{tag}/manifest.json</c>. Null for any other shape. Pure.
+    /// </summary>
+    public static string? DownloadLinkFor(string apiUrl)
+    {
+        if (!Uri.TryCreate(apiUrl.Trim(), UriKind.Absolute, out var uri) || !uri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase)) return null;
+        var parts = uri.AbsolutePath.Trim('/').Split('/');
+        if (parts.Length < 4 || !parts[0].Equals("repos", StringComparison.OrdinalIgnoreCase) || !parts[3].Equals("releases", StringComparison.OrdinalIgnoreCase)) return null;
+        var repo = $"https://github.com/{parts[1]}/{parts[2]}/releases";
+        if (parts.Length == 5 && parts[4].Equals("latest", StringComparison.OrdinalIgnoreCase)) return $"{repo}/latest/download/{ManifestAssetName}";
+        if (parts.Length == 6 && parts[4].Equals("tags", StringComparison.OrdinalIgnoreCase) && parts[5].Length > 0) return $"{repo}/download/{parts[5]}/{ManifestAssetName}";
+        return null;
+    }
+
+    /// <summary>"403 Forbidden (rate limit used up)" for a GitHub API refusal: what the tray shows as the reason.</summary>
+    private static string DescribeApiRefusal(HttpResponseMessage response)
+    {
+        var status = $"{(int)response.StatusCode} {response.ReasonPhrase}";
+        var exhausted = response.Headers.TryGetValues("x-ratelimit-remaining", out var remaining) && remaining.FirstOrDefault() == "0";
+        return exhausted || (int)response.StatusCode == 429 ? status + " (its rate limit for this network is used up)" : status;
     }
 
     /// <summary>GitHub releases API: find the <c>manifest.json</c> asset of the release and read it.</summary>
@@ -114,7 +153,17 @@ public sealed class ReleaseFeed : IDisposable
         _logger.LogInformation("Agent update: GET {Url} -> {Status}", url, (int)response.StatusCode);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Agent update: the GitHub release feed {Url} returned {Status}", url, (int)response.StatusCode);
+            var refusal = DescribeApiRefusal(response);
+            _logger.LogWarning("Agent update: the GitHub release feed {Url} answered {Status}", url, refusal);
+            if (DownloadLinkFor(url) is { } link)
+            {
+                _logger.LogInformation("Agent update: reading the release's manifest from its download link {Url} instead", link);
+                var manifest = await GetManifestAsync(link, ct).ConfigureAwait(false);
+                if (manifest is not null) return manifest;
+                LastProblem = $"GitHub's API answered {refusal}, and {LastProblem}";
+                return null;
+            }
+            LastProblem = $"GitHub's API answered {refusal}";
             return null;
         }
 
@@ -123,6 +172,7 @@ public sealed class ReleaseFeed : IDisposable
         if (!doc.RootElement.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
         {
             _logger.LogWarning("Agent update: the GitHub release {Tag} has no assets", tag);
+            LastProblem = $"the GitHub release {tag} has no assets";
             return null;
         }
         foreach (var asset in assets.EnumerateArray())
@@ -135,6 +185,7 @@ public sealed class ReleaseFeed : IDisposable
             return await GetManifestAsync(download, ct).ConfigureAwait(false);
         }
         _logger.LogWarning("Agent update: the GitHub release {Tag} has no {Asset} asset; the release was not published by the release workflow", tag, ManifestAssetName);
+        LastProblem = $"the GitHub release {tag} has no {ManifestAssetName}";
         return null;
     }
 

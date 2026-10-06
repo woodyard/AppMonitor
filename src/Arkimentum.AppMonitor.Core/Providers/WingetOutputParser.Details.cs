@@ -48,7 +48,9 @@ public static partial class WingetOutputParser
     /// Parses the output of <c>winget list --id X --exact --details</c> into one record per installed row. Never throws;
     /// returns an empty list when no record is found. Pure, so the parsing is testable. A record starts at a line that
     /// looks like <c>Name [Id]</c> (optionally <c>(n/m) Name [Id]</c>) and collects the known <c>Key: Value</c> lines
-    /// after it; progress noise, banners and unknown lines are ignored, and a missing field stays null.
+    /// after it; progress noise, banners and unknown lines are ignored, and a missing field stays null. The indented
+    /// <c>source [version]</c> lines under "Available Upgrades:" are not records (winget 1.30 prints them for every
+    /// outdated row; seen on H-SURFACELAP5).
     /// </summary>
     public static IReadOnlyList<WingetInstalledDetails> ParseListDetails(string? output)
     {
@@ -66,10 +68,21 @@ public static partial class WingetOutputParser
                 Field(fields, "Installer Category"), Field(fields, "Installed Architecture")));
         }
 
+        // "Available Upgrades:" is followed by indented "<source> [<version>]" lines ("  winget [157.0.1]"), which look like
+        // a record header; they are skipped until the next line that is not indented.
+        var inUpgrades = false;
         foreach (var raw in CleanLines(output))
         {
+            var indented = raw.Length > 0 && char.IsWhiteSpace(raw[0]);
+            if (inUpgrades && indented) continue;
+            inUpgrades = false;
             var line = raw.Trim();
             var field = DetailsFieldRegex().Match(line);
+            if (field.Success && string.Equals(field.Groups["key"].Value.Trim(), "Available Upgrades", StringComparison.OrdinalIgnoreCase))
+            {
+                inUpgrades = true;
+                continue;
+            }
             if (field.Success && fields is not null)
             {
                 var key = DetailsFields.FirstOrDefault(k => string.Equals(k, field.Groups["key"].Value.Trim(), StringComparison.OrdinalIgnoreCase));

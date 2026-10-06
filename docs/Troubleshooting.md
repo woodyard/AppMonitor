@@ -442,6 +442,34 @@ shows no toast, records no history entry or event, and does not offer that versi
 one appears. The leftover entry itself is harmless then; to remove it, delete the key under
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall` whose `InstallLocation` no longer exists.
 
+### An MSIX copy is offered the classic build's update (agents up to 1.1.46)
+
+Symptom: a user-context update such as *Mozilla Firefox 157.0.0.0 -> 157.0.1 (Winget, User)* fails
+at every attempt with *winget could not upgrade 'Mozilla.Firefox' (User scope): no applicable upgrade
+found ... Installing over it with 'winget install --force' failed as well*, while the user's Firefox is
+the MSIX package and `winget show --id Mozilla.Firefox.MSIX` has nothing newer. The same leftover
+HKCU entry as above (156.0.1 under `Mozilla.Firefox`) carried the exe package's 157.0.1 over to the
+MSIX copy, and the `--force` fallback then tried to put the exe Firefox next to it.
+
+In agents after 1.1.46:
+
+- Across an application's winget ids, only the install that counts keeps an available version: an
+  older install of another package lends its offer to nobody (same id side by side, the .NET rule,
+  and the same version under two ids still count).
+- In a user's session, an offer the listings leave ambiguous (the upgrade listing names another id,
+  several rows under the offered id, one version under two configured ids) is checked once per scan:
+  `winget list --id X --exact --details` says whether the copy is an MSIX package, and
+  `winget show --id X --exact --installer-type msix` whether the offered package has an MSIX installer.
+  If not, the first other configured id that has one decides with its own version (Debug/Information:
+  *winget offers ... but the installed copy is the MSIX package ...; no update*). An MSIX package winget
+  manages by its only id (`Microsoft.WindowsAppRuntime.1.6`) keeps its offer for the service hand-over.
+- The `--force` fallback and the take-over never run a non-MSIX installer over an MSIX copy; the
+  update fails with *X is installed as an MSIX package; winget offers no MSIX update for it* and
+  nothing is started or handed to the service.
+- A failed update is retried automatically (up to three times) only 45 minutes or more after the
+  failure, so the tray's quick successive scans no longer use up the retries; *Install now* retries
+  at once.
+
 ## winget says the install technology is different
 
 Symptom: the update fails and winget's output contains

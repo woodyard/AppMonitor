@@ -221,6 +221,36 @@ public static partial class WingetOutputParser
         return combined == highest ? highest : combined;
     }
 
+    /// <summary>
+    /// Combines the installs of one product that winget lists under several package ids (the configured alternatives
+    /// of an application, or a listing row and the upgrade row that names another id). Pure, so the rule is testable.
+    /// The highest installed version counts, as in <see cref="CombineInstalls"/>, but an available version only counts
+    /// when it belongs to that install: from a row of the same package id (an older release of the same package side by
+    /// side, the .NET rule), or from a row of another id that lists the very same installed version (the same install,
+    /// correlated with two packages). An older install of another package says nothing about the newest one. Seen on
+    /// H-SURFACELAP5 (2026-10-06): the MSIX Firefox 157.0.0.0 under Mozilla.Firefox.MSIX, which has nothing newer, next to a
+    /// stale HKCU entry 156.0.1 under Mozilla.Firefox, whose exe package offers 157.0.1 - that offer was carried over to the
+    /// MSIX copy, and every install of it failed. Null for no rows.
+    /// </summary>
+    public static WingetRow? CombineProductInstalls(IReadOnlyList<WingetRow> rows)
+    {
+        if (rows.Count <= 1) return CombineInstalls(rows);
+        var highest = rows
+            .OrderBy(r => VersionComparer.IsUnknown(r.Version))
+            .ThenByDescending(r => r.Version, VersionComparer.Instance)
+            .First();
+        // The highest row first, so CombineInstalls keeps it (and its id) on a tie.
+        var own = rows.Where(r => !ReferenceEquals(r, highest)
+                                  && (string.Equals(r.Id, highest.Id, StringComparison.OrdinalIgnoreCase) || SameInstalledVersion(r.Version, highest.Version)))
+            .Prepend(highest).ToList();
+        return CombineInstalls(own);
+    }
+
+    /// <summary>Whether two installed versions are both known and equal (157.0 and 157.0.0.0 are).</summary>
+    internal static bool SameInstalledVersion(string? a, string? b) =>
+        !string.IsNullOrWhiteSpace(a) && !string.IsNullOrWhiteSpace(b) && !VersionComparer.IsUnknown(a) && !VersionComparer.IsUnknown(b)
+        && VersionComparer.Compare(a, b) == 0;
+
     /// <summary>Removes spinner/progress artefacts, banners and empty lines. Exposed for diagnostics and tests.</summary>
     public static IReadOnlyList<string> CleanLines(string output)
     {

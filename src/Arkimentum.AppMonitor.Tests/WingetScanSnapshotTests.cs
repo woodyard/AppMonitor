@@ -49,7 +49,10 @@ public class WingetScanSnapshotTests
         public Dictionary<string, ProcessRunResult> PerId { get; } = new(StringComparer.OrdinalIgnoreCase);
         public List<string> Calls { get; } = [];
 
-        public int PerIdCalls { get { lock (Calls) return Calls.Count(c => c.StartsWith("list --id ", StringComparison.Ordinal)); } }
+        public int PerIdCalls { get { lock (Calls) return Calls.Count(c => c.StartsWith("list --id ", StringComparison.Ordinal) && !c.Contains(" --details")); } }
+
+        /// <summary>The <c>winget list --id X --details</c> runs: the MSIX check of an ambiguous offer (see WingetProvider.IsAmbiguousOffer).</summary>
+        public int DetailsCalls { get { lock (Calls) return Calls.Count(c => c.StartsWith("list --id ", StringComparison.Ordinal) && c.Contains(" --details")); } }
 
         public Task<ProcessRunResult> Run(string args, TimeSpan timeout, ExecutionContextInfo context, CancellationToken ct)
         {
@@ -165,7 +168,11 @@ public class WingetScanSnapshotTests
         var winget = Device();
         await CheckAll(Provider(winget), DeviceApps);
 
-        Assert.Equal(2, winget.Calls.Count);
+        // Plus one 'winget list --details' for each offer that may be one package's offer for another's install (after
+        // 1.1.46): Firefox (one version listed under both configured ids) and PuTTY (two installs under one id). The
+        // fake prints no details records, so both offers stand.
+        Assert.Equal(2, winget.DetailsCalls);
+        Assert.Equal(2 + winget.DetailsCalls, winget.Calls.Count);
         Assert.Single(winget.Calls, c => c.StartsWith("list --accept-source-agreements", StringComparison.Ordinal) && c.Contains("--scope user"));
         Assert.Single(winget.Calls, c => c.StartsWith("upgrade --source winget", StringComparison.Ordinal) && c.Contains("--scope user"));
         Assert.Equal(0, winget.PerIdCalls);
@@ -422,7 +429,9 @@ public class WingetScanSnapshotTests
         var results = await checker.CheckAsync(DeviceApps, [], User, new ProviderOptions(), CancellationToken.None);
 
         Assert.Equal(DeviceApps.Count, results.Count);
-        Assert.Equal(2, winget.Calls.Count);
+        // The two listings, and the MSIX check of the two ambiguous offers (see A_scan_starts_winget_twice_however_many_apps_it_checks).
+        Assert.Equal(2 + winget.DetailsCalls, winget.Calls.Count);
+        Assert.Equal(2, winget.DetailsCalls);
     }
 
     // ---------------------------------------------------------------- the coordinator: system and user scans overlap

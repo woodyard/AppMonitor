@@ -100,6 +100,12 @@ public sealed class PendingUpdate
     public List<BlockingProcessInfo> BlockingDetails { get; set; } = [];
     public string? LastError { get; set; }
     public int FailureCount { get; set; }
+    /// <summary>
+    /// When the last install of this update failed. An automatic retry of the same version waits at least
+    /// <c>PolicyEngine.AutomaticRetryInterval</c> from then (see <c>PolicyEngine.Merge</c>); "Install now" retries at once.
+    /// Added after 1.1.46; a state file or an IPC message without it means no wait.
+    /// </summary>
+    public DateTimeOffset? FailedAtUtc { get; set; }
     /// <summary>Set when the user chose "Dismiss" on a non-mandatory update; re-notified after the interval.</summary>
     public bool Dismissed { get; set; }
     /// <summary>

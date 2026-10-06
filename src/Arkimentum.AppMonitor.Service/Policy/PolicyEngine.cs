@@ -58,6 +58,16 @@ public sealed record MergeSummary(int Added, int Updated, int Resolved, int Remo
 public static class PolicyEngine
 {
     public const int MaxAutomaticRetries = 3;
+    /// <summary>
+    /// The least time between a failed install and the automatic retry of the same version (see <see cref="Merge"/>).
+    /// Every scan used to retry, and scans come seconds apart when the tray asks for them (sign-in, "Check now", after
+    /// an install): on H-SURFACELAP5 (2026-10-06) all three retries of a Firefox update failed within three minutes.
+    /// 45 minutes is long enough that those scans no longer burn the retries, and short enough that a scheduled scan
+    /// still retries at every turn even with an hourly <c>ScanIntervalMinutes</c> (the scan's time is its start, and an
+    /// install fails some minutes after the scan that started it); with the default of 240 minutes every scheduled scan
+    /// is past it anyway. "Install now" is not held back by it.
+    /// </summary>
+    public static readonly TimeSpan AutomaticRetryInterval = TimeSpan.FromMinutes(45);
     public static readonly TimeSpan InstalledRetention = TimeSpan.FromHours(24);
     public static readonly TimeSpan DeadlineWarningWindow = TimeSpan.FromHours(24);
     /// <summary>After a successful install, ignore a scan that still reports the old version for this long (pending reboot etc.).</summary>
@@ -239,7 +249,7 @@ public static class PolicyEngine
                 // A newer version superseded the one that failed: allow automatic retries again.
                 if (existing.State == UpdateState.Failed) { existing.State = UpdateState.Available; existing.FailureCount = 0; existing.LastError = null; }
             }
-            else if (existing.State == UpdateState.Failed && existing.FailureCount < MaxAutomaticRetries)
+            else if (existing.State == UpdateState.Failed && existing.FailureCount < MaxAutomaticRetries && IsAutomaticRetryDue(existing, now))
             {
                 existing.State = UpdateState.Available; // retry on the next opportunity
             }
@@ -265,6 +275,14 @@ public static class PolicyEngine
 
         return new MergeSummary(added, updated, resolved, removed, newUpdates, restartsEnded);
     }
+
+    /// <summary>
+    /// Whether a scan at <paramref name="now"/> may turn a failed update back into an available one: at least
+    /// <see cref="AutomaticRetryInterval"/> after the failure. A failure without a time (a state file of an older agent)
+    /// is retried as before.
+    /// </summary>
+    public static bool IsAutomaticRetryDue(PendingUpdate u, DateTimeOffset now) =>
+        u.FailedAtUtc is not { } failed || now - failed >= AutomaticRetryInterval;
 
     /// <summary>
     /// Drops the tracked updates of applications that are no longer among the enabled ones: removed from the
@@ -574,6 +592,7 @@ public static class PolicyEngine
     {
         u.State = UpdateState.Failed;
         u.FailureCount++;
+        u.FailedAtUtc = now;
         u.LastError = error;
         u.LastNotifiedUtc = null; // notify about the failure promptly
         u.ForceCloseAtUtc = null;

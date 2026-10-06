@@ -148,7 +148,9 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         {
             // The same order as WingetOutputParser.CombineInstalls, so the id is the one of the row that counts.
             matchedId = installs.OrderBy(i => VersionComparer.IsUnknown(i.Row.Version)).ThenByDescending(i => i.Row.Version, VersionComparer.Instance).First().Id;
-            lookup = new ListLookup(WingetOutputParser.CombineInstalls(installs.Select(i => i.Row).ToList()), false, null);
+            // Across ids only the available version of the install that counts (see CombineProductInstalls): the
+            // leftover 156.0.1 under Mozilla.Firefox must not lend its exe package's 157.0.1 to the MSIX 157.0.0.0.
+            lookup = new ListLookup(WingetOutputParser.CombineProductInstalls(installs.Select(i => i.Row).ToList()), false, null);
             if (installs.Count > 1)
                 _logger.LogDebug("{AppId}: winget lists the product under {Count} configured ids in the {Context} scope ({Installs}); the highest installed version, {Version} ('{WingetId}'), counts.",
                     app.AppId, installs.Count, context.Context, string.Join(", ", installs.Select(i => $"{i.Id} {i.Row.Version}")), lookup.Row!.Version, matchedId);
@@ -193,6 +195,8 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         if (candidates.Count > 1) _logger.LogDebug("{AppId}: matched winget id '{WingetId}' (of {Count} alternatives).", app.AppId, matchedId, candidates.Count);
 
         var row = lookup.Row!;
+        // The id the install that counts is listed under, before the upgrade listing may name another one.
+        var listedId = matchedId!;
 
         // "winget list" correlates an installed product with every manifest that matches it (the Firefox MSIX build is
         // listed under both Mozilla.Firefox and Mozilla.Firefox.MSIX), while "winget upgrade" applies the applicability
@@ -212,13 +216,21 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
             // Several installs of the product can be registered at once (.NET keeps every patch release side by side,
             // two PuTTY builds), and winget keeps offering the upgrade for an older one although a newer install is
             // there too. The highest installed version counts - the same rule the check after an install applies (see
-            // WingetOutputParser.CombineInstalls) - so an update is only flagged when the newest install is outdated.
-            var combined = WingetOutputParser.CombineInstalls([upgradeRow, row])!;
+            // WingetOutputParser.CombineInstalls) - so an update is only flagged when the newest install is outdated. An
+            // upgrade row of another package id only counts for the same install (the same version), see
+            // WingetOutputParser.CombineProductInstalls.
+            var combined = WingetOutputParser.CombineProductInstalls([upgradeRow, row])!;
             if (!combined.HasAvailable)
             {
                 // The id stays the one of the install that counts, not the one of the older install winget offers to upgrade.
                 _logger.LogDebug("{AppId}: winget's upgrade listing offers {Available} for the {Older} install of '{UpgradeId}', but {Installed} is installed as well; the highest installed version counts, so there is no update.",
                     app.AppId, upgradeRow.Available, upgradeRow.Version, upgradeRow.Id, combined.Version);
+            }
+            else if (!string.Equals(upgradeRow.Id, row.Id, StringComparison.OrdinalIgnoreCase) && VersionComparer.Compare(upgradeRow.Version, row.Version) < 0)
+            {
+                // The upgrade row is an older install of another package: the update is the listed install's own, under its id.
+                _logger.LogDebug("{AppId}: winget's upgrade listing offers {Available} for the {Older} install of '{UpgradeId}', but {Installed} under '{ListId}' counts; its own offer, {Own}, stands.",
+                    app.AppId, upgradeRow.Available, upgradeRow.Version, upgradeRow.Id, row.Version, matchedId, combined.Available);
             }
             else
             {
@@ -256,6 +268,21 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
             updateAvailable = VersionComparer.IsNewer(available, installedVersion);
         }
 
+        // An MSIX copy is only updated by an MSIX package (see CheckMsixOfferAsync). Asked of winget only when the offer
+        // is ambiguous (see IsAmbiguousOffer), and only in a user's session: MSIX registrations are per user, so the
+        // service's machine-scope listing never shows one.
+        if (updateAvailable && !context.IsSystem
+            && IsAmbiguousOffer(matchedId!, listedId, listing.Rows, upgradeRows, installs.Select(i => i.Row).ToList(), installedVersion))
+        {
+            var verdict = await CheckMsixOfferAsync(winget, app, matchedId!, installedVersion, available!, candidates, context, ct).ConfigureAwait(false);
+            if (!verdict.Keep)
+            {
+                updateAvailable = verdict.Available is not null;
+                available = verdict.Available;
+                matchedId = verdict.WingetId ?? listedId;
+            }
+        }
+
         return new UpdateCheckResult
         {
             AppId = app.AppId,
@@ -267,6 +294,174 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
             WingetId = matchedId,
             ResolvedContext = context.Context,
         };
+    }
+
+    /// <summary>
+    /// Whether an update the scan is about to offer may be the offer of one package for an install of another (see
+    /// <see cref="CheckMsixOfferAsync"/>). Pure, so the rule is testable, and cheap: answered from the scan's listings,
+    /// so an unambiguous offer costs no winget run. Ambiguous when the offered id is not the id the install that counts
+    /// is listed under (the upgrade listing named another one); when the offered id has several rows in the full or the
+    /// upgrade listing (several installs under one id - the H-SURFACELAP5 Firefox, whose MSIX copy and a stale exe entry
+    /// are both correlated with Mozilla.Firefox, or the .NET runtimes side by side); or when more than one configured id
+    /// lists the installed version that counts (one install correlated with two packages).
+    /// </summary>
+    internal static bool IsAmbiguousOffer(string offeredId, string listedId, IReadOnlyList<WingetRow> listRows, IReadOnlyList<WingetRow> upgradeRows,
+        IReadOnlyList<WingetRow> configuredInstalls, string? installedVersion)
+    {
+        if (!string.Equals(offeredId, listedId, StringComparison.OrdinalIgnoreCase)) return true;
+        bool Own(WingetRow r) => string.Equals(r.Id, offeredId, StringComparison.OrdinalIgnoreCase);
+        if (listRows.Count(Own) > 1 || upgradeRows.Count(Own) > 1) return true;
+        return configuredInstalls.Count(r => WingetOutputParser.SameInstalledVersion(r.Version, installedVersion)) > 1;
+    }
+
+    /// <summary>What <see cref="CheckMsixOfferAsync"/> decided: keep the offer, or replace it (no update when <paramref name="Available"/> is null).</summary>
+    internal sealed record MsixOfferVerdict(bool Keep, string? WingetId, string? Available, string Reason)
+    {
+        public static MsixOfferVerdict Kept(string reason) => new(true, null, null, reason);
+    }
+
+    /// <summary>
+    /// The scan's check that an update offered for an MSIX copy comes from an MSIX package. winget correlates an MSIX
+    /// install with every package that names it, and offers the newest version of whichever one it listed the install
+    /// under: on H-SURFACELAP5 (2026-10-06) the user's MSIX Firefox 157.0.0.0 was offered Mozilla.Firefox's exe 157.0.1,
+    /// while its own package, Mozilla.Firefox.MSIX, had nothing newer (157.0); the install refused, and the
+    /// "install --force" fallback tried to put the exe Firefox next to the MSIX one. In order: <c>winget list --id X
+    /// --details</c> for the offered id says whether the copy that counts (the row of the installed version) is an MSIX
+    /// package - if not, or if that cannot be read, the offer stands. For an MSIX copy, <c>winget show --installer-type
+    /// msix</c> asks whether the offered package has an MSIX installer - if so, the offer stands. Otherwise the first
+    /// other configured id that has one is the copy's own package: its version decides, under its id (offered when newer,
+    /// else no update). When no configured id is an MSIX package, the offer stands only when every installed row of the
+    /// offered id is an MSIX package - winget manages that copy by this id alone (Microsoft.WindowsAppRuntime.1.6, whose exe
+    /// installs the MSIX package and is handed to the service at install) - and not when the id also covers a classic
+    /// install. Any answer winget could not give keeps the offer (the install path has its own guard, see
+    /// <see cref="ReinstallAsync"/>). At most one <c>--details</c> and one <c>show</c> per id, cached for the scan.
+    /// </summary>
+    private async Task<MsixOfferVerdict> CheckMsixOfferAsync(string winget, AppPolicy app, string offeredId, string? installedVersion, string available,
+        IReadOnlyList<string> candidates, ExecutionContextInfo context, CancellationToken ct)
+    {
+        var verdict = await JudgeMsixOfferAsync(winget, app, offeredId, installedVersion, candidates, context, ct).ConfigureAwait(false);
+        if (verdict.Keep)
+            _logger.LogDebug("{AppId}: the offer of {Available} under '{WingetId}' stands: {Reason}.", app.AppId, available, offeredId, verdict.Reason);
+        else if (verdict.Available is null)
+            _logger.LogInformation("{AppId}: winget offers {Available} under '{WingetId}' for the installed {Installed}, but {Reason}; no update.",
+                app.AppId, available, offeredId, installedVersion ?? "unknown", verdict.Reason);
+        else
+            _logger.LogInformation("{AppId}: winget offers {Available} under '{WingetId}' for the installed {Installed}, but {Reason}; offering {MsixVersion} under '{MsixId}' instead.",
+                app.AppId, available, offeredId, installedVersion ?? "unknown", verdict.Reason, verdict.Available, verdict.WingetId);
+        return verdict;
+    }
+
+    private async Task<MsixOfferVerdict> JudgeMsixOfferAsync(string winget, AppPolicy app, string offeredId, string? installedVersion,
+        IReadOnlyList<string> candidates, ExecutionContextInfo context, CancellationToken ct)
+    {
+        var details = await ListDetailsForScanAsync(winget, offeredId, app.WingetSourceName, context, ct).ConfigureAwait(false);
+        if (details.Error is not null) return MsixOfferVerdict.Kept($"'winget list --details' failed ({details.Error})");
+        var copy = CountingCopy(details.Rows, offeredId, installedVersion);
+        if (copy is null) return MsixOfferVerdict.Kept("'winget list --details' shows no installed row of it");
+        if (!IsMsixCopy(copy)) return MsixOfferVerdict.Kept($"the installed copy is not an MSIX package (installer category {copy.InstallerCategory ?? "unknown"})");
+
+        var own = await ShowMsixInstallerAsync(winget, offeredId, app.WingetSourceName, context, ct).ConfigureAwait(false);
+        if (own.Has == true) return MsixOfferVerdict.Kept("the installed copy is an MSIX package and winget has an MSIX installer for it");
+        if (own.Has is null) return MsixOfferVerdict.Kept($"whether winget has an MSIX installer for it could not be read ({own.Error})");
+
+        var package = copy.PackageFamilyName ?? copy.LocalIdentifier ?? "an MSIX package";
+        string? unread = null;
+        foreach (var id in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(id) || string.Equals(id, offeredId, StringComparison.OrdinalIgnoreCase)) continue;
+            var other = await ShowMsixInstallerAsync(winget, id, app.WingetSourceName, context, ct).ConfigureAwait(false);
+            if (other.Has is null) { unread ??= $"whether '{id}' has an MSIX installer could not be read ({other.Error})"; continue; }
+            if (other.Has == false) continue;
+            if (other.Version is null) return MsixOfferVerdict.Kept($"winget shows no version for the MSIX package '{id}'");
+            var reason = $"the installed copy is the MSIX package {package}, '{offeredId}' has no MSIX installer, and the MSIX package '{id}' is at {other.Version}";
+            return VersionComparer.IsNewer(other.Version, installedVersion)
+                ? new MsixOfferVerdict(false, id, other.Version, reason)
+                : new MsixOfferVerdict(false, id, null, reason);
+        }
+        if (unread is not null) return MsixOfferVerdict.Kept(unread);
+
+        var ownRows = details.Rows.Where(r => string.Equals(r.Id, offeredId, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (ownRows.All(IsMsixCopy))
+            return MsixOfferVerdict.Kept("every installed row of it is an MSIX package, so winget manages the MSIX copy by this id (an installer that is no MSIX package itself can still install it for all users)");
+        return new MsixOfferVerdict(false, null, null,
+            $"the installed copy is the MSIX package {package}, '{offeredId}' has no MSIX installer (it also lists a classic install under this id), and no other configured id is an MSIX package");
+    }
+
+    /// <summary>
+    /// The installed row of <paramref name="wingetId"/> in a <c>winget list --details</c> listing that stands for the
+    /// install with <paramref name="installedVersion"/>: the row of that version (an MSIX package first, should a
+    /// classic entry carry the same version - the package is what runs), else the highest version. Null when the id has
+    /// no row. Pure, so the rule is testable.
+    /// </summary>
+    internal static WingetInstalledDetails? CountingCopy(IReadOnlyList<WingetInstalledDetails> rows, string wingetId, string? installedVersion)
+    {
+        var own = rows.Where(r => string.Equals(r.Id, wingetId, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (own.Count == 0) return null;
+        var same = own.Where(r => WingetOutputParser.SameInstalledVersion(r.Version, installedVersion)).ToList();
+        return same.FirstOrDefault(IsMsixCopy) ?? same.FirstOrDefault()
+               ?? own.OrderBy(r => VersionComparer.IsUnknown(r.Version)).ThenByDescending(r => r.Version, VersionComparer.Instance).First();
+    }
+
+    /// <summary>Whether a <c>winget list --details</c> row is an MSIX package: installer category "msix", or an <c>MSIX\</c> local identifier.</summary>
+    internal static bool IsMsixCopy(WingetInstalledDetails row) =>
+        string.Equals(row.InstallerCategory, "msix", StringComparison.OrdinalIgnoreCase)
+        || (row.LocalIdentifier?.TrimStart().StartsWith(@"MSIX\", StringComparison.OrdinalIgnoreCase) ?? false);
+
+    private readonly ConcurrentDictionary<(InstallContext Context, string Id, string Source), DetailsLookup> _scanDetailsCache = new();
+
+    /// <summary>The scan's <c>winget list --id X --exact --details</c> (see <see cref="ListDetailsAsync"/>), cached per id, source and context for the scan.</summary>
+    private async Task<DetailsLookup> ListDetailsForScanAsync(string winget, string wingetId, string? sourceName, ExecutionContextInfo context, CancellationToken ct)
+    {
+        var key = (context.Context, wingetId.ToLowerInvariant(), SourceKey(sourceName));
+        if (_scanDetailsCache.TryGetValue(key, out var cached)) return cached;
+        var lookup = await ListDetailsAsync(winget, wingetId, sourceName ?? string.Empty, context, ct).ConfigureAwait(false);
+        _scanDetailsCache[key] = lookup;
+        return lookup;
+    }
+
+    /// <summary>
+    /// What <c>winget show --installer-type msix</c> says about a package: whether its current version has an MSIX
+    /// installer (null when winget could not answer), the version it shows, and the error.
+    /// </summary>
+    private sealed record MsixInstallerLookup(bool? Has, string? Version, string? Error);
+
+    private readonly ConcurrentDictionary<(InstallContext Context, string Id, string Source), MsixInstallerLookup> _msixInstallerCache = new();
+
+    /// <summary>
+    /// <c>winget show --id X --exact [--source S] --installer-type msix --accept-source-agreements --disable-interactivity</c>
+    /// for the scan, cached per id, source and context. No scope filter: an MSIX installer declares none. "No applicable
+    /// installer" (winget 1.30 prints it and still exits 0) and an unknown package are "no MSIX installer".
+    /// </summary>
+    private async Task<MsixInstallerLookup> ShowMsixInstallerAsync(string winget, string id, string? sourceName, ExecutionContextInfo context, CancellationToken ct)
+    {
+        var key = (context.Context, id.ToLowerInvariant(), SourceKey(sourceName));
+        if (_msixInstallerCache.TryGetValue(key, out var cached)) return cached;
+
+        MsixInstallerLookup lookup;
+        try
+        {
+            var args = new StringBuilder()
+                .Append("show --id ").Append(Quote(id))
+                .Append(" --exact");
+            AppendSource(args, sourceName);
+            args.Append(" --installer-type msix --accept-source-agreements --disable-interactivity");
+            AppendExtra(args, _options.WingetGlobalArgs);
+
+            var run = await RunLookupAsync(winget, args.ToString(), _options.CheckTimeout, context, ct).ConfigureAwait(false);
+            if (!run.Started) lookup = new MsixInstallerLookup(null, null, run.StartFailure);
+            else if (run.TimedOut) lookup = new MsixInstallerLookup(null, null, $"winget show timed out after {_options.CheckTimeout.TotalSeconds:0} seconds");
+            else if (IsNoApplicableInstaller(run.ExitCode, run.CombinedOutput) || IsUnknownPackage(run.ExitCode, run.CombinedOutput)) lookup = new MsixInstallerLookup(false, null, null);
+            else if (run.ExitCode != 0) lookup = new MsixInstallerLookup(null, null, $"winget show exited with 0x{run.ExitCode:X8}: {run.LastLines(2)}");
+            else lookup = new MsixInstallerLookup(true, ParseShowVersion(run.CombinedOutput), null);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "winget show --installer-type msix for '{WingetId}' failed.", id);
+            lookup = new MsixInstallerLookup(null, null, $"{ex.GetType().Name}: {ex.Message}");
+        }
+        _msixInstallerCache[key] = lookup;
+        return lookup;
     }
 
     /// <summary>
@@ -775,6 +970,49 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         exitCode == WingetOutputParser.ExitNoApplicableInstaller
         || (output?.Contains(WingetOutputParser.NoApplicableInstallerMarker, StringComparison.OrdinalIgnoreCase) ?? false);
 
+    /// <summary>
+    /// The failure reported when the installed copy is an MSIX package and winget only has an installer of another type
+    /// (<paramref name="installerType"/>) for the user, which would install a second copy next to it.
+    /// </summary>
+    internal static string MsixCopyMessage(string name, string wingetId, string installerType) =>
+        $"{name} is installed as an MSIX package; winget offers no MSIX update for it ('{wingetId}' only has a '{installerType}' installer for this user, which would install a second copy next to the MSIX package).";
+
+    /// <summary>
+    /// The installed row of <paramref name="wingetId"/> that stands for the update's <paramref name="installedVersion"/>
+    /// (see <see cref="CountingCopy"/>) when it is an MSIX package, by a fresh <c>winget list --details</c>; null when it
+    /// is not one, in the service (MSIX registrations are per user, the machine scope never lists one), or when winget
+    /// could not answer - then the fallbacks behave as before.
+    /// </summary>
+    private async Task<WingetInstalledDetails?> ReadMsixCopyAsync(AppPolicy app, ExecutionContextInfo context, string winget, string wingetId, string sourceName,
+        string? installedVersion, CancellationToken ct)
+    {
+        if (context.IsSystem) return null;
+        var details = await ListDetailsAsync(winget, wingetId, sourceName, context, ct).ConfigureAwait(false);
+        if (details.Error is not null)
+        {
+            _logger.LogDebug("{AppId}: could not tell whether '{WingetId}' is installed as an MSIX package ({Error}).", app.AppId, wingetId, details.Error);
+            return null;
+        }
+        var copy = CountingCopy(details.Rows, wingetId, installedVersion);
+        if (copy is null || !IsMsixCopy(copy)) return null;
+        _logger.LogInformation("{AppId}: the installed copy of '{WingetId}' ({Version}) is the MSIX package {Package}; only an MSIX installer may update it.",
+            app.AppId, wingetId, copy.Version ?? installedVersion ?? "unknown", copy.PackageFamilyName ?? copy.LocalIdentifier ?? "(no family)");
+        return copy;
+    }
+
+    /// <summary>
+    /// <see cref="ReadMsixCopyAsync"/>, run at most once and only when asked: the fallbacks only need it once winget
+    /// names a user-scope installer that is not an MSIX package, so every other path costs no extra winget run.
+    /// </summary>
+    private Lazy<Task<bool>> MsixCopyCheck(AppPolicy app, ExecutionContextInfo context, string winget, string wingetId, string sourceName,
+        string? installedVersion, CancellationToken ct) =>
+        new(async () => await ReadMsixCopyAsync(app, context, winget, wingetId, sourceName, installedVersion, ct).ConfigureAwait(false) is not null);
+
+    /// <summary>Whether a <c>winget show</c> installer type is an MSIX package ("msix", "appx").</summary>
+    internal static bool IsMsixInstallerType(string? installerType) =>
+        installerType is not null
+        && (installerType.Contains("msix", StringComparison.OrdinalIgnoreCase) || installerType.Contains("appx", StringComparison.OrdinalIgnoreCase));
+
     /// <summary>The failure reported when a package only ships a machine-wide installer and the agent runs as the user.</summary>
     internal static string MachineOnlyMessage(string wingetId, bool portableSkipped = false) => portableSkipped
         ? $"'{wingetId}' has no per-user or MSIX installer in winget that updates the installed copy: its user-scope installer is a portable package, which would install a second copy; the agent does not start installers that need administrator rights in a user's session."
@@ -838,7 +1076,10 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     /// <see cref="UserContextInstallFilter"/>), skipping a user-scope installer that is a portable package; when neither
     /// matches an installer the attempt fails without running anything. Success is still judged by the version winget reports afterwards, never by the exit code. User
     /// context only (<see cref="ShouldReinstall"/>): as LocalSystem a user-scope installer would land in SYSTEM's own
-    /// profile.
+    /// profile. When the installed copy is an MSIX package (<see cref="ReadMsixCopyAsync"/>) only an MSIX installer may
+    /// run: a classic user-scope installer would put a second copy next to it (H-SURFACELAP5, 2026-10-06: the exe
+    /// Firefox over the MSIX one, which then crashed on a stale entry), so it is skipped and, without an MSIX
+    /// installer, the install fails with <see cref="MsixCopyMessage"/>.
     /// </summary>
     private async Task<InstallResult> ReinstallAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, string refusal, int refusalExitCode, IProgress<string>? progress, CancellationToken ct)
@@ -849,11 +1090,27 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         progress?.Report($"Installing {name} {update.AvailableVersion} over the current version via winget...");
 
         var prefix = $"winget could not upgrade '{wingetId}' ({context.Context} scope): {refusal}.";
-        var step = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: true, systemScope: false, progress, ct).ConfigureAwait(false);
+        var installedAsMsix = MsixCopyCheck(app, context, winget, wingetId, sourceName, update.InstalledVersion, ct);
+        var step = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: true, systemScope: false, progress, ct,
+            installedAsMsix).ConfigureAwait(false);
         var run = step.Run;
         if (!run.Started) return InstallResult.Fail(run.StartFailure!);
         if (run.TimedOut)
             return InstallResult.Fail($"winget install timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1);
+        if (step.PackageBelowTarget is not null)
+        {
+            var message = $"{prefix} winget's package '{wingetId}' is at {step.PackageBelowTarget}, below the expected {update.AvailableVersion}, so installing it over the current version would not update it.";
+            _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, WingetOutputParser.ExitNoApplicableInstaller);
+        }
+        if (step.NoPerUserInstaller && step.NonMsixSkipped is not null)
+        {
+            // The user-scope installer would have put a classic copy next to the MSIX one, and there is no MSIX installer:
+            // nothing ran, and nothing is handed to the service either (its unscoped install would add a machine-wide copy).
+            var message = $"{prefix} {MsixCopyMessage(name, wingetId, step.NonMsixSkipped)}";
+            _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, WingetOutputParser.ExitNoApplicableInstaller);
+        }
         if (step.NoPerUserInstaller)
         {
             var message = $"{prefix} {MachineOnlyMessage(wingetId, step.PortableSkipped)}";
@@ -1179,12 +1436,19 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
 
         // ---- 0. user context: never remove what cannot be put back without administrator rights. The install step
         // below only accepts a per-user or MSIX installer, so check that one exists before anything is uninstalled.
+        // An MSIX copy is only ever replaced by an MSIX package: removing it to install a classic build is not a take-over
+        // this agent makes on its own (see ReadMsixCopyAsync).
+        var installedAsMsix = MsixCopyCheck(app, context, winget, wingetId, sourceName, update.InstalledVersion, ct);
         if (!context.IsSystem)
         {
-            var availability = await CheckPerUserInstallerAsync(app, winget, wingetId, sourceName, context, ct).ConfigureAwait(false);
+            var availability = await CheckPerUserInstallerAsync(app, winget, wingetId, sourceName, context, ct, installedAsMsix).ConfigureAwait(false);
             if (availability != InstallerAvailability.Available)
             {
-                var message = availability == InstallerAvailability.None
+                // Only asked when an installer of another type was found, so a value means that one was not counted.
+                var msixOnly = availability == InstallerAvailability.None && installedAsMsix.IsValueCreated && await installedAsMsix.Value.ConfigureAwait(false);
+                var message = msixOnly
+                    ? $"{prefix} {name} is installed as an MSIX package; winget offers no MSIX update for it. The current install was left in place."
+                    : availability == InstallerAvailability.None
                     ? $"{prefix} {MachineOnlyMessage(wingetId)} The current install was left in place."
                     : $"{prefix} Whether winget has a per-user or MSIX installer for '{wingetId}' could not be confirmed, so the current install was left in place (the take-over never removes what it may not be able to reinstall).";
                 _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
@@ -1296,7 +1560,8 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
             app.AppId, wingetId, update.AvailableVersion, context.Context);
         progress?.Report($"Installing {name} {update.AvailableVersion} via winget...");
 
-        var installStep = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: false, systemScope: true, progress, ct).ConfigureAwait(false);
+        var installStep = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: false, systemScope: true, progress, ct,
+            installedAsMsix).ConfigureAwait(false);
         var install = installStep.Run;
         if (install.Started && !install.TimedOut && installStep.NoPerUserInstaller)
         {
@@ -1488,8 +1753,14 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     internal static bool IsPortable(string? installerType) =>
         installerType?.Contains("portable", StringComparison.OrdinalIgnoreCase) ?? false;
 
-    /// <summary>Outcome of <see cref="RunInstallStepAsync"/>: the last winget run, whether it found no permitted installer, and whether a portable user-scope installer was skipped.</summary>
-    private sealed record InstallStepResult(ProcessRunResult Run, bool NoPerUserInstaller, bool PortableSkipped = false);
+    /// <summary>
+    /// Outcome of <see cref="RunInstallStepAsync"/>: the last winget run, whether it found no permitted installer, whether a
+    /// portable user-scope installer was skipped, and the type of a user-scope installer skipped because the installed
+    /// copy is an MSIX package (null when none was), and the package version when a forced install was not run because
+    /// the package is below the expected version (null otherwise).
+    /// </summary>
+    private sealed record InstallStepResult(ProcessRunResult Run, bool NoPerUserInstaller, bool PortableSkipped = false, string? NonMsixSkipped = null,
+        string? PackageBelowTarget = null);
 
     /// <summary>
     /// Runs <c>winget install</c> for the fallbacks. As LocalSystem once, with <c>--scope machine</c> when
@@ -1498,23 +1769,44 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     /// (possibly machine-wide, elevating) install is never started. Before the <c>--scope user</c> attempt,
     /// <c>winget show</c> is asked which installer that filter selects: when it is a portable package (Notepad++ and VLC
     /// only offer a portable zip in user scope) the attempt is skipped, because it would install a second, portable copy
-    /// instead of updating the real one. <c>NoPerUserInstaller</c> is set when the last attempt was refused as "no
-    /// applicable installer", i.e. winget ran nothing.
+    /// instead of updating the real one. With <paramref name="installedAsMsix"/> (the installed copy is an MSIX package)
+    /// the attempt is skipped as well when that installer is of any other type: it would install a classic copy next to
+    /// the MSIX one. <c>NoPerUserInstaller</c> is set when the last attempt was refused as "no applicable installer",
+    /// i.e. winget ran nothing.
     /// </summary>
     private async Task<InstallStepResult> RunInstallStepAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
-        string wingetId, string sourceName, bool force, bool systemScope, IProgress<string>? progress, CancellationToken ct)
+        string wingetId, string sourceName, bool force, bool systemScope, IProgress<string>? progress, CancellationToken ct, Lazy<Task<bool>>? installedAsMsix = null)
     {
         var attempts = context.IsSystem ? 1 : UserContextInstallAttempts;
         var firstAttempt = 0;
+        string? nonMsixSkipped = null;
         if (!context.IsSystem)
         {
             var show = await RunShowAsync(winget, wingetId, sourceName, context, UserContextInstallFilter(0), ct).ConfigureAwait(false);
-            var installerType = show.Started && !show.TimedOut && show.ExitCode == 0 ? ParseInstallerType(show.CombinedOutput) : null;
+            var shown = show.Started && !show.TimedOut && show.ExitCode == 0;
+            var installerType = shown && !IsNoApplicableInstaller(show.ExitCode, show.CombinedOutput) ? ParseInstallerType(show.CombinedOutput) : null;
+            // "install --force" of a package that is not at the expected version cannot deliver it: another configured id
+            // (Mozilla.Firefox.MSIX at 157.0) tried after the one the update was offered under (Mozilla.Firefox, 157.0.1)
+            // would only reinstall what is there. Nothing runs, and the caller keeps the first id's answer.
+            if (force && shown && ParseShowVersion(show.CombinedOutput) is { } packageVersion
+                && !string.IsNullOrWhiteSpace(update.AvailableVersion) && VersionComparer.Compare(packageVersion, update.AvailableVersion) < 0)
+            {
+                _logger.LogInformation("{AppId}: winget's package '{WingetId}' is at {PackageVersion}, below the expected {Version}; not installing it over the current version.",
+                    app.AppId, wingetId, packageVersion, update.AvailableVersion);
+                return new InstallStepResult(show, true, PackageBelowTarget: packageVersion);
+            }
             if (IsPortable(installerType))
             {
                 _logger.LogInformation("{AppId}: winget's user-scope installer for '{WingetId}' is portable ('{Type}') and would install a second copy instead of updating this one; skipping '{Filter}' and trying '{Next}'.",
                     app.AppId, wingetId, installerType, UserContextInstallFilter(0).Trim(), UserContextInstallFilter(1).Trim());
                 firstAttempt = 1;
+            }
+            else if (installerType is not null && !IsMsixInstallerType(installerType) && installedAsMsix is not null && await installedAsMsix.Value.ConfigureAwait(false))
+            {
+                _logger.LogInformation("{AppId}: the installed copy of '{WingetId}' is an MSIX package, and winget's user-scope installer ('{Type}') would install a second copy next to it; skipping '{Filter}' and trying '{Next}'.",
+                    app.AppId, wingetId, installerType, UserContextInstallFilter(0).Trim(), UserContextInstallFilter(1).Trim());
+                firstAttempt = 1;
+                nonMsixSkipped = installerType;
             }
         }
         for (var attempt = firstAttempt; ; attempt++)
@@ -1538,7 +1830,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
                     app.AppId, wingetId, filter.Trim(), run.ExitCode, UserContextInstallFilter(attempt + 1).Trim());
                 continue;
             }
-            return new InstallStepResult(run, noInstaller, firstAttempt > 0);
+            return new InstallStepResult(run, noInstaller, firstAttempt > 0 && nonMsixSkipped is null, nonMsixSkipped);
         }
     }
 
@@ -1566,10 +1858,10 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     /// install step uses. Available when either answers with a manifest that is not a portable package; None when both
     /// say "no applicable installer" or name a portable package (which the install step never runs, see
     /// <see cref="RunInstallStepAsync"/>); Unknown otherwise (winget failed for another reason), in which case the
-    /// take-over does not uninstall either.
+    /// take-over does not uninstall either. With <paramref name="installedAsMsix"/> only an MSIX installer counts.
     /// </summary>
     private async Task<InstallerAvailability> CheckPerUserInstallerAsync(AppPolicy app, string winget, string wingetId, string sourceName,
-        ExecutionContextInfo context, CancellationToken ct)
+        ExecutionContextInfo context, CancellationToken ct, Lazy<Task<bool>>? installedAsMsix = null)
     {
         var none = 0;
         for (var attempt = 0; attempt < UserContextInstallAttempts; attempt++)
@@ -1587,6 +1879,14 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
             {
                 _logger.LogInformation("{AppId}: winget's installer for '{WingetId}' matching '{Filter}' is portable ('{Type}'); it would install a second copy, so it does not count as a per-user installer.",
                     app.AppId, wingetId, filter.Trim(), ParseInstallerType(run.CombinedOutput));
+                none++;
+                continue;
+            }
+            if (run.ExitCode == 0 && ParseInstallerType(run.CombinedOutput) is { } type && !IsMsixInstallerType(type) && !IsPortable(type)
+                && installedAsMsix is not null && await installedAsMsix.Value.ConfigureAwait(false))
+            {
+                _logger.LogInformation("{AppId}: winget's installer for '{WingetId}' matching '{Filter}' is '{Type}', but the installed copy is an MSIX package; it would install a second copy, so it does not count.",
+                    app.AppId, wingetId, filter.Trim(), type);
                 none++;
                 continue;
             }

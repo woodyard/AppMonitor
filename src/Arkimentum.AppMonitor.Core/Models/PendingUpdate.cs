@@ -48,6 +48,28 @@ public sealed class PendingUpdate
     /// </summary>
     public bool NothingToInstall { get; set; }
 
+    // ---- progress of a running install (added after 1.1.41; an older service leaves them null, the tray then shows
+    // the plain "Installing" bar). Set while State is Installing and cleared when the install ends; not meaningful
+    // in a state file read back after a restart. ----
+
+    /// <summary>When the installer was started for the current attempt.</summary>
+    public DateTimeOffset? InstallStartedUtc { get; set; }
+
+    /// <summary>The step the running install is in; null when unknown or not installing.</summary>
+    public InstallPhase? InstallPhase { get; set; }
+
+    /// <summary>Bytes of the installer downloaded so far, when the agent can see the download; null otherwise.</summary>
+    public long? DownloadedBytes { get; set; }
+
+    /// <summary>The installer's size, when the download server announced it; null otherwise.</summary>
+    public long? DownloadTotalBytes { get; set; }
+
+    /// <summary>
+    /// How long installs of this application have usually taken on this device (from the install history), so the
+    /// tray can say "usually about 4 minutes"; null when no earlier install was timed.
+    /// </summary>
+    public int? ExpectedInstallSeconds { get; set; }
+
     /// <summary>The installer asked for a reboot; the version on disk may lag until then.</summary>
     public bool RebootPending { get; set; }
 

@@ -207,6 +207,9 @@ public sealed class UserContextExecutor : IHostedService
             }
         }
 
+        SetStatus(key, Strings.StateInstalling);
+        using var reporter = new InstallProgressReporter(this, update);
+
         var options = new ProviderOptions
         {
             WingetEnabled = true,
@@ -215,7 +218,12 @@ public sealed class UserContextExecutor : IHostedService
             InstallTimeout = TimeSpan.FromMinutes(Math.Max(1, message.TimeoutMinutes)),
             // An installed MSIX package winget offers no per-user installer for is handed to the service, which
             // installs it for all users as SYSTEM (see WingetProvider.HandOverToSystemAsync).
-            SystemInstallHandOver = (request, ct) => RequestSystemInstallAsync(request, message.TimeoutMinutes, ct),
+            SystemInstallHandOver = (request, ct) =>
+            {
+                // The service installs it now and broadcasts its own progress; the tray's reading would only hide that.
+                reporter.HandOver();
+                return RequestSystemInstallAsync(request, message.TimeoutMinutes, ct);
+            },
         };
         AppInfo.EnsureDirectories();
 
@@ -227,30 +235,140 @@ public sealed class UserContextExecutor : IHostedService
             DetectDisplayNameRegex = string.IsNullOrWhiteSpace(message.DetectDisplayNameRegex) ? null : message.DetectDisplayNameRegex,
             DetectPublisherRegex = string.IsNullOrWhiteSpace(message.DetectPublisherRegex) ? null : message.DetectPublisherRegex,
         };
-        var progress = CreateProgress(key);
-
-        SetStatus(key, Strings.StateInstalling);
-        return await Task.Run(async () =>
+        try
         {
-            var providers = ProviderFactory.Create(_loggerFactory, options);
-            var checker = new UpdateChecker(_loggerFactory.CreateLogger<UpdateChecker>(), providers);
-            return await checker.InstallAsync(policy, update, context, progress, token).ConfigureAwait(false);
-        }, token).ConfigureAwait(true);
+            return await Task.Run(async () =>
+            {
+                var providers = ProviderFactory.Create(_loggerFactory, options);
+                var checker = new UpdateChecker(_loggerFactory.CreateLogger<UpdateChecker>(), providers);
+                return await checker.InstallAsync(policy, update, context, reporter.Lines, token).ConfigureAwait(false);
+            }, token).ConfigureAwait(true);
+        }
+        finally
+        {
+            // The result follows at once; the reporter is disposed with this method, before any posted snapshot runs.
+            _store.SetLocalProgress(key, null);
+        }
     }
 
-    /// <summary>Progress lines go to the service at most once every two seconds, and straight into the UI.</summary>
-    private IProgress<string> CreateProgress(string key)
+    /// <summary>
+    /// The progress of one user-context install. Every output line goes into an <see cref="InstallProgressTracker"/>,
+    /// whose snapshots (phase, download bytes) reach the window and the service through an
+    /// <see cref="InstallProgressThrottle"/>: a phase change at once, a moving byte count at most every two seconds.
+    /// The line itself still travels as <see cref="UserInstallProgressMessage.Status"/> for an older service. When the
+    /// tracker cannot be created the lines are shown as they come, as before.
+    /// </summary>
+    private sealed class InstallProgressReporter : IDisposable
     {
-        var lastSentUtc = DateTimeOffset.MinValue;
-        return new Progress<string>(line =>
+        private readonly UserContextExecutor _owner;
+        private readonly string _key;
+        private readonly InstallProgressTracker? _tracker;
+        private readonly InstallProgressThrottle _throttle = new(ProgressInterval);
+        private readonly DateTimeOffset _startedUtc = DateTimeOffset.UtcNow;
+        private string? _lastLine;
+        private DateTimeOffset _lastLineSentUtc = DateTimeOffset.MinValue;
+        private readonly SynchronizationContext _ui;
+        private bool _flushScheduled;
+        private bool _handedOver;
+        private bool _disposed;
+
+        /// <summary>Created on the UI thread: both progress sinks post back to it, so everything below runs there.</summary>
+        public InstallProgressReporter(UserContextExecutor owner, PendingUpdate update)
         {
-            if (string.IsNullOrWhiteSpace(line)) return;
-            SetStatus(key, line);
+            _owner = owner;
+            _key = update.Key;
+            _ui = SynchronizationContext.Current ?? new SynchronizationContext();
+            var snapshots = new Progress<InstallProgress>(OnSnapshot);
+            try
+            {
+                // The id and version name the download folder before winget's "Found" line does, and on a Windows whose
+                // winget speaks another language they are the only way the tracker finds it.
+                _tracker = new InstallProgressTracker(p => ((IProgress<InstallProgress>)snapshots).Report(p),
+                    owner._loggerFactory.CreateLogger<InstallProgressTracker>(),
+                    wingetId: update.Source == UpdateSource.Winget ? WingetProvider.SplitIds(update.WingetId).FirstOrDefault() : null,
+                    version: update.Source == UpdateSource.Winget ? update.AvailableVersion : null);
+            }
+            catch (Exception ex)
+            {
+                owner._log.LogWarning(ex, "No install progress tracking for {Key}; showing the installer's lines instead", _key);
+            }
+            Lines = new Progress<string>(OnLine);
+            if (_tracker is not null) OnSnapshot(new InstallProgress(InstallPhase.Starting));
+        }
+
+        /// <summary>What the provider reports its output lines to.</summary>
+        public IProgress<string> Lines { get; }
+
+        private void OnLine(string line)
+        {
+            if (_disposed || string.IsNullOrWhiteSpace(line)) return;
+            _lastLine = line;
+            if (_tracker is null)
+            {
+                _owner.SetStatus(_key, line);
+                var now = DateTimeOffset.UtcNow;
+                if (now - _lastLineSentUtc < ProgressInterval) return;
+                _lastLineSentUtc = now;
+                _ = _owner._ipc.SendAsync(new UserInstallProgressMessage { UpdateKey = _key, Status = line });
+                return;
+            }
+            _owner._log.LogDebug("Install progress for {Key}: {Line}", _key, line);
+            try { _tracker.Report(line); }
+            catch (Exception ex) { _owner._log.LogDebug(ex, "The install progress tracker could not read a line for {Key}", _key); }
+        }
+
+        private void OnSnapshot(InstallProgress progress)
+        {
+            if (_disposed || _handedOver) return;
             var now = DateTimeOffset.UtcNow;
-            if (now - lastSentUtc < ProgressInterval) return;
-            lastSentUtc = now;
-            _ = _ipc.SendAsync(new UserInstallProgressMessage { UpdateKey = key, Status = line });
-        });
+            if (_throttle.Offer(progress, now)) Publish(progress);
+            else ScheduleFlush(now);
+        }
+
+        /// <summary>A byte count held back by the throttle goes out once it is due, even if nothing newer comes.</summary>
+        private async void ScheduleFlush(DateTimeOffset now)
+        {
+            if (_flushScheduled || _throttle.DueIn(now) is not { } due) return;
+            _flushScheduled = true;
+            try { await Task.Delay(due).ConfigureAwait(true); }
+            catch (Exception) { return; }
+            finally { _flushScheduled = false; }
+            if (!_disposed && !_handedOver && _throttle.TakeDue(DateTimeOffset.UtcNow) is { } held) Publish(held);
+        }
+
+        private void Publish(InstallProgress progress)
+        {
+            _owner._store.SetLocalProgress(_key, new LocalInstallProgress(progress.Phase, progress.DownloadedBytes, progress.DownloadTotalBytes, _startedUtc));
+            _owner._log.LogDebug("Install progress for {Key}: {Phase} {Downloaded}/{Total} bytes",
+                _key, progress.Phase, progress.DownloadedBytes?.ToString() ?? "?", progress.DownloadTotalBytes?.ToString() ?? "?");
+            _ = _owner._ipc.SendAsync(new UserInstallProgressMessage
+            {
+                UpdateKey = _key,
+                Status = _lastLine ?? Strings.StateInstalling,
+                Phase = progress.Phase,
+                DownloadedBytes = progress.DownloadedBytes,
+                DownloadTotalBytes = progress.DownloadTotalBytes,
+            });
+        }
+
+        /// <summary>
+        /// The install was handed to the service (an MSIX package for all users): from now on its broadcast says how far
+        /// it is, so the tray stops reporting and drops its own reading. Called from the provider's thread.
+        /// </summary>
+        public void HandOver() => _ui.Post(_ =>
+        {
+            if (_disposed || _handedOver) return;
+            _handedOver = true;
+            _owner._store.SetLocalProgress(_key, null);
+        }, null);
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            try { _tracker?.Dispose(); }
+            catch (Exception ex) { _owner._log.LogDebug(ex, "Disposing the install progress tracker for {Key} failed", _key); }
+        }
     }
 
     private void SetStatus(string key, string status)

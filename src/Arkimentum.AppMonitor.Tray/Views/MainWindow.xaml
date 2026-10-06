@@ -204,6 +204,24 @@
                                                Margin="0,8,0,0"
                                                Text="{Binding StatusText}" />
 
+                                    <!-- While it installs: determinate only while a download visibly runs; installers report no percentage. -->
+                                    <ProgressBar Height="4"
+                                                 Margin="0,8,0,0"
+                                                 Minimum="0"
+                                                 Maximum="1"
+                                                 BorderThickness="0"
+                                                 Background="{DynamicResource DividerStrokeColorDefaultBrush}"
+                                                 Foreground="{DynamicResource BrandSkyBrush}"
+                                                 IsIndeterminate="{Binding IsProgressIndeterminate, Mode=OneWay}"
+                                                 Value="{Binding ProgressValue, Mode=OneWay}"
+                                                 Visibility="{Binding ShowInstallProgress, Converter={StaticResource BoolToVisibility}}" />
+
+                                    <!-- A queued update: how long its installs usually take here. -->
+                                    <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                               Margin="0,4,0,0"
+                                               Text="{Binding QueuedHintText}"
+                                               Visibility="{Binding HasQueuedHint, Converter={StaticResource BoolToVisibility}}" />
+
                                     <TextBlock Style="{StaticResource DeadlineText}"
                                                Margin="0,4,0,0"
                                                Text="{Binding DeadlineText}"

@@ -32,7 +32,10 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// <summary>Held by a scan, and by every agent update check or update (<see cref="ExclusiveOfScansAsync"/>): the two never overlap.</summary>
     private readonly SemaphoreSlim _scanLock = new(1, 1);
     private readonly SemaphoreSlim _policyLock = new(1, 1);
-    private readonly SemaphoreSlim _installLock = new(1, 1);
+    /// <summary>One install at a time; when one ends the waiting install with the highest priority goes next (overdue, then shortest).</summary>
+    private readonly InstallTurnGate _installTurns = new();
+    /// <summary>Phase and download progress of the running installs, laid over the tracked updates in every state message.</summary>
+    private readonly InstallProgressFeed _progress = new();
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<UserScanResultMessage> Tcs, string ConnectionId)> _pendingUserScans = new();
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<UserPackageListResultMessage> Tcs, string ConnectionId)> _pendingUserPackageLists = new();
     /// <summary>
@@ -681,15 +684,32 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
         finally { _policyLock.Release(); }
 
-        foreach (var u in toInstall) _ = RunGuardedAsync(() => InstallAsync(u, ct), u.Key, ct);
+        // In turn order, and each queued for its turn right here rather than from its own task: the first one takes the
+        // free turn at once, so it must be the one that ought to go first; the rest wait in the gate's order.
+        var queuedAt = DateTimeOffset.UtcNow;
+        var ordered = toInstall.Select((u, i) => (Update: u, Order: (long)i, Priority: TurnPriorityOf(u, queuedAt))).ToList();
+        ordered.Sort((a, b) => InstallTurnGate.Compare(a.Priority, a.Order, b.Priority, b.Order));
+        foreach (var (u, _, _) in ordered)
+        {
+            var key = u.Key;
+            Task<IDisposable>? turn = null;
+            _ = RunGuardedAsync(() => InstallAsync(u, turn!, ct), key, ct,
+                admitted: () => turn = _installTurns.EnterAsync(() => TurnPriorityOf(Get(key) ?? u, DateTimeOffset.UtcNow), ct));
+        }
     }
 
-    private Task RunGuardedAsync(Func<Task> work, string key, CancellationToken ct)
+    /// <summary>Where an update stands in the install queue: overdue first, then by how long its install usually takes here.</summary>
+    private InstallTurnPriority TurnPriorityOf(PendingUpdate u, DateTimeOffset now) =>
+        InstallTurnPriority.For(u, InstallHistory.ExpectedSeconds(_state.InstallHistory, u), now);
+
+    /// <param name="admitted">Runs synchronously once <paramref name="key"/> is admitted (not already in flight), before the work starts.</param>
+    private Task RunGuardedAsync(Func<Task> work, string key, CancellationToken ct, Action? admitted = null)
     {
         lock (_installsInFlight)
         {
             if (!_installsInFlight.Add(key)) return Task.CompletedTask;
         }
+        admitted?.Invoke();
         return Task.Run(async () =>
         {
             // Installs and forced closes run here; a pool thread that is still impersonating a pipe client must not.
@@ -821,15 +841,25 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// (<see cref="PolicyEngine.DecideAtTurn"/>). Checked any earlier, a queue of installs ("Update all") asked the
     /// user to close every application at once and then kept them waiting, and a forced close could end an
     /// application long before its install began. Waiting for the user never holds the lock: the update is parked in
-    /// WaitingForClose, the others go ahead, and closing the application queues it again.
+    /// WaitingForClose, the others go ahead, and closing the application queues it again. Which queued install goes
+    /// next is the <see cref="InstallTurnGate"/>'s order: overdue mandatory updates, then the shortest installs.
     /// </summary>
-    private async Task InstallAsync(PendingUpdate snapshot, CancellationToken ct)
+    /// <param name="turnWait">The wait for this update's install turn (<see cref="InstallTurnGate"/>), queued when the update was admitted.</param>
+    private async Task InstallAsync(PendingUpdate snapshot, Task<IDisposable> turnWait, CancellationToken ct)
+    {
+        // However the attempt ends (finished, postponed, yielded, thrown), its progress is no longer shown.
+        try { await InstallAtTurnAsync(snapshot, turnWait, ct).ConfigureAwait(false); }
+        finally { _progress.End(snapshot.PendingKey()); }
+    }
+
+    private async Task InstallAtTurnAsync(PendingUpdate snapshot, Task<IDisposable> turnWait, CancellationToken ct)
     {
         var settings = _settings.Current;
         var key = snapshot.PendingKey();
 
-        await _installLock.WaitAsync(ct).ConfigureAwait(false);
+        var turn = await turnWait.ConfigureAwait(false);
         InstallResult result;
+        DateTimeOffset? startedUtc = null;
         try
         {
             var u = Get(key);
@@ -883,10 +913,16 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                     break;
             }
 
-            await MutateAsync(key, x => { PolicyEngine.MarkInstalling(x); x.BlockingProcesses = []; x.BlockingDetails = []; }, ct).ConfigureAwait(false);
+            // The clock starts here, after any wait for the user to close applications: that wait is not the install's.
+            var started = DateTimeOffset.UtcNow;
+            startedUtc = started;
+            var expected = InstallHistory.ExpectedSeconds(_state.InstallHistory, u);
+            _progress.Begin(key);
+            await MutateAsync(key, x => { PolicyEngine.MarkInstalling(x, started, expected); x.BlockingProcesses = []; x.BlockingDetails = []; }, ct).ConfigureAwait(false);
             u = Get(key)!;
             _logger.LogInformation("Installing {App} {From} -> {To} ({Source}, {Context}{User})", u.DisplayName, u.InstalledVersion, u.AvailableVersion, u.Source, u.Context,
                 u.Context == InstallContext.User ? $" for {u.UserSid}" : "");
+            if (expected is { } usual) _logger.LogDebug("{App}: installs of it have usually taken {Duration} here", u.DisplayName, InstallHistory.FormatDuration(TimeSpan.FromSeconds(usual)));
             // Whether the start of an install is announced is the app's NotifyInstalling choice (auto = progress chatter
             // that only Reminders shows, so Quiet leaves it to the tray window and the icon badge).
             if (settings.NotificationsEnabled && PolicyEngine.NotifyInstallingFor(policy, settings))
@@ -900,7 +936,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 var options = ProviderOptions.From(settings);
                 var providers = ProviderFactory.Create(_loggerFactory, options);
                 var checker = new UpdateChecker(_loggerFactory.CreateLogger<UpdateChecker>(), providers);
-                var progress = new Progress<string>(line => _logger.LogDebug("[{App}] {Line}", u.DisplayName, line));
+                using var tracker = CreateProgressTracker(key, u, options);
+                var progress = new LineProgress(line => { _logger.LogDebug("[{App}] {Line}", u.DisplayName, line); tracker.Report(line); });
                 try { result = await checker.InstallAsync(policy, u, ExecutionContextInfo.System, progress, timeout.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { result = InstallResult.Fail("Install timed out"); }
                 catch (Exception ex) { result = InstallResult.Fail(ex.Message); _logger.LogError(ex, "Installer threw for {App}", u.DisplayName); }
@@ -912,7 +949,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 if (client is null)
                 {
                     _logger.LogWarning("{App}: user {Sid} has no connected tray agent; install postponed", u.DisplayName, u.UserSid);
-                    await MutateAsync(key, x => x.State = UpdateState.Scheduled, ct).ConfigureAwait(false);
+                    await MutateAsync(key, x => { x.State = UpdateState.Scheduled; PolicyEngine.ClearInstallProgress(x); }, ct).ConfigureAwait(false);
                     return;
                 }
                 var tcs = new TaskCompletionSource<InstallResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -939,7 +976,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 }
             }
         }
-        finally { _installLock.Release(); }
+        finally { turn.Dispose(); }
 
         // Defence in depth: never record "installed" when the provider itself tells us the version did not move.
         if (result.Success && !string.IsNullOrWhiteSpace(result.InstalledVersion) && !string.IsNullOrWhiteSpace(snapshot.AvailableVersion)
@@ -950,6 +987,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
 
         var doneAt = DateTimeOffset.UtcNow;
+        TimeSpan? took = startedUtc is { } began && doneAt >= began ? doneAt - began : null;
+        var tookText = took is { } t ? $" in {InstallHistory.FormatDuration(t)}" : "";
         if (result.Success && result.NothingInstalled)
         {
             // Nothing ran, so there is no install to show: no history entry, no cloud event, no "installed" toast. The
@@ -960,22 +999,25 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
         else if (result.Success)
         {
-            _logger.LogInformation("Installed {App} {Version}{Reboot}: {Message}", snapshot.DisplayName, result.InstalledVersion ?? snapshot.AvailableVersion,
-                result.RebootRequired ? " (reboot required)" : "", result.Message ?? "ok");
+            // The backfill (InstallHistory.ParseServiceLog) reads the version from this line up to the first space or colon.
+            _logger.LogInformation("Installed {App} {Version}{Reboot}{Took}: {Message}", snapshot.DisplayName, result.InstalledVersion ?? snapshot.AvailableVersion,
+                result.RebootRequired ? " (reboot required)" : "", tookText, result.Message ?? "ok");
             var entry = await FinishAsync(key, snapshot, x => PolicyEngine.MarkInstalled(x, result, doneAt), x => InstallHistory.Succeeded(x, result, doneAt), ct).ConfigureAwait(false);
             // The history entry was taken before MarkInstalled overwrote the installed version, so it still has the old one.
             RecordEvent(ReportedEventKind.InstallSucceeded, snapshot.AppId,
-                InstallSucceededEventText(snapshot.DisplayName, result), entry.FromVersion, result.InstalledVersion ?? snapshot.AvailableVersion);
+                InstallSucceededEventText(snapshot.DisplayName, result, took), entry.FromVersion, result.InstalledVersion ?? snapshot.AvailableVersion);
             if (settings.NotificationsEnabled && settings.ShowInstalledNotifications && Get(key) is { } done)
                 await SendNotificationAsync(done, NotificationKind.Installed, ct, result.RebootRequired ? "A restart is required to finish the update." : null).ConfigureAwait(false);
         }
         else
         {
-            _logger.LogError("Install of {App} failed (exit {Code}): {Message}", snapshot.DisplayName, result.ExitCode, result.Message);
+            // Format kept for the backfill: "Install of {App} failed (exit {Code}): {Message}" (the duration goes after the message).
+            _logger.LogError("Install of {App} failed (exit {Code}): {Message}{Took}", snapshot.DisplayName, result.ExitCode, result.Message,
+                took is { } failedAfter ? $" (after {InstallHistory.FormatDuration(failedAfter)})" : "");
             var error = result.Message ?? $"exit code {result.ExitCode}";
             await FinishAsync(key, snapshot, x => PolicyEngine.MarkFailed(x, error, doneAt), x => InstallHistory.Failed(x, error, doneAt), ct).ConfigureAwait(false);
             RecordEvent(ReportedEventKind.InstallFailed, snapshot.AppId,
-                $"{snapshot.DisplayName}: {result.Message ?? $"exit code {result.ExitCode}"}", snapshot.InstalledVersion, snapshot.AvailableVersion);
+                InstallFailedEventText(snapshot.DisplayName, error, took), snapshot.InstalledVersion, snapshot.AvailableVersion);
             if (settings.NotificationsEnabled && Get(key) is { } failed)
             {
                 if (await SendNotificationAsync(failed, NotificationKind.Failed, ct).ConfigureAwait(false))
@@ -985,6 +1027,63 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
         RaiseInstallCompleted(Get(key) ?? snapshot, result.Success);
     }
+
+    // =====================================================================================================================
+    // Install progress
+    // =====================================================================================================================
+
+    /// <summary>
+    /// A tracker for an install the service runs itself: winget's lines and its download folder become phase and byte
+    /// counts for <paramref name="key"/>, sized through the configured proxy.
+    /// </summary>
+    private InstallProgressTracker CreateProgressTracker(string key, PendingUpdate u, ProviderOptions options) =>
+        new(p => PublishProgress(key, u.DisplayName, p),
+            _loggerFactory.CreateLogger<InstallProgressTracker>(),
+            InstallProgressTracker.CreateContentLengthResolver(options.ProxyUrl),
+            wingetId: u.Source == UpdateSource.Winget ? WingetProvider.SplitIds(u.WingetId).FirstOrDefault() : null,
+            version: u.Source == UpdateSource.Winget ? u.AvailableVersion : null);
+
+    /// <summary>
+    /// A new progress snapshot of a running install (from the service's own tracker or from the tray): logged when the
+    /// phase changes and broadcast at the feed's pace (<see cref="InstallProgressFeed"/>). Never saved, never throws.
+    /// </summary>
+    private void PublishProgress(string key, string displayName, InstallProgress progress)
+    {
+        try
+        {
+            if (Get(key) is not { State: UpdateState.Installing }) return;
+            var (broadcast, step) = _progress.Offer(key, progress, DateTimeOffset.UtcNow);
+            if (step is not null) _logger.LogInformation("{App}: {Step}", displayName, step);
+            if (broadcast) _ = BroadcastProgressAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Publishing the install progress of {Key} failed", key);
+        }
+    }
+
+    private async Task BroadcastProgressAsync()
+    {
+        try { await BroadcastStateAsync(CancellationToken.None).ConfigureAwait(false); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Broadcasting install progress failed"); }
+    }
+
+    /// <summary>
+    /// Passes every line straight on, on the reporting thread. <see cref="Progress{T}"/> posts each line to the thread
+    /// pool when there is no synchronization context (the service has none), so two lines could arrive out of order and
+    /// the phase step back.
+    /// </summary>
+    private sealed class LineProgress(Action<string> report) : IProgress<string>
+    {
+        public void Report(string value) => report(value);
+    }
+
+    /// <summary>
+    /// The cloud event text of a failed install: "{App}: {message}", or with a timed install
+    /// "{App} failed after 3 min 27 s: {message}". Pure, so the format is testable.
+    /// </summary>
+    public static string InstallFailedEventText(string displayName, string message, TimeSpan? duration = null) =>
+        duration is { } d ? $"{displayName} failed after {InstallHistory.FormatDuration(d)}: {message}" : $"{displayName}: {message}";
 
     // =====================================================================================================================
     // Notifications / prompts
@@ -1145,6 +1244,12 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
             case UserInstallProgressMessage m:
                 _logger.LogDebug("[{Key}] {Status}", m.UpdateKey, m.Status);
+                // Phase and bytes (trays after 1.1.41; older ones send only the status line): only for the install the
+                // service is waiting on from this very connection.
+                if (m.Phase is { } phase && Enum.IsDefined(phase) && _pendingUserInstalls.TryGetValue(m.UpdateKey, out var installing)
+                    && installing.ConnectionId == conn.ConnectionId && Get(m.UpdateKey) is { } target)
+                    PublishProgress(m.UpdateKey, target.DisplayName, new InstallProgress(phase,
+                        m.DownloadedBytes is >= 0 ? m.DownloadedBytes : null, m.DownloadTotalBytes is > 0 ? m.DownloadTotalBytes : null));
                 break;
 
             case RequestSystemInstallMessage m:
@@ -1329,7 +1434,11 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
             var options = ProviderOptions.From(settings);
             var provider = new WingetProvider(_loggerFactory.CreateLogger<WingetProvider>(), options) { WingetPathOverride = options.WingetPath };
-            var progress = new Progress<string>(line => _logger.LogDebug("[{App}] {Line}", update.DisplayName, line));
+            // The tray waits for this answer meanwhile, so the service reports the install's progress under its key.
+            using var tracker = new InstallProgressTracker(p => PublishProgress(request.UpdateKey, update.DisplayName, p),
+                _loggerFactory.CreateLogger<InstallProgressTracker>(), InstallProgressTracker.CreateContentLengthResolver(options.ProxyUrl),
+                wingetId: request.WingetId, version: update.AvailableVersion);
+            var progress = new LineProgress(line => { _logger.LogDebug("[{App}] {Line}", update.DisplayName, line); tracker.Report(line); });
             InstallResult install;
             try { install = await provider.InstallForAllUsersAsync(policy, update, request.WingetId, progress, CancellationToken.None).ConfigureAwait(false); }
             catch (Exception ex) { install = InstallResult.Fail(ex.Message); _logger.LogError(ex, "The install for all users of {App} threw", update.DisplayName); }
@@ -1375,14 +1484,16 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// The cloud event text of a successful install: "{App} installed[ (reboot required)]", followed by the provider's
+    /// The cloud event text of a successful install: "{App} installed[ in {duration}][ (reboot required)]", followed by the provider's
     /// message unless that is only the generic "Installed successfully..." - a hand-over to SYSTEM, for one, says there
     /// how the install went and what the package registrations were, and the event is the only place that reaches the
     /// cloud. Pure, so the format is testable.
     /// </summary>
-    public static string InstallSucceededEventText(string displayName, InstallResult result)
+    public static string InstallSucceededEventText(string displayName, InstallResult result, TimeSpan? duration = null)
     {
-        var text = $"{displayName} installed{(result.RebootRequired ? " (reboot required)" : "")}";
+        // "Adobe Acrobat Reader installed in 3 min 27 s": the duration when the install was timed.
+        var took = duration is { } d ? $" in {InstallHistory.FormatDuration(d)}" : "";
+        var text = $"{displayName} installed{took}{(result.RebootRequired ? " (reboot required)" : "")}";
         var detail = result.Message?.Trim();
         return string.IsNullOrEmpty(detail) || detail.StartsWith("Installed successfully", StringComparison.OrdinalIgnoreCase)
             ? text
@@ -1403,7 +1514,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         return new StateMessage
         {
             // Installed updates are kept internally (post-install grace, retention) but are no longer shown to users or admins.
-            Updates = _state.Updates.Values.Where(u => IsVisibleTo(u, conn) && u.IsActive).OrderBy(u => u.DisplayName).Select(u => u.Clone()).ToList(),
+            Updates = _state.Updates.Values.Where(u => IsVisibleTo(u, conn) && u.IsActive).OrderBy(u => u.DisplayName).Select(ForClient).ToList(),
             LastScanUtc = _state.LastScanUtc,
             NextScanUtc = _state.NextScanUtc,
             ScanInProgress = _scanInProgress,
@@ -1431,6 +1542,19 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             // Same visibility as the updates: machine-wide installs for everyone, per-user ones for their own user.
             RecentInstalls = InstallHistory.VisibleTo(_state.InstallHistory, conn.UserSid),
         };
+    }
+
+    /// <summary>
+    /// The copy of a tracked update a client gets: with the running install's phase and download counts laid over it,
+    /// and, for every update (queued ones too, so a card can say "usually about 4 minutes" before it starts), how long
+    /// its install has usually taken on this device.
+    /// </summary>
+    private PendingUpdate ForClient(PendingUpdate u)
+    {
+        var copy = u.Clone();
+        copy.ExpectedInstallSeconds = InstallHistory.ExpectedSeconds(_state.InstallHistory, copy);
+        _progress.Apply(copy);
+        return copy;
     }
 
     /// <summary>

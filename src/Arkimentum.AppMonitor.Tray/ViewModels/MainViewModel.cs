@@ -341,15 +341,16 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         {
             var model = incoming[index];
             var local = _store.GetLocalStatus(model.Key);
+            var localProgress = _store.GetLocalProgress(model.Key);
             if (byKey.TryGetValue(model.Key, out var existing))
             {
-                existing.Update(model, connected, local);
+                existing.Update(model, connected, local, localProgress);
                 var current = Updates.IndexOf(existing);
                 if (current != index) Updates.Move(current, index);
             }
             else
             {
-                Updates.Insert(index, new UpdateViewModel(model, this, connected, local, _icons));
+                Updates.Insert(index, new UpdateViewModel(model, this, connected, local, _icons, localProgress));
             }
         }
 

@@ -21,6 +21,12 @@ public sealed class InstallHistoryEntry
 
     public DateTimeOffset CompletedUtc { get; set; }
 
+    /// <summary>
+    /// When the installer was started; with <see cref="CompletedUtc"/> it times the install (the wait for the user to
+    /// close applications is not included). Null for entries recorded before 1.1.42 and for backfilled ones.
+    /// </summary>
+    public DateTimeOffset? StartedUtc { get; set; }
+
     /// <summary>Resolved to System or User (never Auto) - the context the install ran in.</summary>
     public InstallContext Context { get; set; }
 

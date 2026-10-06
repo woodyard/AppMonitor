@@ -11,6 +11,7 @@ using Arkimentum.AppMonitor.Tray.Resources;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Toolkit.Uwp.Notifications;
+using Windows.UI.Notifications;
 
 namespace Arkimentum.AppMonitor.Tray.Services;
 
@@ -50,10 +51,41 @@ public sealed class NotificationService : IHostedService
     /// Updates whose "Installing" toast is still on screen. It stays up (reminder scenario) until the install ends, and is
     /// removed then unless a newer toast for the same update (installed, failed) has already replaced it.
     /// </summary>
-    private readonly HashSet<string> _installToastKeys = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, InstallToast> _installToasts = new(StringComparer.Ordinal);
 
     /// <summary>Windows drops the "Installing" toast after this even if the agent never saw the install end (it was restarted).</summary>
     private static readonly TimeSpan InstallToastLifetime = TimeSpan.FromHours(2);
+
+    /// <summary>
+    /// How often an "Installing" toast is refreshed without news from the service, so "2 min so far" keeps moving. The
+    /// text changes once a minute at most; an unchanged text is not sent again.
+    /// </summary>
+    private static readonly TimeSpan InstallToastRefresh = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// The data-binding names of the "Installing" toast's progress bar. The toast is shown with these placeholders and
+    /// their first values, and then updated in place (<see cref="ToastNotifierCompat.Update(NotificationData, string, string)"/>
+    /// with the toast's tag and group): no new toast, no sound, no banner, and the Hide button stays.
+    /// </summary>
+    private const string BindProgressValue = "progressValue";
+    private const string BindProgressValueString = "progressValueString";
+    private const string BindProgressStatus = "progressStatus";
+
+    /// <summary>One "Installing" toast on screen: the sequence number of its last data, what that data said, and whether it is still there.</summary>
+    private sealed class InstallToast
+    {
+        /// <summary>Windows ignores data whose sequence number is not higher than the toast's current one.</summary>
+        public uint Sequence { get; set; } = 1;
+
+        public string? Shown { get; set; }
+
+        /// <summary>The user hid it (or Windows dropped it): it is never brought back, only removed when the install ends.</summary>
+        public bool Gone { get; set; }
+    }
+
+    private readonly InstallProgressClamp _toastClamp = new();
+    private DispatcherTimer? _installToastClock;
+    private ToastNotifierCompat? _notifier;
 
     public NotificationService(
         ILogger<NotificationService> log,
@@ -101,6 +133,7 @@ public sealed class NotificationService : IHostedService
             _coalesceTimer?.Stop();
             _coalesceTimer = null;
             _pendingAvailable.Clear();
+            _installToastClock?.Stop();
         });
         if (_activationHooked)
         {
@@ -210,16 +243,26 @@ public sealed class NotificationService : IHostedService
 
             // "Installing" stays on screen for as long as the install runs: the reminder scenario keeps a toast up until
             // the user acts on it, and its only button is Hide. It is silent (the reminder sound would be wrong for
-            // progress) and shows an indeterminate bar, because installers report no percentage.
+            // progress). Its bar and the line under it are bound data: the phase, the download and the time so far
+            // (InstallProgressText), updated in place while the toast is up; indeterminate unless a download visibly runs.
             var installing = notify.Kind == NotificationKind.Installing && update is not null;
+            InstallToastContent? content = null;
             if (installing)
             {
-                // Every field is given explicitly: the library turns a field left null into a data-binding placeholder,
-                // and without bound data Windows shows the placeholder's name ("progressBarTitle_0") on the toast.
-                builder.AddProgressBar(title: string.Empty, value: null, isIndeterminate: true, valueStringOverride: string.Empty,
-                    status: Strings.ToastInstallingStatus);
+                // The title is given explicitly: the library turns a field left null into a data-binding placeholder,
+                // and without bound data Windows shows the placeholder's name ("progressBarTitle_0") on the toast. The
+                // other three are bound, and the toast is shown with their values.
+                builder.AddVisualChild(new AdaptiveProgressBar
+                {
+                    Title = string.Empty,
+                    Value = new BindableProgressBarValue(BindProgressValue),
+                    ValueStringOverride = new BindableString(BindProgressValueString),
+                    Status = new BindableString(BindProgressStatus),
+                });
                 builder.SetToastScenario(ToastScenario.Reminder);
                 builder.AddAudio(new ToastAudio { Silent = true });
+                // The message usually comes just before the state broadcast that marks the update as installing.
+                content = InstallToastContentFor(_store.Find(update!.Key) is { State: UpdateState.Installing } known ? known : update);
             }
 
             var tag = TagFor(update?.Key);
@@ -227,14 +270,19 @@ public sealed class NotificationService : IHostedService
             {
                 toast.Tag = tag;
                 toast.Group = ToastGroup;
-                if (installing) toast.ExpirationTime = DateTimeOffset.Now + InstallToastLifetime;
+                if (installing)
+                {
+                    toast.ExpirationTime = DateTimeOffset.Now + InstallToastLifetime;
+                    toast.Data = content!.ToData(1);
+                }
             });
 
             // Every toast of an update shares its tag, so this one replaced whatever that update showed before.
             if (update is not null)
             {
-                if (installing) _installToastKeys.Add(update.Key);
-                else _installToastKeys.Remove(update.Key);
+                if (installing) _installToasts[update.Key] = new InstallToast { Shown = content!.Signature };
+                else ForgetInstallToast(update.Key);
+                UpdateInstallToastClock();
             }
 
             _log.LogInformation("Showed {Kind} toast for {App}", notify.Kind, update?.DisplayName ?? "-");
@@ -255,11 +303,11 @@ public sealed class NotificationService : IHostedService
         // Icons are resolved ahead of the toasts that will want them; cached per application, so this is cheap.
         foreach (var update in _store.Updates) _icons.Prefetch(AppIconRequest.For(update));
 
-        if (_installToastKeys.Count == 0) return;
-        foreach (var key in _installToastKeys.ToList())
+        if (_installToasts.Count == 0) return;
+        foreach (var key in _installToasts.Keys.ToList())
         {
             if (_store.Find(key) is { State: UpdateState.Installing or UpdateState.Scheduled }) continue;
-            _installToastKeys.Remove(key);
+            ForgetInstallToast(key);
             try
             {
                 ToastNotificationManagerCompat.History.Remove(TagFor(key), ToastGroup);
@@ -270,6 +318,101 @@ public sealed class NotificationService : IHostedService
                 _log.LogDebug(ex, "Could not remove the Installing toast for {Key}", key);
             }
         }
+        RefreshInstallToasts();
+        UpdateInstallToastClock();
+    }
+
+    // ---------------------------------------------------------------- the "Installing" toast's progress
+
+    /// <summary>The bound values of an "Installing" toast, and a signature to tell whether they changed.</summary>
+    private sealed record InstallToastContent(string Value, string ValueString, string Status)
+    {
+        public string Signature => $"{Value}|{ValueString}|{Status}";
+
+        public NotificationData ToData(uint sequence) => new(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [BindProgressValue] = Value,
+                [BindProgressValueString] = ValueString,
+                [BindProgressStatus] = Status,
+            },
+            sequence);
+    }
+
+    /// <summary>
+    /// What the toast says about an install: the agent's own reading of a user-context install it runs, otherwise the
+    /// service's. With nothing known (an older service) it is today's plain "In progress" with an indeterminate bar.
+    /// </summary>
+    private InstallToastContent InstallToastContentFor(PendingUpdate update)
+    {
+        var local = _store.GetLocalProgress(update.Key);
+        var view = InstallProgressText.Format(update, DateTimeOffset.UtcNow, local);
+        view = _toastClamp.Apply(update.Key, local?.Phase ?? update.InstallPhase, local?.DownloadTotalBytes ?? update.DownloadTotalBytes, view);
+        return new InstallToastContent(
+            view.Value is { } v ? v.ToString("0.###", CultureInfo.InvariantCulture) : "indeterminate",
+            view.PercentText,
+            view.Status ?? Strings.ToastInstallingStatus);
+    }
+
+    /// <summary>
+    /// Brings every "Installing" toast still on screen up to date, in place. Only changed text is sent; a toast the user
+    /// hid answers "not found" and is left alone from then on (an update never shows it again).
+    /// </summary>
+    private void RefreshInstallToasts()
+    {
+        foreach (var (key, toast) in _installToasts)
+        {
+            if (toast.Gone || _store.Find(key) is not { State: UpdateState.Installing } update) continue;
+            var content = InstallToastContentFor(update);
+            if (content.Signature == toast.Shown) continue;
+            try
+            {
+                _notifier ??= ToastNotificationManagerCompat.CreateToastNotifier();
+                var result = _notifier.Update(content.ToData(++toast.Sequence), TagFor(key), ToastGroup);
+                if (result == NotificationUpdateResult.NotificationNotFound)
+                {
+                    toast.Gone = true;
+                    _log.LogDebug("The Installing toast for {Key} is no longer on screen; not updating it", key);
+                }
+                else
+                {
+                    toast.Shown = content.Signature;
+                    _log.LogDebug("Updated the Installing toast for {Key}: {Status} ({Result})", key, content.Status, result);
+                }
+            }
+            catch (Exception ex)
+            {
+                toast.Gone = true;
+                _log.LogDebug(ex, "Could not update the Installing toast for {Key}", key);
+            }
+        }
+    }
+
+    private void ForgetInstallToast(string key)
+    {
+        _installToasts.Remove(key);
+        _toastClamp.Forget(key);
+    }
+
+    /// <summary>Ticks while an "Installing" toast is on screen, so its elapsed time moves; stopped otherwise.</summary>
+    private void UpdateInstallToastClock()
+    {
+        var needed = _installToasts.Values.Any(t => !t.Gone);
+        if (!needed)
+        {
+            _installToastClock?.Stop();
+            return;
+        }
+        if (_installToastClock is null)
+        {
+            _installToastClock = new DispatcherTimer(DispatcherPriority.Background, _dispatcher) { Interval = InstallToastRefresh };
+            _installToastClock.Tick += (_, _) =>
+            {
+                RefreshInstallToasts();
+                UpdateInstallToastClock();
+            };
+        }
+        if (!_installToastClock.IsEnabled) _installToastClock.Start();
     }
 
     /// <summary>

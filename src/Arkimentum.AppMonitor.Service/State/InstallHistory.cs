@@ -70,7 +70,7 @@ public static class InstallHistory
             {
                 AppId = e.AppId, DisplayName = e.DisplayName, FromVersion = e.FromVersion, ToVersion = e.ToVersion,
                 Succeeded = e.Succeeded, CompletedUtc = e.CompletedUtc, Context = e.Context, UserSid = e.UserSid,
-                Message = e.Message, IconPath = icon,
+                Message = e.Message, IconPath = icon, StartedUtc = e.StartedUtc,
             };
         }).ToList();
         return changed ? result : null;
@@ -92,6 +92,54 @@ public static class InstallHistory
     /// <summary>A failed install of <paramref name="update"/>; the version is the one it aimed for.</summary>
     public static InstallHistoryEntry Failed(PendingUpdate update, string? message, DateTimeOffset at) =>
         Create(update, false, update.AvailableVersion, Shorten(message), at);
+
+    // ---------------------------------------------------------------- how long installs take
+
+    /// <summary>How many of the latest timed installs the expected duration is taken from.</summary>
+    public const int ExpectedDurationSamples = 3;
+
+    /// <summary>How long one entry's install took, or null when it was not timed (recorded before 1.1.42, backfilled).</summary>
+    public static TimeSpan? DurationOf(InstallHistoryEntry entry) =>
+        entry.StartedUtc is { } started && entry.CompletedUtc >= started ? entry.CompletedUtc - started : null;
+
+    /// <summary>
+    /// How long an install of <paramref name="appId"/> usually takes on this device: the median of the latest
+    /// <see cref="ExpectedDurationSamples"/> successful, timed installs of that application in the same context (and,
+    /// per user, for the same user), in whole seconds (at least 1). The median, so one install that waited on a slow
+    /// download does not set the expectation. Null when no such install was timed.
+    /// </summary>
+    public static int? ExpectedSeconds(IEnumerable<InstallHistoryEntry>? history, string appId, InstallContext context, string? userSid)
+    {
+        var samples = (history ?? [])
+            .Where(e => e.Succeeded && e.Context == context && string.Equals(e.AppId, appId, StringComparison.OrdinalIgnoreCase)
+                        && (context != InstallContext.User || string.Equals(e.UserSid, userSid, StringComparison.OrdinalIgnoreCase)))
+            .Select(e => (e.CompletedUtc, Duration: DurationOf(e)))
+            .Where(x => x.Duration is not null)
+            .OrderByDescending(x => x.CompletedUtc)
+            .Take(ExpectedDurationSamples)
+            .Select(x => x.Duration!.Value.TotalSeconds)
+            .OrderBy(s => s)
+            .ToList();
+        if (samples.Count == 0) return null;
+        var median = samples.Count % 2 == 1
+            ? samples[samples.Count / 2]
+            : (samples[samples.Count / 2 - 1] + samples[samples.Count / 2]) / 2;
+        return (int)Math.Max(1, Math.Round(median, MidpointRounding.AwayFromZero));
+    }
+
+    /// <summary>The expected duration of <paramref name="update"/>'s install (see <see cref="ExpectedSeconds(IEnumerable{InstallHistoryEntry}, string, InstallContext, string)"/>).</summary>
+    public static int? ExpectedSeconds(IEnumerable<InstallHistoryEntry>? history, PendingUpdate update) =>
+        ExpectedSeconds(history, update.AppId, update.Context, update.UserSid);
+
+    /// <summary>"3 min 27 s", "45 s", "1 h 2 min": how the log and the cloud events state a duration.</summary>
+    public static string FormatDuration(TimeSpan duration)
+    {
+        var seconds = (long)Math.Max(0, Math.Round(duration.TotalSeconds, MidpointRounding.AwayFromZero));
+        if (seconds < 60) return $"{seconds} s";
+        if (seconds < 3600) return seconds % 60 == 0 ? $"{seconds / 60} min" : $"{seconds / 60} min {seconds % 60} s";
+        var minutes = seconds / 60;
+        return minutes % 60 == 0 ? $"{minutes / 60} h" : $"{minutes / 60} h {minutes % 60} min";
+    }
 
     // ---------------------------------------------------------------- one-time backfill from the service log
 
@@ -210,5 +258,6 @@ public static class InstallHistory
         UserSid = u.Context == InstallContext.User ? u.UserSid : null,
         Message = message,
         IconPath = u.IconPath,
+        StartedUtc = u.InstallStartedUtc is { } started && started <= at ? started : null,
     };
 }

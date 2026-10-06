@@ -28,6 +28,7 @@ public sealed class AgentStateStore : IHostedService
     private readonly Dispatcher _dispatcher;
     private readonly LogLevelSwitch _logLevel;
     private readonly Dictionary<string, string> _localStatus = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, LocalInstallProgress> _localProgress = new(StringComparer.Ordinal);
     private readonly HashSet<string> _updateAllKeys = new(StringComparer.Ordinal);
     private DispatcherTimer? _updateAllTimeout;
     private readonly ScanActivity _scan = new();
@@ -257,6 +258,27 @@ public sealed class AgentStateStore : IHostedService
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Where a user-context install this agent runs is (phase, download), read by its own tracker; null when it runs
+    /// none for <paramref name="key"/>. The card and the "Installing" toast prefer it over the service's copy, which
+    /// lags by a round trip and is missing altogether from a service older than the progress fields.
+    /// </summary>
+    public LocalInstallProgress? GetLocalProgress(string key) => _localProgress.TryGetValue(key, out var p) ? p : null;
+
+    public void SetLocalProgress(string key, LocalInstallProgress? progress)
+    {
+        if (progress is null)
+        {
+            if (!_localProgress.Remove(key)) return;
+        }
+        else
+        {
+            if (_localProgress.TryGetValue(key, out var existing) && existing == progress) return;
+            _localProgress[key] = progress;
+        }
+        Changed?.Invoke();
+    }
+
     /// <summary>Re-raises <see cref="Changed"/> so relative times ("in 2 hours") are recomputed.</summary>
     public void Refresh() => Changed?.Invoke();
 
@@ -324,6 +346,13 @@ public sealed class AgentStateStore : IHostedService
                 .Where(k => Find(k) is null or { State: UpdateState.Installed or UpdateState.Failed })
                 .ToList();
             foreach (var key in stale) _localStatus.Remove(key);
+        }
+        if (_localProgress.Count > 0)
+        {
+            var stale = _localProgress.Keys
+                .Where(k => Find(k) is null or { State: UpdateState.Installed or UpdateState.Failed })
+                .ToList();
+            foreach (var key in stale) _localProgress.Remove(key);
         }
 
         SettleUpdateAll();

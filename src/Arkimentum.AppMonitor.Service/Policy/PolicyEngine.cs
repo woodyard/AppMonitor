@@ -473,10 +473,31 @@ public static class PolicyEngine
         u.Dismissed = false;
     }
 
-    public static void MarkInstalling(PendingUpdate u)
+    /// <summary>
+    /// The installer is about to start: <paramref name="startedUtc"/> times the install (for the history and the expected
+    /// duration), the phase starts at <see cref="InstallPhase.Starting"/> and the download counts are cleared.
+    /// </summary>
+    public static void MarkInstalling(PendingUpdate u, DateTimeOffset? startedUtc = null, int? expectedInstallSeconds = null)
     {
         u.State = UpdateState.Installing;
         u.LastError = null;
+        u.InstallStartedUtc = startedUtc;
+        u.InstallPhase = InstallPhase.Starting;
+        u.DownloadedBytes = null;
+        u.DownloadTotalBytes = null;
+        if (expectedInstallSeconds is not null) u.ExpectedInstallSeconds = expectedInstallSeconds;
+    }
+
+    /// <summary>
+    /// Forgets the progress of an install that has ended (or never started): phase, download counts and start time.
+    /// Called after the history entry was taken, which reads the start time.
+    /// </summary>
+    public static void ClearInstallProgress(PendingUpdate u)
+    {
+        u.InstallStartedUtc = null;
+        u.InstallPhase = null;
+        u.DownloadedBytes = null;
+        u.DownloadTotalBytes = null;
     }
 
     public static void MarkInstalled(PendingUpdate u, InstallResult result, DateTimeOffset now)
@@ -499,6 +520,7 @@ public static class PolicyEngine
                             && VersionComparer.Compare(result.InstalledVersion, u.AvailableVersion) >= 0;
         u.NothingToInstall = result.NothingInstalled;
         u.RebootPending = result.RebootRequired;
+        ClearInstallProgress(u);
     }
 
     public static void MarkFailed(PendingUpdate u, string error, DateTimeOffset now)
@@ -510,6 +532,7 @@ public static class PolicyEngine
         u.ForceCloseAtUtc = null;
         u.ForceCloseRequestedUtc = null; // a new attempt must be asked for again
         u.InstallRequested = false;
+        ClearInstallProgress(u);
     }
 
     /// <summary>

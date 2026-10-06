@@ -44,6 +44,24 @@ public enum UpdateState
 }
 
 /// <summary>
+/// Where a running install is, as far as the agent can tell from the installer's output (winget prints one line per
+/// step). Only meaningful while <see cref="PendingUpdate.State"/> is <see cref="UpdateState.Installing"/>.
+/// </summary>
+public enum InstallPhase
+{
+    /// <summary>The install was started; nothing has been heard from the installer yet.</summary>
+    Starting = 0,
+    /// <summary>The installer is being downloaded (<see cref="PendingUpdate.DownloadedBytes"/> may say how far).</summary>
+    Downloading = 1,
+    /// <summary>The download is being checked against its hash.</summary>
+    Verifying = 2,
+    /// <summary>The vendor's installer is running; it reports no progress of its own.</summary>
+    Installing = 3,
+    /// <summary>The installer has finished; the agent is reading the new version back.</summary>
+    Checking = 4,
+}
+
+/// <summary>
 /// How insistent the agent is about a pending update. The default is <see cref="Quiet"/>: users found one toast per
 /// update per notification interval intrusive, so an update is announced once and only things that actually need the
 /// user (deadline, close prompt, failure) are allowed to interrupt again.

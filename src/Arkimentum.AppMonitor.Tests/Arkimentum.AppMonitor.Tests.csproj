@@ -34,5 +34,8 @@
     <Compile Include="..\Arkimentum.AppMonitor.Tray\Services\CloseAppsPrompt.cs" Link="Tray\CloseAppsPrompt.cs" />
     <Compile Include="..\Arkimentum.AppMonitor.Tray\Infrastructure\TimeFormat.cs" Link="Tray\TimeFormat.cs" />
     <Compile Include="..\Arkimentum.AppMonitor.Tray\Infrastructure\CommandLineOptions.cs" Link="Tray\CommandLineOptions.cs" />
+    <!-- What the "Installing" toast and the update card say about a running install, and how often a user-context install reports it. -->
+    <Compile Include="..\Arkimentum.AppMonitor.Tray\Services\InstallProgressText.cs" Link="Tray\InstallProgressText.cs" />
+    <Compile Include="..\Arkimentum.AppMonitor.Tray\Services\InstallProgressThrottle.cs" Link="Tray\InstallProgressThrottle.cs" />
   </ItemGroup>
 </Project>

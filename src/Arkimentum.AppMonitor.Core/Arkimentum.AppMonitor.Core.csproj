@@ -11,6 +11,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.12" />
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
+    <!-- Delivery Optimization's download jobs (InstallProgressTracker): the CIM class MSFT_DeliveryOptimizationFile. -->
+    <PackageReference Include="System.Management" Version="10.0.12" />
   </ItemGroup>
 </Project>

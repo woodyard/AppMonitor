@@ -65,6 +65,8 @@ public sealed class StateStore
             state.InstallHistory = InstallHistory.Normalize(state.InstallHistory);
             // An install that was in flight when the service stopped cannot be trusted.
             foreach (var u in state.Updates.Values.Where(u => u.State == UpdateState.Installing)) u.State = UpdateState.Available;
+            // Nor can its progress: it describes an installer that is gone.
+            foreach (var u in state.Updates.Values) Policy.PolicyEngine.ClearInstallProgress(u);
             _logger.LogInformation("Loaded state from {Path}: {Count} tracked update(s), {Presence} known application(s)",
                 path, state.Updates.Count, state.AppPresence.Count);
             return state;

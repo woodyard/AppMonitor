@@ -92,6 +92,15 @@ public sealed class UserInstallProgressMessage : IpcMessage
 {
     public required string UpdateKey { get; set; }
     public string? Status { get; set; }
+
+    /// <summary>
+    /// Optional (added after 1.1.41): the step of the user-context install and how far its download is, which the
+    /// service copies onto the pending update (<see cref="PendingUpdate.InstallPhase"/> and the byte counts) and
+    /// broadcasts. An older tray sends only <see cref="Status"/>; an older service ignores these.
+    /// </summary>
+    public InstallPhase? Phase { get; set; }
+    public long? DownloadedBytes { get; set; }
+    public long? DownloadTotalBytes { get; set; }
 }
 
 /// <summary>Tray agent reports the outcome of a user-context install requested by the service.</summary>

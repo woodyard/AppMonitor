@@ -2162,6 +2162,8 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         var t = line.Trim();
         if (t.Length == 0) return null;
         if (t.All(c => c == '-')) return null;
+        // The download line stays whole: InstallProgressTracker asks the URL for the installer's size.
+        if (t.StartsWith("Downloading http", StringComparison.OrdinalIgnoreCase)) return t.Length > 2048 ? t[..2048] : t;
         return t.Length > 160 ? t[..157] + "..." : t;
     }
 }

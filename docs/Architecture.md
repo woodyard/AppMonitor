@@ -361,6 +361,24 @@ while an install is running or ready to start (`PolicyEngine.HoldPromptForTurn`)
 longer asks for every application at once and then keeps the user waiting, application closed, while the
 other installs run, and nothing is killed long before its install begins.
 
+**Shortest first.** The install lock is a turn gate (`InstallTurnGate`): when an install ends, the waiting
+one with the highest priority goes next - a mandatory update past its deadline first, then the one whose
+installs have taken the least time on this device (the median of its last three successful, timed installs
+in the history; never timed counts as two minutes), then the one queued first. The installs of one policy
+tick are queued in that order too, so the first of them is already the right one.
+
+**Progress.** While an install runs the tracked update carries its phase (`Starting`, `Downloading`,
+`Verifying`, `Installing`, `Checking`), the downloaded and total bytes when they can be seen, the start time
+and the expected duration from the history. winget prints no progress bar with redirected output, but one
+line per step; `InstallProgressTracker` maps those lines and, while downloading, reads Delivery
+Optimization's job for the download once a second (CIM `MSFT_DeliveryOptimizationFile`: size and bytes so
+far; matched by the printed URL, else - a redirect - by the size the URL announces over HTTP HEAD, else as the
+only new unfinished winget job). Without DO it falls back to the installer file in winget's download folder
+(`%TEMP%\WinGet\<id>.<version>`, for SYSTEM `C:\Windows\Temp\WinGet`), which DO only fills at the end. The service runs the tracker for its own installs; the tray
+runs it for per-user installs and reports through `UserInstallProgressMessage`. Progress is kept in memory only
+and broadcast at once on a phase change, otherwise at most every two seconds; the log gets one line per phase,
+and the "Installed" line and the cloud event the duration ("installed in 3 min 27 s").
+
 **Only interactive sessions count.** A process in session 0 - a scheduled task, a management agent's
 script, a service's helper - never blocks an update and is never closed by the agent: no user can save
 work there, and the installer itself handles files in use the way MSI installers do (typically by

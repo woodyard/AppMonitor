@@ -52,13 +52,17 @@ public sealed class UpdateViewModel : ObservableObject
 
     private PendingUpdate _update;
     private string? _localStatus;
+    private LocalInstallProgress? _localProgress;
+    private readonly InstallProgressClamp _clamp = new();
     private bool _isConnected;
     private string? _iconHints;
     private ImageSource? _icon;
 
-    public UpdateViewModel(PendingUpdate update, IUpdateActions actions, bool isConnected, string? localStatus, AppIconProvider icons)
+    public UpdateViewModel(PendingUpdate update, IUpdateActions actions, bool isConnected, string? localStatus, AppIconProvider icons,
+        LocalInstallProgress? localProgress = null)
     {
         _update = update;
+        _localProgress = localProgress;
         _actions = actions;
         _icons = icons;
         _isConnected = isConnected;
@@ -71,6 +75,7 @@ public sealed class UpdateViewModel : ObservableObject
         _closeAppsCommand = new RelayCommand(() => _actions.ShowCloseApps(_update));
         DeferralOptions = [];
         RebuildDeferralOptions();
+        RefreshProgress();
         RequestIcon();
     }
 
@@ -118,6 +123,9 @@ public sealed class UpdateViewModel : ObservableObject
     {
         get
         {
+            // What the install is doing ("Downloading · 312 of 825 MB"), from this agent's own reading of a user-context
+            // install or from the service; an older service sends nothing and the card says "Installing…" as before.
+            if (_progress.Status is { } progress) return progress;
             if (_localStatus is { Length: > 0 }) return _localStatus;
             return _update.State switch
             {
@@ -146,6 +154,36 @@ public sealed class UpdateViewModel : ObservableObject
         UpdateState.WaitingForClose => StatusSeverity.Attention,
         _ => _update.IsPastDeadline(DateTimeOffset.UtcNow) ? StatusSeverity.Attention : StatusSeverity.Normal,
     };
+
+    // ---------------------------------------------------------------- install progress
+
+    private InstallProgressView _progress;
+
+    /// <summary>The bar under the status line while the update installs; determinate only while a download visibly runs.</summary>
+    public bool ShowInstallProgress => _update.State == UpdateState.Installing || _localProgress is not null;
+
+    public bool IsProgressIndeterminate => _progress.IsIndeterminate;
+
+    public double ProgressValue => _progress.Value ?? 0;
+
+    /// <summary>"Usually takes about 4 min" under a queued update, when this device has timed its earlier installs.</summary>
+    public string QueuedHintText => InstallProgressText.QueuedHint(_update) ?? string.Empty;
+
+    public bool HasQueuedHint => QueuedHintText.Length > 0;
+
+    /// <summary>Recomputed on every refresh: the elapsed time moves with the window's 30-second clock.</summary>
+    private void RefreshProgress()
+    {
+        var view = InstallProgressText.Format(_update, DateTimeOffset.UtcNow, _localProgress);
+        if (view.Status is null && !ShowInstallProgress)
+        {
+            _clamp.Forget(Key);
+            _progress = view;
+            return;
+        }
+        _progress = _clamp.Apply(Key, _localProgress?.Phase ?? _update.InstallPhase,
+            _localProgress?.DownloadTotalBytes ?? _update.DownloadTotalBytes, view);
+    }
 
     public string DeadlineText =>
         _update.Mandatory && _update.DeadlineUtc is { } deadline ? Strings.RequiredBy(TimeFormat.Absolute(deadline)) : string.Empty;
@@ -189,12 +227,14 @@ public sealed class UpdateViewModel : ObservableObject
 
     // ---------------------------------------------------------------- refresh
 
-    public void Update(PendingUpdate update, bool isConnected, string? localStatus)
+    public void Update(PendingUpdate update, bool isConnected, string? localStatus, LocalInstallProgress? localProgress = null)
     {
         _update = update;
+        _localProgress = localProgress;
         _isConnected = isConnected;
         _localStatus = localStatus;
         RebuildDeferralOptions();
+        RefreshProgress();
         RequestIcon();
         RaiseAll();
     }
@@ -232,6 +272,7 @@ public sealed class UpdateViewModel : ObservableObject
             nameof(DisplayName), nameof(Monogram), nameof(VersionText), nameof(SourceBadge), nameof(ContextBadge),
             nameof(StatusText), nameof(Severity), nameof(DeadlineText), nameof(HasDeadline),
             nameof(ShowInstall), nameof(IsInstallEnabled), nameof(ShowCloseApps), nameof(ShowDefer),
-            nameof(ShowNoMoreDeferrals), nameof(DeferralsUsedText), nameof(ShowRemindMeLater), nameof(ShowAnyAction));
+            nameof(ShowNoMoreDeferrals), nameof(DeferralsUsedText), nameof(ShowRemindMeLater), nameof(ShowAnyAction),
+            nameof(ShowInstallProgress), nameof(IsProgressIndeterminate), nameof(ProgressValue), nameof(QueuedHintText), nameof(HasQueuedHint));
     }
 }

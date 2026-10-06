@@ -230,8 +230,27 @@ public static class Strings
     public const string ToastButtonDetails = "Details";
     /// <summary>The only button on the "Installing" toast: hides it; the install carries on.</summary>
     public const string ToastButtonHide = "Hide";
-    /// <summary>Status line under the progress bar of the "Installing" toast.</summary>
+    /// <summary>Status line under the progress bar of the "Installing" toast while nothing more is known (an older service).</summary>
     public const string ToastInstallingStatus = "In progress";
+
+    // ---- the line under an install's progress bar (toast and card), see InstallProgressText
+    public const string InstallPhaseStarting = "Starting";
+    public const string InstallPhaseDownloading = "Downloading";
+    public const string InstallPhaseVerifying = "Verifying the download";
+    public const string InstallPhaseInstalling = "Installing";
+    /// <summary>The installer has finished; the agent is reading the new version back.</summary>
+    public const string InstallPhaseChecking = "Finishing up";
+    /// <summary>"312 of 825 MB" / "312 MB of 1.2 GB".</summary>
+    public static string InstallSizeOf(string downloaded, string total) => $"{downloaded} of {total}";
+    /// <summary>A download whose size the server did not announce: "312 MB so far".</summary>
+    public static string InstallDownloadedSoFar(string size) => $"{size} so far";
+    /// <summary>"2 min so far".</summary>
+    public static string InstallElapsed(string duration) => $"{duration} so far";
+    /// <summary>"usually about 4 min" - from the earlier installs of the application on this device.</summary>
+    public static string InstallUsually(string duration) => $"usually about {duration}";
+    /// <summary>Under a queued update's status: "Usually takes about 4 min".</summary>
+    public static string InstallUsuallyTakes(string duration) => $"Usually takes about {duration}";
+    public const string DurationUnderAMinute = "less than a minute";
     public const string ToastButtonCloseAndUpdate = "Close apps and update";
 
     public static string ToastButtonDefer(string duration) => $"Defer {duration}";

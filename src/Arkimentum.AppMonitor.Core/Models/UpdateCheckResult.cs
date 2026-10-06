@@ -51,6 +51,15 @@ public sealed record InstallResult
     /// </summary>
     public bool NothingInstalled { get; init; }
 
+    /// <summary>
+    /// A success that has not taken effect yet: the installer staged the new version of a running MSIX package and
+    /// Windows registers it the next time the application starts (winget: "Successfully installed. Restart the
+    /// application to complete the upgrade.", exit 0). <see cref="InstalledVersion"/> is the version still registered,
+    /// which is below the target; that is expected here and no failure. Added after 1.1.44; an IPC message without it
+    /// means false.
+    /// </summary>
+    public bool AppRestartPending { get; init; }
+
     public static InstallResult Ok(string? message = null, int exitCode = 0, bool reboot = false) =>
         new() { Success = true, ExitCode = exitCode, Message = message, RebootRequired = reboot };
 

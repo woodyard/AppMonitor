@@ -73,6 +73,14 @@ public sealed class PendingUpdate
     /// <summary>The installer asked for a reboot; the version on disk may lag until then.</summary>
     public bool RebootPending { get; set; }
 
+    /// <summary>
+    /// The install staged the new version, and Windows finishes it the next time the application starts (see
+    /// <see cref="InstallResult.AppRestartPending"/>): until then the scan still reads the old version. The update is
+    /// not offered again for that version while this holds, because another install would only stage it again (see
+    /// <c>PolicyEngine.Merge</c>). Added after 1.1.44; a state file or an IPC message without it means false.
+    /// </summary>
+    public bool AppRestartPending { get; set; }
+
     public bool Mandatory { get; set; }
     public int DeferralCount { get; set; }
     public int MaxDeferrals { get; set; }

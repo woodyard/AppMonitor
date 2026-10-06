@@ -38,4 +38,11 @@ public sealed class InstallHistoryEntry
 
     /// <summary>The tracked update's <see cref="PendingUpdate.IconPath"/> when the install finished; null for older or backfilled entries.</summary>
     public string? IconPath { get; set; }
+
+    /// <summary>
+    /// A successful install that finishes the next time the application starts (see
+    /// <see cref="InstallResult.AppRestartPending"/>); cleared once a scan shows the new version or the pending state
+    /// ends otherwise. Added after 1.1.44; older entries and an older service leave it false.
+    /// </summary>
+    public bool AppRestartPending { get; set; }
 }

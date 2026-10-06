@@ -260,8 +260,8 @@ public sealed class UpdateChecker
             var result = await provider.InstallAsync(app, update, context, progress, ct).ConfigureAwait(false);
             if (result.Success)
                 _logger.LogInformation("{App}: installed successfully (version {Version}{Reboot}). {Message}",
-                    label, result.InstalledVersion ?? update.AvailableVersion,
-                    result.RebootRequired ? ", reboot required" : string.Empty, result.Message);
+                    label, result.AppRestartPending ? update.AvailableVersion : result.InstalledVersion ?? update.AvailableVersion,
+                    result.RebootRequired ? ", reboot required" : result.AppRestartPending ? ", finishes when the application next starts" : string.Empty, result.Message);
             else
                 _logger.LogError("{App}: install failed (exit {ExitCode}): {Message}", label, result.ExitCode, result.Message);
             return result;

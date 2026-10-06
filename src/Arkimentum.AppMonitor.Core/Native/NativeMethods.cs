@@ -115,6 +115,16 @@ public static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out SafeAccessTokenHandle tokenHandle);
 
+    /// <summary>The access right that is enough for <see cref="QueryFullProcessImageNameW"/>, and that a user gets for its own processes.</summary>
+    public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial IntPtr OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool QueryFullProcessImageNameW(IntPtr process, int flags, [Out] char[] exeName, ref int size);
+
     // ------------------------------------------------------------------ helpers
 
     public static int? GetNamedPipeClientSessionId(SafePipeHandle pipe) =>

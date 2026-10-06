@@ -80,6 +80,13 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     internal Func<AppPolicy, ExecutionContextInfo, InstalledApp?>? RegistryReader { get; init; }
 
     /// <summary>
+    /// Replaces the check whether a process of the install's session runs from one of the given MSIX package folders
+    /// (package full names, see <see cref="Native.ProcessHelper.AnyRunningFromPackage"/>), which the restart-pending
+    /// fallback uses (see <see cref="IsAppRestartPendingAsync"/>). Tests answer it; null (the default) looks at the processes.
+    /// </summary>
+    internal Func<IReadOnlyCollection<string>, ExecutionContextInfo, bool>? PackageProcessProbe { get; init; }
+
+    /// <summary>
     /// Checks every id with winget's own per-id lookup, as the fallback for a failed full listing does, even when the
     /// listing is complete. For tests that prove both paths reach the same result for the same winget output.
     /// </summary>
@@ -640,6 +647,9 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
 
         if (stillOutdated && !result.RebootRequired)
         {
+            // A running MSIX application: the new package is staged and registered when the application next starts.
+            if (await IsAppRestartPendingAsync(app, context, winget, wingetId, sourceName, run, ct).ConfigureAwait(false))
+                return UpgradeOutcome.Final(AppRestartPendingResult(app, update, newVersion, run.ExitCode));
             var message = $"winget reported success (exit 0x{run.ExitCode:X8}) but '{wingetId}' is still at {newVersion}, expected {update.AvailableVersion}.";
             _logger.LogError("{AppId}: {Message}", app.AppId, message);
             return UpgradeOutcome.Final(InstallResult.Fail(message, run.ExitCode));
@@ -658,6 +668,83 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     /// </summary>
     internal static bool IsRefusal(int exitCode) =>
         exitCode is WingetOutputParser.ExitNoApplicableUpgrade or WingetOutputParser.ExitUpdateInstallTechnologyMismatch;
+
+    /// <summary>
+    /// Whether a winget run that exited 0 while the version stayed below the target staged an MSIX update that Windows
+    /// registers the next time the application starts (see <see cref="InstallResult.AppRestartPending"/>). Seen on
+    /// DESKTOP-V1CDE3I with Windows Terminal open, and reproduced with PowerShell's MSIX package: winget prints
+    /// "Successfully installed. Restart the application to complete the upgrade.", exits 0, the process keeps running,
+    /// <c>winget list</c> and <c>Get-AppxPackage</c> keep the old version, and the new one is registered as soon as the
+    /// application is started again. Two rules, checked in this order: (a) winget's own line
+    /// (<see cref="WingetOutputParser.IsAppRestartPendingOutput"/>, English); (b) for a winget that speaks another language,
+    /// <c>winget list --details</c> shows every installed row of the id as an MSIX package and a process of this session
+    /// runs from one of those packages' folders. (b) only in a user's session: MSIX registrations are per user, so the
+    /// service's machine-scope listing never shows them, and user-context installs run in the tray. Never throws; any
+    /// doubt is "no", and the caller reports the failure as before.
+    /// </summary>
+    private async Task<bool> IsAppRestartPendingAsync(AppPolicy app, ExecutionContextInfo context, string winget, string wingetId, string sourceName,
+        ProcessRunResult run, CancellationToken ct)
+    {
+        if (run.ExitCode != 0) return false;
+        if (WingetOutputParser.IsAppRestartPendingOutput(run.CombinedOutput))
+        {
+            _logger.LogInformation("{AppId}: winget staged the update of '{WingetId}' and says the application must be restarted to complete it.", app.AppId, wingetId);
+            return true;
+        }
+        if (context.IsSystem) return false;
+        try
+        {
+            var details = await ListDetailsAsync(winget, wingetId, sourceName, context, ct).ConfigureAwait(false);
+            if (details.Error is not null) return false;
+            var packages = MsixPackageFullNames(details.Rows, wingetId);
+            if (packages.Count == 0) return false;
+            var running = PackageProcessProbe is { } probe
+                ? probe(packages, context)
+                : Native.ProcessHelper.AnyRunningFromPackage(packages, context.SessionId);
+            if (running)
+                _logger.LogInformation("{AppId}: '{WingetId}' is the MSIX package {Package} and a process of this session runs from it; the staged update is registered when the application next starts.",
+                    app.AppId, wingetId, string.Join(", ", packages));
+            return running;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "{AppId}: could not tell whether '{WingetId}' waits for the application to restart.", app.AppId, wingetId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The package full names (<c>Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe</c>) of the installed rows of
+    /// <paramref name="wingetId"/> in a <c>winget list --details</c> listing, when every such row is an MSIX package with a
+    /// well-formed Local Identifier; empty otherwise. Pure, so the rule is testable.
+    /// </summary>
+    internal static IReadOnlyList<string> MsixPackageFullNames(IReadOnlyList<WingetInstalledDetails> rows, string wingetId)
+    {
+        var own = rows.Where(r => string.Equals(r.Id, wingetId, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (own.Count == 0 || own.Any(r => !string.Equals(r.InstallerCategory, "msix", StringComparison.OrdinalIgnoreCase))) return [];
+        const string prefix = @"MSIX\";
+        var names = new List<string>();
+        foreach (var r in own)
+        {
+            if (WingetOutputParser.MsixPackageVersion(r.LocalIdentifier) is null) return [];
+            var id = r.LocalIdentifier!.Trim();
+            names.Add(id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? id[prefix.Length..] : id);
+        }
+        return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// The success reported for an update that finishes when the application next starts: the registered (old) version as
+    /// <see cref="InstallResult.InstalledVersion"/>, and a message that says what is still to happen.
+    /// </summary>
+    internal static InstallResult AppRestartPendingResult(AppPolicy app, PendingUpdate update, string? registeredVersion, int exitCode)
+    {
+        var name = !string.IsNullOrWhiteSpace(update.DisplayName) ? update.DisplayName
+            : !string.IsNullOrWhiteSpace(app.DisplayName) ? app.DisplayName : app.AppId;
+        return InstallResult.Ok($"Installed; Windows finishes the update the next time {name} starts.", exitCode)
+            with { InstalledVersion = registeredVersion ?? update.InstalledVersion, AppRestartPending = true };
+    }
 
     /// <summary>
     /// How many <c>winget install</c> attempts the user context makes (see <see cref="UserContextInstallFilter"/>).
@@ -790,6 +877,8 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         }
         if (stillOutdated && !result.RebootRequired)
         {
+            if (await IsAppRestartPendingAsync(app, context, winget, wingetId, sourceName, run, ct).ConfigureAwait(false))
+                return AppRestartPendingResult(app, update, newVersion, run.ExitCode);
             var message = $"{prefix} 'winget install --force' reported success (exit 0x{run.ExitCode:X8}) but the installed version is still {newVersion}, expected {update.AvailableVersion}.";
             _logger.LogError("{AppId}: {Message}", app.AppId, message);
             return InstallResult.Fail(message, run.ExitCode);

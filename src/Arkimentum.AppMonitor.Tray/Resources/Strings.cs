@@ -134,6 +134,11 @@ public static class Strings
     public const string RecentInstallsEmpty = "No updates installed yet";
     /// <summary>Tooltip of a successful row, e.g. "Updated from 155.0.4 to 156.0.1".</summary>
     public static string RecentInstallUpdatedFrom(string from, string to) => $"Updated from {from} to {to}";
+    /// <summary>
+    /// The line under a row whose install finishes the next time the application starts (a running MSIX package), e.g.
+    /// "Restart Windows Terminal to finish the update".
+    /// </summary>
+    public static string RecentInstallRestartPending(string app) => $"Restart {app} to finish the update";
 
     // ---------------------------------------------------------------- details tab
     public const string DetailsOrganization = "Organization";

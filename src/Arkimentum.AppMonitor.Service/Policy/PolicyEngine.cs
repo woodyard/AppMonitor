@@ -43,7 +43,13 @@ public sealed record ScanOutcome(UpdateCheckResult Result, AppPolicy Policy, Ins
     public string Key => PendingUpdate.MakeKey(Policy.AppId, Context, UserSid);
 }
 
-public sealed record MergeSummary(int Added, int Updated, int Resolved, int Removed, IReadOnlyList<PendingUpdate> NewUpdates);
+/// <param name="AppRestartsEnded">
+/// The keys of tracked updates whose <see cref="PendingUpdate.AppRestartPending"/> this merge ended: the scan shows the
+/// new version, a newer version superseded it, the hold ran out, or the application is gone. The caller clears the flag on
+/// their install history entries.
+/// </param>
+public sealed record MergeSummary(int Added, int Updated, int Resolved, int Removed, IReadOnlyList<PendingUpdate> NewUpdates,
+    IReadOnlyList<string>? AppRestartsEnded = null);
 
 /// <summary>
 /// Pure decision logic for update lifecycle: merging scan results into tracked state, deciding what to do on each tick,
@@ -56,6 +62,13 @@ public static class PolicyEngine
     public static readonly TimeSpan DeadlineWarningWindow = TimeSpan.FromHours(24);
     /// <summary>After a successful install, ignore a scan that still reports the old version for this long (pending reboot etc.).</summary>
     public static readonly TimeSpan PostInstallGrace = TimeSpan.FromHours(2);
+    /// <summary>
+    /// How long an install that waits for the application to restart (<see cref="PendingUpdate.AppRestartPending"/>) holds
+    /// back a scan that still reads the old version. Far longer than <see cref="PostInstallGrace"/>: an application like
+    /// Windows Terminal stays open for days, and installing again would only stage the same package again. The limit is
+    /// a safety net for a staged package Windows never registers; after it the update is offered once more.
+    /// </summary>
+    public static readonly TimeSpan AppRestartPendingHold = TimeSpan.FromDays(7);
 
     public static TimeSpan NotificationIntervalFor(PendingUpdate update, AppPolicy? policy, AgentSettings settings) =>
         policy?.NotificationIntervalMinutes is > 0 and var m ? TimeSpan.FromMinutes(m) : settings.NotificationInterval;
@@ -88,6 +101,7 @@ public static class PolicyEngine
         var newUpdates = new List<PendingUpdate>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var held = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var restartsEnded = new List<string>();
 
         foreach (var o in outcomes)
         {
@@ -99,7 +113,12 @@ public static class PolicyEngine
 
             if (!r.IsInstalled)
             {
-                if (existing is not null && existing.State != UpdateState.Installing) { state.Remove(key); removed++; }
+                if (existing is not null && existing.State != UpdateState.Installing)
+                {
+                    if (existing.AppRestartPending) restartsEnded.Add(key);
+                    state.Remove(key);
+                    removed++;
+                }
                 seen.Add(key);
                 continue;
             }
@@ -109,7 +128,18 @@ public static class PolicyEngine
                 if (existing is not null)
                 {
                     if (existing.State is UpdateState.Installing) { }
-                    else if (existing.State == UpdateState.Installed) { existing.LastSeenUtc = now; }
+                    else if (existing.State == UpdateState.Installed)
+                    {
+                        existing.LastSeenUtc = now;
+                        // The application was started again and Windows registered the staged package: the install is
+                        // finished now, and the entry goes the way of every installed one.
+                        if (existing.AppRestartPending)
+                        {
+                            existing.AppRestartPending = false;
+                            existing.InstalledVersion = r.InstalledVersion ?? existing.InstalledVersion;
+                            restartsEnded.Add(key);
+                        }
+                    }
                     else
                     {
                         // Updated outside of us (or a previous install finished): show as installed briefly, then purge.
@@ -145,12 +175,24 @@ public static class PolicyEngine
                 // another install would end the same way. Held, without a time limit, until a newer version is offered
                 // or the scan stops offering this one. Seen on the owner's device: Firefox "installed" every hour.
                 if (existing.NothingToInstall && sameTarget) { existing.LastSeenUtc = now; held.Add(key); continue; }
+                // The install staged this very version and Windows registers it when the application next starts (an
+                // MSIX package that was running): until then every scan reads the old version, and another install would
+                // only stage the same package again - an "install" every hour for as long as Windows Terminal stays open.
+                // So it is held like the case above, past the grace period and the retention of installed entries, until
+                // the scan shows the new version, a newer one is offered, or AppRestartPendingHold runs out (a safety net
+                // for a staged package that never gets registered). Not the post-install grace period: that is two hours.
+                if (existing.AppRestartPending && sameTarget && existing.InstalledAtUtc is { } staged && now - staged < AppRestartPendingHold)
+                {
+                    existing.LastSeenUtc = now;
+                    held.Add(key);
+                    continue;
+                }
                 // The grace period covers "installed, but the scan still shows the old version" (pending reboot, stale
                 // cache). It does not apply when the install itself already reported a version below the target: that
                 // install did not take, so the update is simply still pending - unless a restart is pending, which is
                 // exactly when an install reports the old version (a package installed for all users by the service
                 // that the user's own registration only picks up at the next sign-in).
-                var installKnownIncomplete = !existing.RebootPending
+                var installKnownIncomplete = !existing.RebootPending && !existing.AppRestartPending
                                              && !VersionComparer.IsUnknown(existing.InstalledVersion) && !string.IsNullOrWhiteSpace(existing.AvailableVersion)
                                              && VersionComparer.Compare(existing.InstalledVersion, existing.AvailableVersion) < 0;
                 // Nor does it apply when the install read the new version back from the very source the scan uses and
@@ -173,10 +215,13 @@ public static class PolicyEngine
                 existing.LastNotifiedUtc = null;
                 existing.Announced = false;
                 existing.Dismissed = false;
-                if (sameTarget && !realChange) existing.FailureCount++;
+                // A staged install whose hold ran out did not fail; it is offered once more.
+                if (sameTarget && !realChange && !existing.AppRestartPending) existing.FailureCount++;
+                if (existing.AppRestartPending) restartsEnded.Add(key);
                 existing.InstallVerified = false;
                 existing.NothingToInstall = false;
                 existing.RebootPending = false;
+                existing.AppRestartPending = false;
             }
 
             var versionChanged = !string.Equals(existing.AvailableVersion, r.AvailableVersion, StringComparison.OrdinalIgnoreCase);
@@ -218,7 +263,7 @@ public static class PolicyEngine
             if (u.State == UpdateState.Installed && u.InstalledAtUtc is { } t && now - t > InstalledRetention && !held.Contains(key)) state.Remove(key);
         }
 
-        return new MergeSummary(added, updated, resolved, removed, newUpdates);
+        return new MergeSummary(added, updated, resolved, removed, newUpdates, restartsEnded);
     }
 
     /// <summary>
@@ -520,6 +565,8 @@ public static class PolicyEngine
                             && VersionComparer.Compare(result.InstalledVersion, u.AvailableVersion) >= 0;
         u.NothingToInstall = result.NothingInstalled;
         u.RebootPending = result.RebootRequired;
+        // The installed version stays the one still registered (the result's); Merge holds the update until it moves.
+        u.AppRestartPending = result.AppRestartPending;
         ClearInstallProgress(u);
     }
 

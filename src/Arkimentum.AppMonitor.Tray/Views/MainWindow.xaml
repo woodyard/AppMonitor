@@ -373,6 +373,13 @@
                                            VerticalAlignment="Center"
                                            TextWrapping="NoWrap"
                                            Text="{Binding TimeText}" />
+                                <!-- An install that finishes when the application starts again says so on a line of its own. -->
+                                <TextBlock DockPanel.Dock="Bottom"
+                                           Style="{StaticResource CaptionText}"
+                                           TextWrapping="NoWrap"
+                                           TextTrimming="CharacterEllipsis"
+                                           Text="{Binding RestartPendingText, Mode=OneWay}"
+                                           Visibility="{Binding IsRestartPending, Converter={StaticResource BoolToVisibility}}" />
                                 <!-- Name and version share one trimmed line, so a long name never wraps the row. -->
                                 <TextBlock Style="{StaticResource BodyText}"
                                            FontSize="13"

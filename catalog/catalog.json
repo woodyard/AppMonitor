@@ -177,5 +177,15 @@
     "detectDisplayNameRegex": "^Jabra Direct$",
     "processNames": [ "jabra-direct" ],
     "notes": "winget only (burn bundle). Installs machine-wide to C:\\Program Files (x86)\\Jabra\\Direct6; publisher GN Hearing A/S. Seen 2026-10-06 on H-SURFACELAP5 with 6.27.3702, winget offering 8.3.26701."
+  },
+  {
+    "appId": "windowsterminal",
+    "displayName": "Windows Terminal",
+    "source": "winget",
+    "context": "auto",
+    "wingetId": "Microsoft.WindowsTerminal",
+    "detectDisplayNameRegex": "^Windows Terminal$",
+    "processNames": [ "WindowsTerminal" ],
+    "notes": "winget only. An MSIX package registered per user; winget does not end a running Terminal, so the update waits for it to close (DESKTOP-V1CDE3I 2026-10-06: exit 0, version unchanged). Not OpenConsole: VS Code ships its own OpenConsole.exe, so naming it would ask users to close VS Code."
   }
 ]

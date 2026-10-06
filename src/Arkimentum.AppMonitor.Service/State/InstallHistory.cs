@@ -70,7 +70,34 @@ public static class InstallHistory
             {
                 AppId = e.AppId, DisplayName = e.DisplayName, FromVersion = e.FromVersion, ToVersion = e.ToVersion,
                 Succeeded = e.Succeeded, CompletedUtc = e.CompletedUtc, Context = e.Context, UserSid = e.UserSid,
-                Message = e.Message, IconPath = icon, StartedUtc = e.StartedUtc,
+                Message = e.Message, IconPath = icon, StartedUtc = e.StartedUtc, AppRestartPending = e.AppRestartPending,
+            };
+        }).ToList();
+        return changed ? result : null;
+    }
+
+    /// <summary>
+    /// Clears <see cref="InstallHistoryEntry.AppRestartPending"/> on the entries of the tracked updates whose pending
+    /// restart has ended (<see cref="Policy.MergeSummary.AppRestartsEnded"/>, by <see cref="PendingUpdate.Key"/>), so the
+    /// "Recent updates" list stops asking for a restart. Returns the list to swap in, or null when nothing changed; like
+    /// <see cref="Append"/>, the input and its entries are never edited.
+    /// </summary>
+    public static List<InstallHistoryEntry>? EndAppRestarts(IReadOnlyList<InstallHistoryEntry>? history, IEnumerable<string>? updateKeys)
+    {
+        if (history is null || updateKeys is null || !history.Any(e => e.AppRestartPending)) return null;
+        var keys = updateKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (keys.Count == 0) return null;
+
+        var changed = false;
+        var result = history.Select(e =>
+        {
+            if (!e.AppRestartPending || !keys.Contains(PendingUpdate.MakeKey(e.AppId, e.Context, e.UserSid))) return e;
+            changed = true;
+            return new InstallHistoryEntry
+            {
+                AppId = e.AppId, DisplayName = e.DisplayName, FromVersion = e.FromVersion, ToVersion = e.ToVersion,
+                Succeeded = e.Succeeded, CompletedUtc = e.CompletedUtc, Context = e.Context, UserSid = e.UserSid,
+                Message = e.Message, IconPath = e.IconPath, StartedUtc = e.StartedUtc, AppRestartPending = false,
             };
         }).ToList();
         return changed ? result : null;
@@ -85,9 +112,16 @@ public static class InstallHistory
     /// <summary>
     /// A successful install of <paramref name="update"/>, read before the update is marked installed (that overwrites its
     /// installed version). The version is the one the provider read back when it did, else the one the install aimed for.
+    /// An install that finishes when the application next starts (<see cref="InstallResult.AppRestartPending"/>) read back
+    /// the old version, which is still registered; its entry has the version it installed, and says what is still to happen.
     /// </summary>
-    public static InstallHistoryEntry Succeeded(PendingUpdate update, InstallResult result, DateTimeOffset at) =>
-        Create(update, true, string.IsNullOrWhiteSpace(result.InstalledVersion) ? update.AvailableVersion : result.InstalledVersion, null, at);
+    public static InstallHistoryEntry Succeeded(PendingUpdate update, InstallResult result, DateTimeOffset at)
+    {
+        var entry = Create(update, true,
+            result.AppRestartPending || string.IsNullOrWhiteSpace(result.InstalledVersion) ? update.AvailableVersion : result.InstalledVersion, null, at);
+        entry.AppRestartPending = result.AppRestartPending;
+        return entry;
+    }
 
     /// <summary>A failed install of <paramref name="update"/>; the version is the one it aimed for.</summary>
     public static InstallHistoryEntry Failed(PendingUpdate update, string? message, DateTimeOffset at) =>

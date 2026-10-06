@@ -429,6 +429,11 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                         .Select(o => (o.Result.AppId, o.Context, o.Context == InstallContext.User ? o.UserSid : null, o.Result.IconPath!)))
                     is { } withIcons)
                     _state.InstallHistory = withIcons;
+                // An install that waited for its application to restart is finished (or over) once the merge says so.
+                if (InstallHistory.EndAppRestarts(_state.InstallHistory, summary.AppRestartsEnded) is { } restarted)
+                    _state.InstallHistory = restarted;
+                foreach (var key in summary.AppRestartsEnded ?? [])
+                    _logger.LogInformation("{Key}: no longer waiting for the application to restart to finish its update", key);
                 _state.LastScanUtc = now;
                 _state.NextScanUtc = now + settings.ScanInterval;
                 _state.LastScanSummary = $"{summary.Added} new, {summary.Updated} updated, {summary.Resolved} resolved, {summary.Removed + pruned} removed";
@@ -978,10 +983,11 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
         finally { turn.Dispose(); }
 
-        // Defence in depth: never record "installed" when the provider itself tells us the version did not move.
+        // Defence in depth: never record "installed" when the provider itself tells us the version did not move - unless
+        // it says why the old version is still registered: a reboot, or an application restart (a running MSIX package).
         if (result.Success && !string.IsNullOrWhiteSpace(result.InstalledVersion) && !string.IsNullOrWhiteSpace(snapshot.AvailableVersion)
             && !Versioning.VersionComparer.IsUnknown(result.InstalledVersion)
-            && Versioning.VersionComparer.Compare(result.InstalledVersion, snapshot.AvailableVersion) < 0 && !result.RebootRequired)
+            && Versioning.VersionComparer.Compare(result.InstalledVersion, snapshot.AvailableVersion) < 0 && !result.RebootRequired && !result.AppRestartPending)
         {
             result = InstallResult.Fail($"The installer reported success but {snapshot.DisplayName} is still at {result.InstalledVersion} (expected {snapshot.AvailableVersion}).", result.ExitCode);
         }
@@ -999,15 +1005,18 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
         else if (result.Success)
         {
+            // The version the install put there: what the provider read back, except while the application has to be
+            // restarted to finish it - then the old version is still registered and the target is what was installed.
+            var installedVersion = result.AppRestartPending ? snapshot.AvailableVersion : result.InstalledVersion ?? snapshot.AvailableVersion;
             // The backfill (InstallHistory.ParseServiceLog) reads the version from this line up to the first space or colon.
-            _logger.LogInformation("Installed {App} {Version}{Reboot}{Took}: {Message}", snapshot.DisplayName, result.InstalledVersion ?? snapshot.AvailableVersion,
-                result.RebootRequired ? " (reboot required)" : "", tookText, result.Message ?? "ok");
+            _logger.LogInformation("Installed {App} {Version}{Reboot}{Took}: {Message}", snapshot.DisplayName, installedVersion,
+                result.RebootRequired ? " (reboot required)" : result.AppRestartPending ? " (finishes when the application next starts)" : "", tookText, result.Message ?? "ok");
             var entry = await FinishAsync(key, snapshot, x => PolicyEngine.MarkInstalled(x, result, doneAt), x => InstallHistory.Succeeded(x, result, doneAt), ct).ConfigureAwait(false);
             // The history entry was taken before MarkInstalled overwrote the installed version, so it still has the old one.
             RecordEvent(ReportedEventKind.InstallSucceeded, snapshot.AppId,
-                InstallSucceededEventText(snapshot.DisplayName, result, took), entry.FromVersion, result.InstalledVersion ?? snapshot.AvailableVersion);
+                InstallSucceededEventText(snapshot.DisplayName, result, took, snapshot.AvailableVersion), entry.FromVersion, installedVersion);
             if (settings.NotificationsEnabled && settings.ShowInstalledNotifications && Get(key) is { } done)
-                await SendNotificationAsync(done, NotificationKind.Installed, ct, result.RebootRequired ? "A restart is required to finish the update." : null).ConfigureAwait(false);
+                await SendNotificationAsync(done, NotificationKind.Installed, ct, InstalledNotificationNote(done, result)).ConfigureAwait(false);
         }
         else
         {
@@ -1133,7 +1142,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 $"Please close {string.Join(", ", u.BlockingProcesses)} so {u.DisplayName}{version} can be installed." +
                 (u.ForceCloseAtUtc is { } f ? $" It will be closed automatically at {f.ToLocalTime():t}." : "")),
             NotificationKind.Installing => ($"Installing {u.DisplayName}", $"{u.DisplayName}{version} is being installed."),
-            NotificationKind.Installed => ($"{u.DisplayName} updated", $"{u.DisplayName} {(u.RebootPending ? u.AvailableVersion : u.InstalledVersion ?? u.AvailableVersion)} was installed successfully."),
+            NotificationKind.Installed => ($"{u.DisplayName} updated", $"{u.DisplayName} {(u.RebootPending || u.AppRestartPending ? u.AvailableVersion : u.InstalledVersion ?? u.AvailableVersion)} was installed successfully."),
             NotificationKind.Failed => ($"Update failed: {u.DisplayName}", $"{u.DisplayName}{version} could not be installed. {u.LastError}".Trim()),
             _ => (AgentSettings.ProductName, u.DisplayName),
         };
@@ -1487,18 +1496,31 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// The cloud event text of a successful install: "{App} installed[ in {duration}][ (reboot required)]", followed by the provider's
     /// message unless that is only the generic "Installed successfully..." - a hand-over to SYSTEM, for one, says there
     /// how the install went and what the package registrations were, and the event is the only place that reaches the
-    /// cloud. Pure, so the format is testable.
+    /// cloud. An install that finishes when the application next starts reads
+    /// "{App} {version} installed[ in {duration}]; finishes when {App} is next started" instead. Pure, so the format is testable.
     /// </summary>
-    public static string InstallSucceededEventText(string displayName, InstallResult result, TimeSpan? duration = null)
+    public static string InstallSucceededEventText(string displayName, InstallResult result, TimeSpan? duration = null, string? targetVersion = null)
     {
         // "Adobe Acrobat Reader installed in 3 min 27 s": the duration when the install was timed.
         var took = duration is { } d ? $" in {InstallHistory.FormatDuration(d)}" : "";
+        // The provider's message only repeats this, and the version it read back is the old one, still registered.
+        if (result.AppRestartPending)
+            return $"{displayName}{(string.IsNullOrWhiteSpace(targetVersion) ? "" : " " + targetVersion)} installed{took}; finishes when {displayName} is next started";
         var text = $"{displayName} installed{took}{(result.RebootRequired ? " (reboot required)" : "")}";
         var detail = result.Message?.Trim();
         return string.IsNullOrEmpty(detail) || detail.StartsWith("Installed successfully", StringComparison.OrdinalIgnoreCase)
             ? text
             : $"{text}: {detail}";
     }
+
+    /// <summary>
+    /// The sentence the "installed" toast adds after "X 1.2 was installed successfully.": what is still to happen before the
+    /// new version runs, or null when nothing is. Pure, so the wording is testable.
+    /// </summary>
+    public static string? InstalledNotificationNote(PendingUpdate u, InstallResult result) =>
+        result.RebootRequired ? "A restart is required to finish the update."
+        : result.AppRestartPending ? $"Restart {(string.IsNullOrWhiteSpace(u.DisplayName) ? u.AppId : u.DisplayName)} to finish the update."
+        : null;
 
     private StateMessage BuildState(PipeClientConnection conn)
     {

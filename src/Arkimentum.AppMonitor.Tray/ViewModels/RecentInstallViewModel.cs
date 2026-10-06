@@ -32,16 +32,25 @@ public sealed class RecentInstallViewModel : ObservableObject
         // For a failure this is the version the install aimed for.
         VersionText = entry.ToVersion ?? string.Empty;
         TimeText = TimeFormat.Absolute(entry.CompletedUtc);
+        // Installed, but Windows registers the new version only when the application starts again.
+        RestartPendingText = entry.Succeeded && entry.AppRestartPending ? Strings.RecentInstallRestartPending(DisplayName) : null;
         ToolTip = entry.Succeeded
             ? string.IsNullOrWhiteSpace(entry.FromVersion) || string.IsNullOrWhiteSpace(entry.ToVersion)
-                ? null
-                : Strings.RecentInstallUpdatedFrom(entry.FromVersion!, entry.ToVersion!)
+                ? RestartPendingText
+                : RestartPendingText is null
+                    ? Strings.RecentInstallUpdatedFrom(entry.FromVersion!, entry.ToVersion!)
+                    : $"{Strings.RecentInstallUpdatedFrom(entry.FromVersion!, entry.ToVersion!)}. {RestartPendingText}."
             : Strings.StateFailed(entry.Message);
 
         icons.Deliver(AppIconRequest.For(entry, current), IconSize, icon => Icon = icon);
     }
 
     public bool Succeeded { get; }
+
+    /// <summary>"Restart Windows Terminal to finish the update" while the install waits for the application to start again; null otherwise.</summary>
+    public string? RestartPendingText { get; }
+
+    public bool IsRestartPending => RestartPendingText is not null;
 
     public string DisplayName { get; }
 
@@ -72,5 +81,5 @@ public sealed class RecentInstallViewModel : ObservableObject
     /// </summary>
     public static string Signature(IReadOnlyList<InstallHistoryEntry> entries) =>
         DateTime.Today.ToString("yyyyMMdd") + "|" + string.Join("|", entries.Select(e =>
-            $"{e.AppId}/{e.Context}/{e.UserSid}/{e.CompletedUtc.UtcTicks}/{e.Succeeded}/{e.ToVersion}/{e.DisplayName}"));
+            $"{e.AppId}/{e.Context}/{e.UserSid}/{e.CompletedUtc.UtcTicks}/{e.Succeeded}/{e.ToVersion}/{e.DisplayName}/{e.AppRestartPending}"));
 }

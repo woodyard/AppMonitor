@@ -101,6 +101,25 @@ public static partial class WingetOutputParser
     public const int ExitRebootRequiredForInstall = unchecked((int)0x8A15010A);
     public const int ExitRebootInitiated = unchecked((int)0x8A15010B);
 
+    /// <summary>
+    /// What winget (1.30, English) prints after an MSIX upgrade of an application that is running: "Successfully
+    /// installed. Restart the application to complete the upgrade." Windows has staged the new package and registers it
+    /// the next time the application starts; winget exits 0 and lists the old version until then.
+    /// </summary>
+    public const string AppRestartPendingMarker = "Restart the application to complete the upgrade";
+
+    [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
+    private static partial Regex WhitespaceRunRegex();
+
+    /// <summary>
+    /// True when the output carries <see cref="AppRestartPendingMarker"/>, in any case and with any run of whitespace
+    /// (a progress redraw or a line break) between its words. Pure, so the rule is testable. English only: on a Windows
+    /// whose winget speaks another language the caller falls back to looking at the package's running processes.
+    /// </summary>
+    public static bool IsAppRestartPendingOutput(string? output) =>
+        !string.IsNullOrWhiteSpace(output)
+        && WhitespaceRunRegex().Replace(output, " ").Contains(AppRestartPendingMarker, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>True when the output says the package is not installed / not found.</summary>
     public static bool IsNotInstalledOutput(string? output)
     {

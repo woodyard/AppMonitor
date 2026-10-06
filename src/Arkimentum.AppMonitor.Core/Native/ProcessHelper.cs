@@ -276,6 +276,65 @@ public static class ProcessHelper
         catch { return null; }
     }
 
+    /// <summary>
+    /// Whether a process runs from the install folder of one of the MSIX packages named by
+    /// <paramref name="packageFullNames"/> (<c>…\WindowsApps\&lt;package full name&gt;\…</c>), in <paramref name="sessionId"/>
+    /// or, when that is null, in any interactive session (see <see cref="IsBlocking"/>). Reads only each process's image
+    /// path, with the limited query right a user has for its own processes; a process it may not read is skipped. Never
+    /// throws: a failure is "no".
+    /// </summary>
+    public static bool AnyRunningFromPackage(IReadOnlyCollection<string> packageFullNames, int? sessionId)
+    {
+        if (packageFullNames.Count == 0) return false;
+        try
+        {
+            foreach (var p in Process.GetProcesses())
+            {
+                try
+                {
+                    var session = p.SessionId;
+                    if (sessionId is { } s ? session != s : session == 0) continue;
+                    if (IsInPackageFolder(QueryImagePath(p.Id), packageFullNames)) return true;
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="imagePath"/> lies in the folder of one of the packages: a <c>WindowsApps</c> folder whose
+    /// subfolder is the package full name (<c>Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe</c>). Pure, so the
+    /// rule is testable. The whole folder name must match, so another version or another package with a longer name
+    /// (Microsoft.WindowsTerminalPreview) never does.
+    /// </summary>
+    internal static bool IsInPackageFolder(string? imagePath, IEnumerable<string> packageFullNames)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath)) return false;
+        foreach (var fullName in packageFullNames)
+        {
+            if (string.IsNullOrWhiteSpace(fullName)) continue;
+            if (imagePath.Contains($@"\WindowsApps\{fullName.Trim()}\", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>The full image path of a process, or null when it cannot be read.</summary>
+    private static string? QueryImagePath(int processId)
+    {
+        var handle = NativeMethods.OpenProcess(NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+        if (handle == IntPtr.Zero) return null;
+        try
+        {
+            var buffer = new char[1024];
+            var size = buffer.Length;
+            return NativeMethods.QueryFullProcessImageNameW(handle, 0, buffer, ref size) ? new string(buffer, 0, size) : null;
+        }
+        finally { NativeMethods.CloseHandle(handle); }
+    }
+
     public static string Normalize(string name)
     {
         var n = name.Trim();

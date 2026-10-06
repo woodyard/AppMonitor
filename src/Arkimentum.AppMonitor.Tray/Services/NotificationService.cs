@@ -199,7 +199,6 @@ public sealed class NotificationService : IHostedService
                 .AddArgument(ToastAction.ArgumentAction, ToastAction.Details);
             builder.AddText(Strings.ToastSummaryTitle(batch.Count));
             if (names.Count > 0) builder.AddText(Strings.ToastSummaryBody(names, SummaryNamesShown));
-            builder.AddAttributionText(Strings.ProductName);
             AddDetails(builder);
 
             builder.Show(toast =>
@@ -231,9 +230,20 @@ public sealed class NotificationService : IHostedService
                 .AddArgument(ToastAction.ArgumentAction, ToastAction.Details);
             if (update is not null) builder.AddArgument(ToastAction.ArgumentKey, update.Key);
 
-            builder.AddText(string.IsNullOrWhiteSpace(notify.Title) ? Strings.ProductName : notify.Title);
-            if (!string.IsNullOrWhiteSpace(notify.Body)) builder.AddText(notify.Body);
-            builder.AddAttributionText(Strings.ProductName);
+            // Windows already shows the product name in the toast's header. The "Installing" toast is only the application
+            // and its version: the line under the bar says what is happening, so the service's "X is being installed"
+            // would say it twice.
+            var installing = notify.Kind == NotificationKind.Installing && update is not null;
+            if (installing)
+            {
+                var name = string.IsNullOrWhiteSpace(update!.DisplayName) ? update.AppId : update.DisplayName;
+                builder.AddText(string.IsNullOrWhiteSpace(update.AvailableVersion) ? name : $"{name} {update.AvailableVersion}");
+            }
+            else
+            {
+                builder.AddText(string.IsNullOrWhiteSpace(notify.Title) ? Strings.ProductName : notify.Title);
+                if (!string.IsNullOrWhiteSpace(notify.Body)) builder.AddText(notify.Body);
+            }
             AddAppLogo(builder, update);
 
             AddButtons(builder, notify, update);
@@ -245,7 +255,6 @@ public sealed class NotificationService : IHostedService
             // the user acts on it, and its only button is Hide. It is silent (the reminder sound would be wrong for
             // progress). Its bar and the line under it are bound data: the phase, the download and the time so far
             // (InstallProgressText), updated in place while the toast is up; indeterminate unless a download visibly runs.
-            var installing = notify.Kind == NotificationKind.Installing && update is not null;
             InstallToastContent? content = null;
             if (installing)
             {
@@ -427,7 +436,6 @@ public sealed class NotificationService : IHostedService
                 .AddArgument(ToastAction.ArgumentAction, ToastAction.Details)
                 .AddText(title);
             if (!string.IsNullOrWhiteSpace(body)) builder.AddText(body);
-            builder.AddAttributionText(Strings.ProductName);
             builder.Show(toast =>
             {
                 toast.Tag = FeedbackTag;

@@ -205,7 +205,6 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
                 .AddText(content.Title)
                 .AddText(content.Body);
             if (content.Detail is { } detail) builder.AddText(detail);
-            builder.AddAttributionText(Strings.ProductName);
             NotificationService.AddAppLogo(builder, update, _icons, _log);
 
             builder.AddButton(new ToastButton()
@@ -412,8 +411,7 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
                 .AddArgument(ToastAction.ArgumentAction, ToastAction.Details)
                 .AddArgument(ToastAction.ArgumentKey, update.Key)
                 .AddText(Strings.CloseAppsTitle(string.IsNullOrWhiteSpace(update.DisplayName) ? update.AppId : update.DisplayName))
-                .AddText($"{Strings.CloseAppsForcedCloseAt(TimeFormat.Clock(at))} {Strings.CloseAppsSaveHint}")
-                .AddAttributionText(Strings.ProductName);
+                .AddText($"{Strings.CloseAppsForcedCloseAt(TimeFormat.Clock(at))} {Strings.CloseAppsSaveHint}");
             NotificationService.AddAppLogo(builder, update, _icons, _log);
             builder.AddButton(new ToastButton()
                 .SetContent(Strings.ToastButtonCloseAndUpdate)
@@ -444,8 +442,7 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
                 .AddArgument(ToastAction.ArgumentAction, ToastAction.Details)
                 .AddArgument(ToastAction.ArgumentKey, updateKey)
                 .AddText(Strings.CloseAppsTitle(update is null ? updateKey : string.IsNullOrWhiteSpace(update.DisplayName) ? update.AppId : update.DisplayName))
-                .AddText(Strings.CloseAppsCountdownElapsed)
-                .AddAttributionText(Strings.ProductName);
+                .AddText(Strings.CloseAppsCountdownElapsed);
             NotificationService.AddAppLogo(builder, update, _icons, _log);
             builder.Show(toast =>
             {

@@ -43,7 +43,7 @@ namespace Arkimentum.AppMonitor.Providers;
 /// <see cref="WingetOutputParser.CombineInstalls"/>).
 /// </para>
 /// </summary>
-public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
+public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvider
 {
     private readonly ILogger<WingetProvider> _logger;
     private readonly ProviderOptions _options;
@@ -615,6 +615,15 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         if (!_options.WingetEnabled)
             return InstallResult.Fail("winget disabled by configuration");
 
+        // Every winget run of this install writes its installer log to the same folder (see WingetProvider.InstallerLogs).
+        var logs = BeginInstallerLogs();
+        _installLogs.Value = logs;
+        var result = await InstallCoreAsync(app, update, context, progress, ct).ConfigureAwait(false);
+        return WithInstallerLog(result, logs);
+    }
+
+    private async Task<InstallResult> InstallCoreAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, IProgress<string>? progress, CancellationToken ct)
+    {
         // Candidate ids: the one resolved at scan time first, then the configured ids. The scan resolves the id
         // generically (see CheckAsync): a configured id winget lists as installed, else the id of the listing row whose
         // name passes the app's identity rule, and then the id winget's upgrade listing names for that install - so the
@@ -750,19 +759,24 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     private async Task<UpgradeOutcome> UpgradeOneAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, IProgress<string>? progress, CancellationToken ct)
     {
+        var extraArgs = update.WingetExtraArgs ?? app.WingetExtraArgs;
+        var skipDependencies = await SkipDependenciesArgumentAsync(app, winget, wingetId, sourceName, ScopeArgument(context), extraArgs, context, ct).ConfigureAwait(false);
+        var log = NewInstallerLog(app, wingetId, null, extraArgs);
         var args = new StringBuilder()
             .Append("upgrade --id ").Append(Quote(wingetId))
             .Append(" --exact");
         AppendSource(args, sourceName);
         args.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity")
-            .Append(ScopeArgument(context));
-        AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
+            .Append(ScopeArgument(context))
+            .Append(LogArgument(log))
+            .Append(skipDependencies);
+        AppendExtra(args, extraArgs);
         AppendExtra(args, _options.WingetGlobalArgs);
 
         // The executable and the identity matter when an install misbehaves: a fleet device showed UAC prompts in the
         // user's session for installs the SYSTEM service had started, which a session-0 process cannot cause by itself.
-        _logger.LogInformation("{AppId}: upgrading '{WingetId}' via winget ({Context} scope) using {Winget} as {Identity}.",
-            app.AppId, wingetId, context.Context, winget, Native.ImpersonationGuard.DescribeCurrentIdentity());
+        _logger.LogInformation("{AppId}: upgrading '{WingetId}' via winget ({Context} scope) using {Winget} as {Identity}; installer log: {Log}.",
+            app.AppId, wingetId, context.Context, winget, Native.ImpersonationGuard.DescribeCurrentIdentity(), log ?? "none");
         progress?.Report($"Upgrading {(string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName)} via winget...");
 
         var lastProgressLine = string.Empty;
@@ -1376,13 +1390,15 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         _logger.LogInformation("{AppId}: installing '{WingetId}' {Version} for all users with an unscoped 'winget install' using {Winget} as {Identity}.",
             app.AppId, wingetId, update.AvailableVersion, winget, Native.ImpersonationGuard.DescribeCurrentIdentity());
 
+        var logs = BeginInstallerLogs();
+        _installLogs.Value = logs;
         var step = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: false, systemScope: false, progress, ct).ConfigureAwait(false);
         var run = step.Run;
         if (!run.Started) return InstallResult.Fail(run.StartFailure!);
         if (run.TimedOut)
             return InstallResult.Fail($"winget install timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1);
 
-        var result = InterpretAllUsersInstallExit(run.ExitCode, run);
+        var result = WithInstallerLog(InterpretAllUsersInstallExit(run.ExitCode, run), logs);
         if (result.Success)
             _logger.LogInformation("{AppId}: 'winget install' of '{WingetId}' for all users finished (exit 0x{Hex}): {Message}", app.AppId, wingetId, run.ExitCode.ToString("X8"), result.Message);
         else
@@ -1461,7 +1477,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
             app.AppId, wingetId, refusalExitCode, context.Context);
         progress?.Report($"Removing the current install of {name} via winget...");
 
-        var uninstall = await RunUninstallAsync(winget, wingetId, sourceName, context, allVersions: false, progress, ct).ConfigureAwait(false);
+        var uninstall = await RunUninstallAsync(app, winget, wingetId, sourceName, context, allVersions: false, progress, ct).ConfigureAwait(false);
         var retriedAllVersions = false;
         if (uninstall.Started && !uninstall.TimedOut && ShouldUninstallAllVersions(uninstall.ExitCode))
         {
@@ -1469,7 +1485,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
                 app.AppId, wingetId, uninstall.ExitCode);
             progress?.Report($"Removing all installed versions of {name} via winget...");
             retriedAllVersions = true;
-            uninstall = await RunUninstallAsync(winget, wingetId, sourceName, context, allVersions: true, progress, ct).ConfigureAwait(false);
+            uninstall = await RunUninstallAsync(app, winget, wingetId, sourceName, context, allVersions: true, progress, ct).ConfigureAwait(false);
         }
 
         var step = retriedAllVersions ? "winget uninstall --all-versions" : "winget uninstall";
@@ -1643,13 +1659,19 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         }
 
         progress?.Report($"Installing {name} {update.AvailableVersion} via winget...");
+        var extraArgs = update.WingetExtraArgs ?? app.WingetExtraArgs;
+        var skipDependencies = await SkipDependenciesArgumentAsync(app, winget, wingetId, sourceName, filter, extraArgs, context, ct).ConfigureAwait(false);
+        var log = NewInstallerLog(app, wingetId, "install", extraArgs);
+        LogInstallerLogPath(app, wingetId, log);
         var args = new StringBuilder()
             .Append("install --id ").Append(Quote(wingetId))
             .Append(" --exact");
         AppendSource(args, sourceName);
         args.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity")
-            .Append(filter);
-        AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
+            .Append(filter)
+            .Append(LogArgument(log))
+            .Append(skipDependencies);
+        AppendExtra(args, extraArgs);
         AppendExtra(args, _options.WingetGlobalArgs);
 
         var run = await RunInstallProcessAsync(winget, args.ToString(), _options.InstallTimeout, ProgressSink(progress), context, ct).ConfigureAwait(false);
@@ -1812,14 +1834,22 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         for (var attempt = firstAttempt; ; attempt++)
         {
             var filter = context.IsSystem ? (systemScope ? ScopeArgument(context) : string.Empty) : UserContextInstallFilter(attempt);
+            var extraArgs = update.WingetExtraArgs ?? app.WingetExtraArgs;
+            var skipDependencies = await SkipDependenciesArgumentAsync(app, winget, wingetId, sourceName, filter, extraArgs, context, ct).ConfigureAwait(false);
+            var stepName = (force ? "reinstall" : "install")
+                           + (!context.IsSystem && attempt > 0 ? "-msix" : context.IsSystem && !systemScope ? "-allusers" : string.Empty);
+            var log = NewInstallerLog(app, wingetId, stepName, extraArgs);
+            LogInstallerLogPath(app, wingetId, log);
             var args = new StringBuilder()
                 .Append("install --id ").Append(Quote(wingetId))
                 .Append(" --exact");
             if (force) args.Append(" --force");
             AppendSource(args, sourceName);
             args.Append(" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity")
-                .Append(filter);
-            AppendExtra(args, update.WingetExtraArgs ?? app.WingetExtraArgs);
+                .Append(filter)
+                .Append(LogArgument(log))
+                .Append(skipDependencies);
+            AppendExtra(args, extraArgs);
             AppendExtra(args, _options.WingetGlobalArgs);
 
             var run = await RunInstallProcessAsync(winget, args.ToString(), _options.InstallTimeout, ProgressSink(progress), context, ct).ConfigureAwait(false);
@@ -1907,9 +1937,11 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
     /// own context. With <paramref name="allVersions"/> every registered version of the package is removed, which is
     /// the answer to winget refusing to choose between several of them.
     /// </summary>
-    private async Task<ProcessRunResult> RunUninstallAsync(string winget, string wingetId, string sourceName, ExecutionContextInfo context,
+    private async Task<ProcessRunResult> RunUninstallAsync(AppPolicy app, string winget, string wingetId, string sourceName, ExecutionContextInfo context,
         bool allVersions, IProgress<string>? progress, CancellationToken ct)
     {
+        var log = NewInstallerLog(app, wingetId, allVersions ? "uninstall-all" : "uninstall", null);
+        LogInstallerLogPath(app, wingetId, log);
         var args = new StringBuilder()
             .Append("uninstall --id ").Append(Quote(wingetId))
             .Append(" --exact");
@@ -1917,6 +1949,7 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         args.Append(" --silent --disable-interactivity")
             .Append(ScopeArgument(context));
         if (allVersions) args.Append(" --all-versions");
+        args.Append(LogArgument(log));
         AppendExtra(args, _options.WingetGlobalArgs);
 
         return await RunInstallProcessAsync(winget, args.ToString(), _options.InstallTimeout, ProgressSink(progress), context, ct).ConfigureAwait(false);
@@ -2466,14 +2499,18 @@ public sealed class WingetProvider : IUpdateProvider, IScanSnapshotProvider
         return PickByName(upgradeRows.Where(r => r.HasAvailable && (installed is null || DescribesSameInstall(installed, r))), app, candidateIds);
     }
 
-    private async Task<ListLookup> ListAsync(string winget, AppPolicy app, ExecutionContextInfo context, TimeSpan timeout, CancellationToken ct)
+    /// <summary>
+    /// <c>winget list --id X --exact</c> in this context's scope, or in every scope with <paramref name="unscoped"/> (the
+    /// dependency check: a dependency can be machine-wide while the application is per user).
+    /// </summary>
+    private async Task<ListLookup> ListAsync(string winget, AppPolicy app, ExecutionContextInfo context, TimeSpan timeout, CancellationToken ct, bool unscoped = false)
     {
         var args = new StringBuilder()
             .Append("list --id ").Append(Quote(app.WingetId!))
             .Append(" --exact");
         AppendSource(args, app.WingetSourceName);
         args.Append(" --accept-source-agreements --disable-interactivity")
-            .Append(ScopeArgument(context));
+            .Append(unscoped ? string.Empty : ScopeArgument(context));
         AppendExtra(args, _options.WingetGlobalArgs);
 
         var run = await RunLookupAsync(winget, args.ToString(), timeout, context, ct).ConfigureAwait(false);

@@ -56,6 +56,21 @@ public sealed class ProviderOptions
     /// </summary>
     public Func<SystemInstallHandOverRequest, CancellationToken, Task<SystemInstallHandOverReply?>>? SystemInstallHandOver { get; set; }
 
+    /// <summary>
+    /// The folder winget writes installer logs to (<c>--log &lt;file&gt;</c> on every run that installs or uninstalls, see
+    /// <see cref="Install.InstallerLogs"/>; pruned before each install). Null: no <c>--log</c>, as in scripted tests. The
+    /// service uses <c>&lt;LogDirectory&gt;\Installers</c>, the tray its own log folder's <c>Installers</c>.
+    /// </summary>
+    public string? InstallerLogDirectory { get; set; }
+
+    /// <summary>
+    /// Whether an upgrade or install adds <c>--skip-dependencies</c> when every package dependency of the selected
+    /// installer is installed but winget does not correlate it (Microsoft.EdgeWebView2Runtime for TechSmith Snagit: winget
+    /// reinstalled the runtime for six minutes on every Snagit update). See <see cref="WingetProvider"/>'s dependency
+    /// check. False (the default) runs no extra lookups, as in scripted tests; the service and the tray set it.
+    /// </summary>
+    public bool SkipInstalledDependencies { get; set; }
+
     public static ProviderOptions From(AgentSettings s) => new()
     {
         WingetEnabled = s.WingetEnabled,
@@ -67,6 +82,8 @@ public sealed class ProviderOptions
         CheckTimeout = TimeSpan.FromMinutes(Math.Max(1, s.CheckTimeoutMinutes)),
         DownloadDirectory = Path.Combine(s.StateDirectory, "Downloads"),
         WingetPath = string.IsNullOrWhiteSpace(s.WingetPath) ? null : s.WingetPath,
+        InstallerLogDirectory = string.IsNullOrWhiteSpace(s.LogDirectory) ? null : Path.Combine(s.LogDirectory, "Installers"),
+        SkipInstalledDependencies = true,
     };
 }
 

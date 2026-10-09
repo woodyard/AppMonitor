@@ -53,6 +53,7 @@ public static class SettingsSchema
     public static readonly IReadOnlyList<string> InstallerTypeChoices = ["exe", "msi", "msix"];
     public static readonly IReadOnlyList<string> NotificationModeChoices = ["Quiet", "Reminders"];
     public static readonly IReadOnlyList<string> NotifyInstallingChoices = ["auto", "always", "never"];
+    public static readonly IReadOnlyList<string> WingetDownloaderChoices = ["wininet", "do", "default"];
 
     public static readonly IReadOnlyList<SettingDefinition> Global =
     [
@@ -85,6 +86,7 @@ public static class SettingsSchema
         new("CatalogPath", SettingKind.Path, CategorySources, "Catalog file", "Path to a custom catalog.json. Empty = the file shipped with the service.", "", Advanced: true),
         new("ProxyUrl", SettingKind.String, CategorySources, "Proxy URL", "HTTP proxy for web sources. Empty = system default.", "", Advanced: true),
         new("WingetGlobalArgs", SettingKind.String, CategorySources, "Extra winget arguments", "Appended to every winget invocation.", "", Advanced: true),
+        new("WingetDownloader", SettingKind.Choice, CategorySources, "winget download method", "How winget downloads installers when the service runs it as SYSTEM (set in SYSTEM's own winget settings file): wininet = plain HTTP, fast, no peer caching; do = Delivery Optimization (peer caching, often much slower); default = leave winget's own choice untouched.", "wininet", Choices: WingetDownloaderChoices, Advanced: true),
         new("WingetIncludeUnknown", SettingKind.Bool, CategorySources, "Include packages with unknown version", "Treat winget packages whose installed version is unknown as updatable.", false, Advanced: true),
         new("WingetPath", SettingKind.Path, CategorySources, "winget.exe path", "Explicit path to winget.exe. Empty = auto-detect.", "", Advanced: true),
         new("AutoInstallPrerequisites", SettingKind.Bool, CategorySources, "Install prerequisites automatically", "Install or repair the Windows Package Manager (App Installer) as SYSTEM when it is missing or older than the minimum version. Users need no rights.", true),

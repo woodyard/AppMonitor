@@ -215,6 +215,9 @@ public sealed class UserContextExecutor : IHostedService
             WingetEnabled = true,
             WebSourcesEnabled = true,
             DownloadDirectory = AppInfo.DownloadDirectory,
+            // The tray's own log folder: the service's LogDirectory (ProgramData) is not writable for the user.
+            InstallerLogDirectory = System.IO.Path.Combine(AppInfo.LogDirectory, "Installers"),
+            SkipInstalledDependencies = true,
             InstallTimeout = TimeSpan.FromMinutes(Math.Max(1, message.TimeoutMinutes)),
             // An installed MSIX package winget offers no per-user installer for is handed to the service, which
             // installs it for all users as SYSTEM (see WingetProvider.HandOverToSystemAsync).
@@ -474,6 +477,8 @@ public sealed class UserContextExecutor : IHostedService
             WingetGlobalArgs = string.IsNullOrWhiteSpace(message.WingetGlobalArgs) ? null : message.WingetGlobalArgs,
             WingetIncludeUnknown = message.WingetIncludeUnknown,
             DownloadDirectory = AppInfo.DownloadDirectory,
+            InstallerLogDirectory = System.IO.Path.Combine(AppInfo.LogDirectory, "Installers"),
+            SkipInstalledDependencies = true,
         };
         var context = CurrentContext();
 

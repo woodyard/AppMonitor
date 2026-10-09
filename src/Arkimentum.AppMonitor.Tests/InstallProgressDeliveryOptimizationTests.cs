@@ -239,6 +239,32 @@ public sealed class InstallProgressDeliveryOptimizationTests : IDisposable
     }
 
     [Fact]
+    public async Task With_WinINet_do_is_never_asked_and_an_unrelated_winget_job_is_not_taken_for_the_download()
+    {
+        // SYSTEM's winget set to wininet (WingetDownloader): no DO job is this download. A fresh winget job of the very
+        // size the URL announced (another winget - a user's - downloading meanwhile) must not be taken for it; the
+        // download folder (SYSTEM's: WinGet\defaultState\<id>.<version>) is the source.
+        var fake = new FakeDo();
+        fake.Set(Job("other", "https://cdn.example.com/other.exe", VsCodeSize, VsCodeSize / 2));
+        var folder = Path.Combine(_root, "defaultState", "Microsoft.VisualStudioCode.Insiders.1.0");
+        Directory.CreateDirectory(folder);
+        var file = Path.Combine(folder, new string('c', 64));
+        using (var fs = new FileStream(file, FileMode.Create)) fs.SetLength(1_000);
+
+        using var tracker = new InstallProgressTracker(OnChange, contentLength: (_, _) => Task.FromResult<long?>(VsCodeSize), wingetTempRoots: [_root],
+            pollInterval: FastPolling, wingetId: "Microsoft.VisualStudioCode.Insiders", version: "1.0", deliveryOptimizationJobs: fake.List,
+            deliveryOptimization: false);
+        tracker.Report($"Downloading {VsCodeUrl}");
+
+        Assert.True(await WaitFor(() => tracker.Current.DownloadedBytes == 1_000 && tracker.Current.DownloadTotalBytes == VsCodeSize));
+        using (var fs = new FileStream(file, FileMode.Open, FileAccess.Write, FileShare.ReadWrite)) fs.SetLength(50_000_000);
+        Assert.True(await WaitFor(() => tracker.Current.DownloadedBytes == 50_000_000));
+
+        Assert.Equal(InstallPhase.Downloading, tracker.Current.Phase);
+        Assert.Equal(0, Volatile.Read(ref fake.Calls));
+    }
+
+    [Fact]
     public void A_job_is_complete_by_its_status_or_its_bytes()
     {
         Assert.True(Job("a", null, 10, 3, status: 1).IsComplete);

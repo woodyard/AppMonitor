@@ -71,6 +71,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0";
 
     private readonly Prerequisites.PrerequisiteManager _prerequisites;
+    /// <summary>Keeps SYSTEM's winget downloader on the WingetDownloader setting; null when not wired (tests).</summary>
+    private readonly WingetDownloaderController? _wingetDownloader;
     private Prerequisites.PrerequisiteStatus? _prerequisiteStatus;
     private int _prerequisiteRepairRunning;
 
@@ -82,8 +84,10 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     }
 
     public UpdateCoordinator(ILogger<UpdateCoordinator> logger, ILoggerFactory loggerFactory, SettingsProvider settings,
-        StateStore store, PipeServer pipe, InstalledAppScanner scanner, TrayLauncher trayLauncher, Prerequisites.PrerequisiteManager prerequisites)
+        StateStore store, PipeServer pipe, InstalledAppScanner scanner, TrayLauncher trayLauncher, Prerequisites.PrerequisiteManager prerequisites,
+        WingetDownloaderController? wingetDownloader = null)
     {
+        _wingetDownloader = wingetDownloader;
         _logger = logger;
         _loggerFactory = loggerFactory;
         _settings = settings;
@@ -938,6 +942,9 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
             if (u.Context == InstallContext.System)
             {
+                // SYSTEM's winget downloads the way WingetDownloader says before it starts (a no-op once applied).
+                if (u.Source == UpdateSource.Winget && _wingetDownloader is not null)
+                    await _wingetDownloader.EnsureAppliedAsync(settings, ct).ConfigureAwait(false);
                 var options = ProviderOptions.From(settings);
                 var providers = ProviderFactory.Create(_loggerFactory, options);
                 var checker = new UpdateChecker(_loggerFactory.CreateLogger<UpdateChecker>(), providers);
@@ -1043,14 +1050,16 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
     /// <summary>
     /// A tracker for an install the service runs itself: winget's lines and its download folder become phase and byte
-    /// counts for <paramref name="key"/>, sized through the configured proxy.
+    /// counts for <paramref name="key"/>, sized through the configured proxy. When SYSTEM's winget downloads with WinINet
+    /// (WingetDownloader) Delivery Optimization is not asked: the download folder is the source.
     /// </summary>
     private InstallProgressTracker CreateProgressTracker(string key, PendingUpdate u, ProviderOptions options) =>
         new(p => PublishProgress(key, u.DisplayName, p),
             _loggerFactory.CreateLogger<InstallProgressTracker>(),
             InstallProgressTracker.CreateContentLengthResolver(options.ProxyUrl),
             wingetId: u.Source == UpdateSource.Winget ? WingetProvider.SplitIds(u.WingetId).FirstOrDefault() : null,
-            version: u.Source == UpdateSource.Winget ? u.AvailableVersion : null);
+            version: u.Source == UpdateSource.Winget ? u.AvailableVersion : null,
+            deliveryOptimization: _wingetDownloader?.WinInetInEffect != true);
 
     /// <summary>
     /// A new progress snapshot of a running install (from the service's own tracker or from the tray): logged when the
@@ -1441,12 +1450,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             var before = await AppxPackageProbe.RunAsync(_logger, request.PackageFamilyName, CancellationToken.None).ConfigureAwait(false);
             _logger.LogInformation("{App}: package family {Family} before the install for all users: {Packages}", update.DisplayName, request.PackageFamilyName, before.Summarize());
 
+            if (_wingetDownloader is not null) await _wingetDownloader.EnsureAppliedAsync(settings, CancellationToken.None).ConfigureAwait(false);
             var options = ProviderOptions.From(settings);
             var provider = new WingetProvider(_loggerFactory.CreateLogger<WingetProvider>(), options) { WingetPathOverride = options.WingetPath };
             // The tray waits for this answer meanwhile, so the service reports the install's progress under its key.
             using var tracker = new InstallProgressTracker(p => PublishProgress(request.UpdateKey, update.DisplayName, p),
                 _loggerFactory.CreateLogger<InstallProgressTracker>(), InstallProgressTracker.CreateContentLengthResolver(options.ProxyUrl),
-                wingetId: request.WingetId, version: update.AvailableVersion);
+                wingetId: request.WingetId, version: update.AvailableVersion, deliveryOptimization: _wingetDownloader?.WinInetInEffect != true);
             var progress = new LineProgress(line => { _logger.LogDebug("[{App}] {Line}", update.DisplayName, line); tracker.Report(line); });
             InstallResult install;
             try { install = await provider.InstallForAllUsersAsync(policy, update, request.WingetId, progress, CancellationToken.None).ConfigureAwait(false); }

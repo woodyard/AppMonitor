@@ -141,6 +141,35 @@ sequenceDiagram
   more (the tray receives the rule with `runUserInstall`), and only a version at or above the expected
   one counts as success. When winget knows none of the ids the application stays "not installed", as
   before; when `winget show` fails the check fails and a tracked update is kept.
+- Installer logs: every winget run that installs or uninstalls (`upgrade`, `install` in all its
+  fallbacks, the take-over's `uninstall`, the SYSTEM hand-over's install) passes `--log <file>`, and
+  winget hands the path to installers that take a log switch (an MSI's `/log`, Inno's `/LOG=`); a
+  nullsoft installer without one writes nothing. The service writes to `<LogDirectory>\Installers`, the
+  tray to `%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\Installers`. File names are
+  `<AppId>_<WingetId>_<yyyyMMdd-HHmmss>[_<step>].log` (local time; step `install`, `install-msix`,
+  `reinstall`, `reinstall-msix`, `install-allusers`, `uninstall`, `uninstall-all`; none for the plain
+  upgrade; `-2`, `-3` for a second run in the same second). The service log names the file next to
+  *upgrading '…' via winget*, and a failed install ends its message with `Installer log: <path>` (only
+  when the installer wrote something), which reaches the cloud event. Before each install the folder
+  is pruned: `*.log` files older than 14 days, empty files older than 6 hours, and all but the 50
+  newest are deleted (`InstallerLogs.Prune`, never fails the install). A `--log`/`-o` already in
+  `WingetExtraArgs` or `WingetGlobalArgs` wins; nothing is added then.
+- Dependencies winget does not see: before an upgrade or install, `winget show --id <id> --exact
+  --source <source>` with the run's own scope or installer-type filter says which dependencies the
+  installer winget will pick declares (the `Dependencies:` section of its `Installer:` block). The
+  run gets `--skip-dependencies` only when every dependency is a package dependency (no Windows
+  features, libraries or external dependencies), winget does not list it in any scope
+  (`winget list --id <dep> --exact` without `--scope`), and an Uninstall entry (HKLM 64-bit and
+  WOW6432Node, plus HKCU in the tray; `SystemComponent` entries included) has exactly the package's
+  name from `winget show --id <dep> --exact` ("Found <Name> [<id>]"), at a version not below a
+  minimum the installer requires. A dependency winget lists is left to winget, which handles it
+  correctly. Any lookup that fails means no skip. The case: TechSmith Snagit's MSI declares
+  `Microsoft.EdgeWebView2Runtime`, whose Uninstall entry ("Microsoft Edge WebView2 Runtime", a
+  `SystemComponent` under WOW6432Node) winget never correlates, so every Snagit update reinstalled the
+  runtime for about six minutes. Logged at Information: *dependency Microsoft.EdgeWebView2Runtime
+  ('Microsoft Edge WebView2 Runtime') is installed (155.0.4283.45, registry) but winget does not list it;
+  installing with --skip-dependencies.*; the reason for not skipping at Debug. The verdict is cached per
+  dependency for the provider instance (one scan or one install).
 - Web applications are checked in parallel (up to `UpdateChecker.MaxParallelChecks`, 3, at a time)
   alongside the winget applications and never wait for them; winget applications are checked one
   after the other because winget keeps machine-wide state.
@@ -374,7 +403,11 @@ line per step; `InstallProgressTracker` maps those lines and, while downloading,
 Optimization's job for the download once a second (CIM `MSFT_DeliveryOptimizationFile`: size and bytes so
 far; matched by the printed URL, else - a redirect - by the size the URL announces over HTTP HEAD, else as the
 only new unfinished winget job). Without DO it falls back to the installer file in winget's download folder
-(`%TEMP%\WinGet\<id>.<version>`, for SYSTEM `C:\Windows\Temp\WinGet`), which DO only fills at the end. The service runs the tracker for its own installs; the tray
+(`%TEMP%\WinGet\<id>.<version>` for a user's winget, `C:\Windows\Temp\WinGet\defaultState\<id>.<version>` for
+SYSTEM's), which DO only fills at the end. With `WingetDownloader = wininet` (the default) the service sets SYSTEM's
+winget to download over plain HTTP: there is no DO job then, DO is not asked at all (so no other job can be taken
+for the download), and the progress comes from that download folder, where winget writes the installer
+progressively under its SHA-256 name and renames it after the hash check. The service runs the tracker for its own installs; the tray
 runs it for per-user installs and reports through `UserInstallProgressMessage`. Progress is kept in memory only
 and broadcast at once on a phase change, otherwise at most every two seconds; the log gets one line per phase,
 and the "Installed" line and the cloud event the duration ("installed in 3 min 27 s").
@@ -598,6 +631,7 @@ Notes:
 | `%ProgramFiles%\Arkimentum\AppMonitor\Admin\` | installer | Admin console binaries. Started from the all-users Start Menu shortcut `Programs\Arkimentum\Arkimentum AppMonitor Admin`. |
 | `%ProgramData%\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Admin_yyyyMMdd.log` | admin console | What the console changed, and every headless export/import. |
 | `%ProgramData%\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Service_yyyyMMdd.log` | service | Service log, rolled daily and at `MaxLogFileSizeMB` (`..._1.log`, `..._2.log`), pruned after `LogRetentionDays`. |
+| `%ProgramData%\Arkimentum\AppMonitor\Logs\Installers\<AppId>_<WingetId>_<yyyyMMdd-HHmmss>[_<step>].log` | winget / installers (service) | Installer logs of the service's winget runs (`--log`); pruned before each install to 14 days and 50 files. |
 | `%ProgramData%\Arkimentum\AppMonitor\state.json` | service | Pending updates, deferrals, deadlines, failure counts, application presence, install history. |
 | `%ProgramData%\Arkimentum\AppMonitor\Downloads\` | service | Installers downloaded from web sources (`StateDirectory\Downloads`). |
 | `%ProgramData%\Arkimentum\AppMonitor\device.credential` | service | The per-device cloud key, DPAPI-protected (LocalMachine) with the ACL replaced: `SYSTEM` and `BUILTIN\Administrators` only. Machine-bound - never put it in a reference image. |
@@ -606,6 +640,7 @@ Notes:
 | `%ProgramData%\Arkimentum\AppMonitor\AgentUpdates\<version>\` | service | The downloaded release package, the extracted payload, and `install.log` from the installer run. The two most recent versions are kept. |
 | `%ProgramData%\Arkimentum\AppMonitor\update-pending.json` | service | Written before the self-updater hands over; read on the next start to report the outcome. |
 | `%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\Arkimentum.AppMonitor.Tray_yyyyMMdd.log` | tray agent | One log per user. |
+| `%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\Installers\` | winget / installers (tray) | Installer logs of the user-context winget runs; same names and retention as the service's. |
 | `%LOCALAPPDATA%\Arkimentum\AppMonitor\Icons\<AppId>.png` | tray agent | Application icons found on this device, used as the toasts' app logo. Safe to delete; rebuilt as needed. |
 | `HKLM\SOFTWARE\Policies\Arkimentum\AppMonitor` | Group Policy / Intune | Policy configuration (wins). |
 | `HKLM\SOFTWARE\Arkimentum\AppMonitor` | installer / admin | Local preference configuration. |

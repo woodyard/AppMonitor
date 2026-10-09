@@ -24,9 +24,17 @@ public sealed record InstallProgress(InstallPhase Phase, long? DownloadedBytes =
 /// line, else (a redirecting URL: DO records the final one) winget's unfinished job of the size the URL announced
 /// (HTTP HEAD), else the only unfinished winget job that appeared after the line. Once matched it sticks to that job.
 /// Without DO (disabled, or its CIM class missing; three failed queries end the querying) the tracker falls back to the
-/// installer file in winget's folder <c>%TEMP%\WinGet\&lt;id&gt;.&lt;version&gt;\</c> (for SYSTEM
-/// <c>C:\Windows\Temp\WinGet</c>) against the HEAD size - DO fills that file only at the very end, so it mostly shows
-/// 0 and then everything. The byte counts are a best-effort hint, never a promise.
+/// installer file in winget's download folder against the HEAD size: <c>%TEMP%\WinGet\&lt;id&gt;.&lt;version&gt;\</c>
+/// for a user's (packaged) winget, <c>C:\Windows\Temp\WinGet\defaultState\&lt;id&gt;.&lt;version&gt;\</c> for SYSTEM's
+/// (unpackaged) one. DO fills that file only at the very end, so through DO it mostly shows 0 and then everything.
+/// </para>
+/// <para>
+/// When the service has set SYSTEM's winget to download with WinINet (<c>WingetDownloader</c> = <c>wininet</c>, passed in
+/// as <c>deliveryOptimization: false</c>) there is no DO job at all: DO is not asked (so no unrelated job - another
+/// winget's, the Store's - can ever be taken for this download), and the download folder is the source. winget then
+/// writes the installer progressively into a file named by its SHA-256 and renames it to the installer's name after the
+/// hash check, so there a hash-named file is the download in progress, not a finished one. The byte counts are a
+/// best-effort hint, never a promise.
 /// </para>
 /// Feed it every output line through <see cref="Report"/>; it raises <c>onChange</c> on each phase change and, while
 /// downloading, whenever the byte count moves. Thread-safe; dispose it when the install ends.
@@ -68,6 +76,8 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
     private readonly Func<string, CancellationToken, Task<long?>> _contentLength;
     private readonly Func<CancellationToken, IReadOnlyList<DeliveryOptimizationJob>> _doJobs;
     private readonly IReadOnlyList<string> _roots;
+    /// <summary>False when winget is known to download without DO (WinINet): DO is never asked, the folder is the source.</summary>
+    private readonly bool _deliveryOptimization;
     private readonly Timer _timer;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
@@ -81,6 +91,8 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
     private bool _linesUnderstood;
     /// <summary>The largest file the last poll saw, to tell a growing download from a leftover one.</summary>
     private long? _lastSeenBytes;
+    /// <summary>The folder showed the installer under its hash name during this download (WinINet: the download in progress).</summary>
+    private bool _sawHashName;
     private bool _disposed;
     /// <summary>The size the URL announced (HEAD); the DO job's own size is preferred.</summary>
     private long? _headTotal;
@@ -112,6 +124,11 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
     /// Lists Delivery Optimization's download jobs; null = the WMI query (<see cref="DeliveryOptimizationJobs.Query"/>).
     /// May throw; tests pass a fake, <see cref="NoDeliveryOptimization"/> switches it off.
     /// </param>
+    /// <param name="deliveryOptimization">
+    /// False when winget is known to download with WinINet (the service set <c>network.downloader</c> to <c>wininet</c> in
+    /// SYSTEM's winget settings): DO is never queried and a hash-named file in the download folder counts as a download
+    /// still running. True (default): winget's own choice, which is DO.
+    /// </param>
     public InstallProgressTracker(
         Action<InstallProgress> onChange,
         ILogger? logger = null,
@@ -120,11 +137,14 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
         TimeSpan? pollInterval = null,
         string? wingetId = null,
         string? version = null,
-        Func<CancellationToken, IReadOnlyList<DeliveryOptimizationJob>>? deliveryOptimizationJobs = null)
+        Func<CancellationToken, IReadOnlyList<DeliveryOptimizationJob>>? deliveryOptimizationJobs = null,
+        bool deliveryOptimization = true)
     {
         ArgumentNullException.ThrowIfNull(onChange);
         _onChange = onChange;
         _logger = logger;
+        _deliveryOptimization = deliveryOptimization;
+        _doDisabled = !deliveryOptimization;
         _doJobs = deliveryOptimizationJobs ?? DeliveryOptimizationJobs.Query;
         _contentLength = contentLength ?? CreateContentLengthResolver(null);
         _roots = wingetTempRoots ?? DefaultWingetTempRoots();
@@ -172,6 +192,7 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
                 _wingetId = found.Groups["id"].Value;
                 if (found.Groups["version"].Success) _version = found.Groups["version"].Value;
                 _lastSeenBytes = null;
+                _sawHashName = false;
             }
             return;
         }
@@ -212,6 +233,7 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
             if (_disposed) return;
             _url = url;
             _lastSeenBytes = null;
+            _sawHashName = false;
             _headTotal = null;
             _doBaseline = null;
             _doFileId = null;
@@ -431,15 +453,20 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
     {
         var grew = _lastSeenBytes is { } before && measured.Bytes > before;
         _lastSeenBytes = measured.Bytes;
+        var hashNamedBefore = _sawHashName;
+        if (measured.RenamedToHash) _sawHashName = true;
         var total = _current.DownloadTotalBytes;
         if (total is { } t && measured.Bytes > t) total = null; // a size that cannot be this file's
 
         var phase = _current.Phase;
         if (!_linesUnderstood)
         {
-            // No phase line understood (winget in another language): only what the folder proves.
+            // No phase line understood (winget in another language): only what the folder proves. Through DO the
+            // hash-named file appears whole at the end of the download; with WinINet it is the download in progress,
+            // and its rename to the installer's name (after the hash check) is what ends it.
+            var finished = _deliveryOptimization ? measured.RenamedToHash : hashNamedBefore && !measured.RenamedToHash;
             if (phase == InstallPhase.Starting && grew) phase = InstallPhase.Downloading;
-            else if (phase == InstallPhase.Downloading && (measured.RenamedToHash || (total is { } tt && measured.Bytes >= tt)))
+            else if (phase == InstallPhase.Downloading && (finished || (total is { } tt && measured.Bytes >= tt)))
                 phase = InstallPhase.Installing;
         }
 
@@ -454,31 +481,36 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
     /// <summary>
     /// The largest file in <c>&lt;root&gt;\&lt;id&gt;.&lt;version&gt;</c> of any of <paramref name="roots"/>, or, when
     /// the version is unknown or has no folder, in the newest <c>&lt;id&gt;.&lt;digit&gt;...</c> folder (the digit keeps
-    /// <c>Mozilla.Firefox</c> from matching <c>Mozilla.Firefox.MSIX.157.0</c>). Null when there is no such folder.
-    /// Files may be renamed or removed while they are read; such errors only skip the file.
+    /// <c>Mozilla.Firefox</c> from matching <c>Mozilla.Firefox.MSIX.157.0</c>). Each root is searched itself (a user's
+    /// packaged winget: <c>%TEMP%\WinGet\&lt;id&gt;.&lt;version&gt;</c>) and in its <c>*State</c> subfolders (an
+    /// unpackaged winget, SYSTEM's: <c>C:\Windows\Temp\WinGet\defaultState\&lt;id&gt;.&lt;version&gt;</c>). Among several
+    /// matching folders the most recently written wins (the download in progress over a leftover). Null when there is no
+    /// such folder. Files may be renamed or removed while they are read; such errors only skip the file.
     /// </summary>
     internal static Measured? MeasureDownload(IReadOnlyList<string> roots, string wingetId, string? version)
     {
-        DirectoryInfo? folder = null;
-        foreach (var root in roots)
+        DirectoryInfo? exactFolder = null;
+        DirectoryInfo? prefixFolder = null;
+        var prefix = wingetId + ".";
+        foreach (var searchRoot in SearchRoots(roots))
         {
             try
             {
-                if (!Directory.Exists(root)) continue;
                 if (version is not null)
                 {
-                    var exact = new DirectoryInfo(Path.Combine(root, $"{wingetId}.{version}"));
-                    if (exact.Exists) { folder = exact; break; }
+                    var exact = new DirectoryInfo(Path.Combine(searchRoot, $"{wingetId}.{version}"));
+                    if (exact.Exists && (exactFolder is null || exact.LastWriteTimeUtc > exactFolder.LastWriteTimeUtc)) exactFolder = exact;
                 }
-                var prefix = wingetId + ".";
-                foreach (var dir in new DirectoryInfo(root).EnumerateDirectories(prefix + "*"))
+                if (exactFolder is not null) continue; // an exact folder anywhere beats a guess by prefix
+                foreach (var dir in new DirectoryInfo(searchRoot).EnumerateDirectories(prefix + "*"))
                 {
                     if (dir.Name.Length <= prefix.Length || !char.IsAsciiDigit(dir.Name[prefix.Length])) continue;
-                    if (folder is null || dir.LastWriteTimeUtc > folder.LastWriteTimeUtc) folder = dir;
+                    if (prefixFolder is null || dir.LastWriteTimeUtc > prefixFolder.LastWriteTimeUtc) prefixFolder = dir;
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { }
         }
+        var folder = exactFolder ?? prefixFolder;
         if (folder is null) return null;
 
         long largest = 0;
@@ -499,6 +531,29 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return null; }
         return new Measured(largest, hashed);
+    }
+
+    /// <summary>
+    /// The existing folders that may hold winget's <c>&lt;id&gt;.&lt;version&gt;</c> download folders: every root, and its
+    /// <c>*State</c> subfolders (<c>defaultState</c>: where an unpackaged winget - SYSTEM's - keeps its temp files).
+    /// </summary>
+    internal static IEnumerable<string> SearchRoots(IReadOnlyList<string> roots)
+    {
+        foreach (var root in roots)
+        {
+            List<string> states;
+            try
+            {
+                if (!Directory.Exists(root)) continue;
+                states = Directory.EnumerateDirectories(root, "*State").ToList();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                states = [];
+            }
+            yield return root;
+            foreach (var state in states) yield return state;
+        }
     }
 
     /// <summary>Makes <paramref name="next"/> the current snapshot and numbers it; called under <see cref="_gate"/>.</summary>
@@ -529,7 +584,8 @@ public sealed class InstallProgressTracker : IProgress<string>, IDisposable
     /// <summary>
     /// The <c>WinGet</c> folders under the temp directories winget may use: this process's own (the user's
     /// <c>%TEMP%</c>, or SYSTEM's <c>C:\Windows\SystemTemp</c> on newer Windows), <c>C:\Windows\Temp</c> (where
-    /// SYSTEM's winget was seen to download) and <c>C:\Windows\SystemTemp</c>.
+    /// SYSTEM's winget was seen to download, in <c>WinGet\defaultState</c>) and <c>C:\Windows\SystemTemp</c>. The
+    /// <c>*State</c> subfolders are searched by <see cref="MeasureDownload"/> itself.
     /// </summary>
     public static IReadOnlyList<string> DefaultWingetTempRoots()
     {

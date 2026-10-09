@@ -130,14 +130,21 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton(logLevelSwitch);
 builder.Services.AddSingleton<LogLevelController>();
+// WingetDownloader is written to SYSTEM's own winget settings file, so only by the real service running as LocalSystem:
+// never in --user-config testing mode or as an elevated user (winget would name that user's own settings file), and not
+// from the one-shot command-line modes.
+builder.Services.AddSingleton(new WingetDownloaderOptions(Allowed: !userConfig && !cliOnly && UpdateCoordinator.IsRunningAsSystem));
+builder.Services.AddSingleton<WingetDownloaderController>();
 builder.Services.AddSingleton(sp =>
 {
     var provider = new SettingsProvider(sp.GetRequiredService<RegistryConfigurationReader>(), sp.GetRequiredService<ILogger<SettingsProvider>>())
     {
         Overrides = userConfig ? s => s with { LogDirectory = bootstrap.LogDirectory, StateDirectory = bootstrap.StateDirectory } : null,
     };
-    // Every reload that changes the configuration (the first one at start-up included) re-applies LogLevel.
+    // Every reload that changes the configuration (the first one at start-up included) re-applies LogLevel and the
+    // winget download method.
     sp.GetRequiredService<LogLevelController>().Attach(provider);
+    sp.GetRequiredService<WingetDownloaderController>().Attach(provider);
     return provider;
 });
 builder.Services.AddSingleton<StateStore>();

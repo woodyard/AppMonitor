@@ -246,7 +246,7 @@ groups them:
 | Scanning | `ScanIntervalMinutes`, `ScanOnStartup`, `StartupDelaySeconds`, `PolicyTickSeconds`, `CheckTimeoutMinutes`, `InstallTimeoutMinutes` |
 | Notifications | `NotificationsEnabled`, `NotificationMode`, `NotificationIntervalMinutes`, `ShowInstalledNotifications`, `LaunchTrayAgent` |
 | Default update behaviour | `DefaultMandatory`, `DefaultDeadlineHours`, `DefaultMaxDeferrals`, `DefaultDeferralOptions`, `DefaultAutoInstall`, `DefaultNotifyInstalling`, `DefaultCloseGracePeriodMinutes`, `DefaultForceCloseAtDeadline` |
-| Sources | `WingetEnabled`, `WebSourcesEnabled`, `UseCatalog`, `EnableAllCatalogApps`, `CatalogPath`, `ProxyUrl`, `WingetGlobalArgs`, `WingetIncludeUnknown`, `WingetPath`, and the prerequisite settings `AutoInstallPrerequisites`, `PrerequisiteCheckIntervalHours`, `WingetMinimumVersion` |
+| Sources | `WingetEnabled`, `WebSourcesEnabled`, `UseCatalog`, `EnableAllCatalogApps`, `CatalogPath`, `ProxyUrl`, `WingetGlobalArgs`, `WingetDownloader`, `WingetIncludeUnknown`, `WingetPath`, and the prerequisite settings `AutoInstallPrerequisites`, `PrerequisiteCheckIntervalHours`, `WingetMinimumVersion` |
 | Logging and storage | `LogLevel`, `LogDirectory`, `LogRetentionDays`, `MaxLogFileSizeMB`, `StateDirectory` |
 | Advanced | `TrayPath`, and every value marked advanced in the groups above |
 

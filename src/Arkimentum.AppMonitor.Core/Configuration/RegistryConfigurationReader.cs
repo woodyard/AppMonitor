@@ -89,6 +89,7 @@ public sealed class RegistryConfigurationReader
             AgentTargetVersion = r.String("AgentTargetVersion", defaults.AgentTargetVersion),
             ProxyUrl = r.String("ProxyUrl", defaults.ProxyUrl),
             WingetGlobalArgs = r.String("WingetGlobalArgs", defaults.WingetGlobalArgs),
+            WingetDownloader = ParseWingetDownloader(r.String("WingetDownloader", defaults.WingetDownloader), defaults.WingetDownloader),
             WingetIncludeUnknown = r.Bool("WingetIncludeUnknown", defaults.WingetIncludeUnknown),
             PolicyTickSeconds = r.Int("PolicyTickSeconds", defaults.PolicyTickSeconds, 10, 600),
             DefaultMandatory = r.Bool("DefaultMandatory", defaults.DefaultMandatory),
@@ -302,6 +303,19 @@ public sealed class RegistryConfigurationReader
             "auto" => NotifyInstallingMode.Auto,
             "always" or "yes" or "1" or "true" => NotifyInstallingMode.Always,
             "never" or "no" or "0" or "false" => NotifyInstallingMode.Never,
+            _ => fallback,
+        };
+
+    /// <summary>
+    /// Normalizes <c>WingetDownloader</c> to one of <see cref="SettingsSchema.WingetDownloaderChoices"/> (the values winget's
+    /// own <c>network.downloader</c> setting takes). Unknown text falls back instead of throwing.
+    /// </summary>
+    internal static string ParseWingetDownloader(string? value, string fallback) =>
+        (value ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "wininet" => "wininet",
+            "do" or "deliveryoptimization" or "delivery optimization" => "do",
+            "default" => "default",
             _ => fallback,
         };
 

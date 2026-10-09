@@ -91,6 +91,14 @@ public sealed record AgentSettings
     public string ProxyUrl { get; init; } = string.Empty;
     /// <summary>Additional winget arguments applied to every winget invocation.</summary>
     public string WingetGlobalArgs { get; init; } = string.Empty;
+    /// <summary>
+    /// How winget downloads installers when the service runs it as SYSTEM: <c>wininet</c> (plain HTTP), <c>do</c>
+    /// (Delivery Optimization) or <c>default</c> (SYSTEM's winget settings file is left alone). Written to
+    /// <c>network.downloader</c> in SYSTEM's own winget settings file by the service; always one of
+    /// <see cref="Configuration.SettingsSchema.WingetDownloaderChoices"/> (the reader falls back to the default).
+    /// </summary>
+    public string WingetDownloader { get; init; } = DefaultWingetDownloader;
+    public const string DefaultWingetDownloader = "wininet";
     /// <summary>Include winget results whose installed version is unknown.</summary>
     public bool WingetIncludeUnknown { get; init; }
     /// <summary>Minutes between checks for deadlines, deferrals and blocking processes.</summary>

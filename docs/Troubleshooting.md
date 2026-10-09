@@ -338,6 +338,18 @@ Internet Options proxy.
 - User-context update with nobody logged on: it waits for a tray agent.
 - The installer fails: `LastError` and the exit code are in the log. Try the same installer command
   by hand, silently, as SYSTEM.
+- The installer's own log: winget runs get `--log`, so an MSI (or Inno, burn) writes its log to
+  `%ProgramData%\Arkimentum\AppMonitor\Logs\Installers` (service) or
+  `%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\Installers` (tray), named
+  `<AppId>_<WingetId>_<yyyyMMdd-HHmmss>[_<step>].log`. A failed install's message ends with
+  `Installer log: <path>`; the service log names the file at the start of every upgrade. In an MSI log,
+  the gaps between the `Action start` timestamps show where the time went. Kept 14 days, at most 50 files.
+- The install takes long because winget installs a dependency first (Snagit and the WebView2 runtime):
+  winget does this when it does not list the dependency as installed. The agent adds
+  `--skip-dependencies` when the dependency is in the Uninstall registry under the package's name but
+  winget does not list it (see [Architecture.md](Architecture.md), "Dependencies winget does not see");
+  the service log then says *dependency … is installed (…, registry) but winget does not list it*. At
+  `Debug` it says why it did not skip.
 - The install times out: raise `InstallTimeoutMinutes` for slow installers.
 
 ## winget found no applicable upgrade, but winget upgrade lists the application
@@ -988,6 +1000,9 @@ New-Item -ItemType Directory -Path $dest -Force | Out-Null
 Copy-Item "$env:ProgramData\Arkimentum\AppMonitor\Logs\*.log" $dest -ErrorAction SilentlyContinue
 Copy-Item "$env:ProgramData\Arkimentum\AppMonitor\state.json" $dest -ErrorAction SilentlyContinue
 Copy-Item "$env:LOCALAPPDATA\Arkimentum\AppMonitor\Logs\*.log" $dest -ErrorAction SilentlyContinue
+# installer logs written by winget --log (service and tray)
+Copy-Item "$env:ProgramData\Arkimentum\AppMonitor\Logs\Installers" "$dest\Installers" -Recurse -ErrorAction SilentlyContinue
+Copy-Item "$env:LOCALAPPDATA\Arkimentum\AppMonitor\Logs\Installers" "$dest\InstallersUser" -Recurse -ErrorAction SilentlyContinue
 # cloud link and the cached organization configuration (device.credential is deliberately NOT copied:
 # it is the device's secret and is useless off this machine anyway - DPAPI is machine-bound)
 Copy-Item "$env:ProgramData\Arkimentum\AppMonitor\cloud-status.json" $dest -ErrorAction SilentlyContinue

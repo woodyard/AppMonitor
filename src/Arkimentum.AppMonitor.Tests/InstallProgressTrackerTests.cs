@@ -342,6 +342,71 @@ public sealed class InstallProgressTrackerTests : IDisposable
     }
 
     [Fact]
+    public void SYSTEMs_unpackaged_winget_folder_under_defaultState_is_measured()
+    {
+        // SYSTEM's winget (unpackaged) downloads to C:\Windows\Temp\WinGet\defaultState\<id>.<version>\, a user's
+        // (packaged) one to %TEMP%\WinGet\<id>.<version>\: both layouts under one root.
+        var system = Path.Combine(_root, "defaultState", $"{AcrobatId}.{AcrobatVersion}");
+        Directory.CreateDirectory(system);
+        Grow(Path.Combine(system, new string('d', 64)), 4_000);
+
+        Assert.Equal(4_000, InstallProgressTracker.MeasureDownload([_root], AcrobatId, AcrobatVersion)?.Bytes);
+        Assert.Equal(4_000, InstallProgressTracker.MeasureDownload([_root], AcrobatId, null)?.Bytes);
+        Assert.Equal(4_000, InstallProgressTracker.MeasureDownload([_root], AcrobatId, "27.0")?.Bytes);
+
+        // A leftover folder of the same version directly under the root loses to the one being written now.
+        var leftover = PackageFolder();
+        Grow(Path.Combine(leftover, "AcroRdr.exe"), 9_000);
+        Directory.SetLastWriteTimeUtc(leftover, DateTime.UtcNow.AddDays(-2));
+        Directory.SetLastWriteTimeUtc(system, DateTime.UtcNow);
+        Assert.Equal(4_000, InstallProgressTracker.MeasureDownload([_root], AcrobatId, AcrobatVersion)?.Bytes);
+    }
+
+    [Fact]
+    public async Task English_lines_with_WinINet_take_the_growing_file_under_defaultState_as_the_progress()
+    {
+        var folder = Path.Combine(_root, "defaultState", $"{AcrobatId}.{AcrobatVersion}");
+        Directory.CreateDirectory(folder);
+        using var tracker = new InstallProgressTracker(OnChange, contentLength: Size(10_000), wingetTempRoots: [_root], pollInterval: FastPolling,
+            wingetId: AcrobatId, version: AcrobatVersion, deliveryOptimizationJobs: _ => throw new InvalidOperationException("DO must not be asked"),
+            deliveryOptimization: false);
+        tracker.Report(AcrobatLines[0]);
+        tracker.Report(AcrobatLines[3]);
+
+        var file = Path.Combine(folder, new string('e', 64));
+        Grow(file, 2_500);
+        Assert.True(await WaitFor(() => tracker.Current.DownloadedBytes == 2_500));
+        Grow(file, 7_500);
+        Assert.True(await WaitFor(() => tracker.Current == new InstallProgress(InstallPhase.Downloading, 7_500, 10_000)));
+
+        tracker.Report(AcrobatLines[4]);
+        Assert.Equal(InstallPhase.Verifying, tracker.Current.Phase);
+    }
+
+    [Fact]
+    public async Task Without_understood_lines_and_WinINet_a_growing_hash_named_file_is_the_download_and_its_rename_the_end()
+    {
+        // WinINet writes straight into <hash> and renames it to the installer's name after the hash check; through DO
+        // the hash-named file only appears at the end. So here the hash name must not count as "downloaded".
+        var folder = PackageFolder();
+        var file = Path.Combine(folder, new string('f', 64));
+        Grow(file, 0);
+        using var tracker = new InstallProgressTracker(OnChange, contentLength: Size(null), wingetTempRoots: [_root], deliveryOptimizationJobs: NoDo, pollInterval: FastPolling,
+            wingetId: AcrobatId, version: AcrobatVersion, deliveryOptimization: false);
+
+        await Task.Delay(100);
+        Grow(file, 3_000);
+        Assert.True(await WaitFor(() => tracker.Current.Phase == InstallPhase.Downloading));
+        Grow(file, 6_000);
+        Assert.True(await WaitFor(() => tracker.Current.DownloadedBytes == 6_000));
+        await Task.Delay(100);
+        Assert.Equal(InstallPhase.Downloading, tracker.Current.Phase);
+
+        File.Move(file, Path.Combine(folder, "AcroRdrDCx64.exe"));
+        Assert.True(await WaitFor(() => tracker.Current.Phase == InstallPhase.Installing));
+    }
+
+    [Fact]
     public void The_default_roots_include_the_system_temp_folders()
     {
         var roots = InstallProgressTracker.DefaultWingetTempRoots();

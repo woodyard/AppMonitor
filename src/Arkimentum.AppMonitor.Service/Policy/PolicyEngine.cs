@@ -79,6 +79,13 @@ public static class PolicyEngine
     /// a safety net for a staged package Windows never registers; after it the update is offered once more.
     /// </summary>
     public static readonly TimeSpan AppRestartPendingHold = TimeSpan.FromDays(7);
+    /// <summary>
+    /// How long an update waits after an attempt that found Windows Installer busy with another installation
+    /// (<see cref="MarkInstallerBusy"/>) before it is tried again automatically. Such an attempt is not a failure: on
+    /// H-SURFACELAP5 (2026-10-19) five MSI-based updates in a row were refused with 1618 within six minutes while
+    /// something outside AppMonitor installed, and each one used up a retry and raised a "failed" toast.
+    /// </summary>
+    public static readonly TimeSpan InstallerBusyRetryDelay = TimeSpan.FromMinutes(10);
 
     public static TimeSpan NotificationIntervalFor(PendingUpdate update, AppPolicy? policy, AgentSettings settings) =>
         policy?.NotificationIntervalMinutes is > 0 and var m ? TimeSpan.FromMinutes(m) : settings.NotificationInterval;
@@ -229,6 +236,7 @@ public static class PolicyEngine
                 if (sameTarget && !realChange && !existing.AppRestartPending) existing.FailureCount++;
                 if (existing.AppRestartPending) restartsEnded.Add(key);
                 existing.InstallVerified = false;
+                existing.InstallerBusyUntilUtc = null;
                 existing.NothingToInstall = false;
                 existing.RebootPending = false;
                 existing.AppRestartPending = false;
@@ -246,6 +254,8 @@ public static class PolicyEngine
                 // simply warned (or asked) again when this version's turn comes.
                 existing.ForceCloseAtUtc = null;
                 existing.ForceCloseRequestedUtc = null;
+                // A busy Windows Installer held back the version it replaces; the new one is tried at once.
+                existing.InstallerBusyUntilUtc = null;
                 // A newer version superseded the one that failed: allow automatic retries again.
                 if (existing.State == UpdateState.Failed) { existing.State = UpdateState.Available; existing.FailureCount = 0; existing.LastError = null; }
             }
@@ -359,6 +369,18 @@ public static class PolicyEngine
     /// </summary>
     public static PolicyAction Decide(PendingUpdate u, DateTimeOffset now, TimeSpan notificationInterval, bool blockingProcessesRunning,
         NotificationMode mode = NotificationMode.Reminders)
+    {
+        var action = DecideCore(u, now, notificationInterval, blockingProcessesRunning, mode);
+        // The last attempt found Windows Installer busy with someone else's installation: nothing that leads to an install
+        // - the install itself, a close prompt, a forced close - until the retry time. Notifications go on as usual, and a
+        // mandatory update past its deadline keeps its deadline: it simply cannot install before Windows Installer is free.
+        return action.Kind is PolicyActionKind.Install or PolicyActionKind.ForceClose or PolicyActionKind.PromptClose && u.IsHeldForInstaller(now)
+            ? PolicyAction.None
+            : action;
+    }
+
+    private static PolicyAction DecideCore(PendingUpdate u, DateTimeOffset now, TimeSpan notificationInterval, bool blockingProcessesRunning,
+        NotificationMode mode)
     {
         switch (u.State)
         {
@@ -534,6 +556,8 @@ public static class PolicyEngine
         u.InstallRequested = true;
         u.DeferredUntilUtc = null;
         u.Dismissed = false;
+        // "Install now" tries at once; the install turn still waits for a busy Windows Installer before it starts anything.
+        u.InstallerBusyUntilUtc = null;
     }
 
     /// <summary>
@@ -548,12 +572,14 @@ public static class PolicyEngine
         u.InstallPhase = InstallPhase.Starting;
         u.DownloadedBytes = null;
         u.DownloadTotalBytes = null;
+        u.WaitingForInstallerSinceUtc = null;
+        u.InstallerBusyUntilUtc = null;
         if (expectedInstallSeconds is not null) u.ExpectedInstallSeconds = expectedInstallSeconds;
     }
 
     /// <summary>
-    /// Forgets the progress of an install that has ended (or never started): phase, download counts and start time.
-    /// Called after the history entry was taken, which reads the start time.
+    /// Forgets the progress of an install that has ended (or never started): phase, download counts, start time and a
+    /// wait for Windows Installer. Called after the history entry was taken, which reads the start time.
     /// </summary>
     public static void ClearInstallProgress(PendingUpdate u)
     {
@@ -561,6 +587,7 @@ public static class PolicyEngine
         u.InstallPhase = null;
         u.DownloadedBytes = null;
         u.DownloadTotalBytes = null;
+        u.WaitingForInstallerSinceUtc = null;
     }
 
     public static void MarkInstalled(PendingUpdate u, InstallResult result, DateTimeOffset now)
@@ -585,6 +612,7 @@ public static class PolicyEngine
         u.RebootPending = result.RebootRequired;
         // The installed version stays the one still registered (the result's); Merge holds the update until it moves.
         u.AppRestartPending = result.AppRestartPending;
+        u.InstallerBusyUntilUtc = null;
         ClearInstallProgress(u);
     }
 
@@ -598,6 +626,22 @@ public static class PolicyEngine
         u.ForceCloseAtUtc = null;
         u.ForceCloseRequestedUtc = null; // a new attempt must be asked for again
         u.InstallRequested = false;
+        u.InstallerBusyUntilUtc = null; // the failure's own retry interval applies now
+        ClearInstallProgress(u);
+    }
+
+    /// <summary>
+    /// The attempt found Windows Installer busy with another installation - the wait at the install turn ran out, or the
+    /// installer was refused with MSI 1618 (<see cref="InstallResult.InstallerBusy"/>) - so nothing was installed. Not a
+    /// failure: no <see cref="PendingUpdate.FailureCount"/>, no error, the user's deferrals, "Install now" and a "Close
+    /// apps and update" untouched. The update goes back to Available (a queued or running attempt) and is not tried
+    /// again automatically before <see cref="InstallerBusyRetryDelay"/> has passed (see <see cref="Decide"/>); with
+    /// <see cref="PendingUpdate.InstallRequested"/>, auto-install or a passed deadline it then installs as before.
+    /// </summary>
+    public static void MarkInstallerBusy(PendingUpdate u, DateTimeOffset now)
+    {
+        if (u.State is UpdateState.Installing or UpdateState.Scheduled) u.State = UpdateState.Available;
+        u.InstallerBusyUntilUtc = now + InstallerBusyRetryDelay;
         ClearInstallProgress(u);
     }
 

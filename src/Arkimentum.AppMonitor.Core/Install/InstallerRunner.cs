@@ -150,7 +150,8 @@ public sealed class InstallerRunner
         ExitProductAlreadyInstalled => InstallResult.Ok("This version is already installed.", ExitProductAlreadyInstalled),
         ExitUserCancelled => InstallResult.Fail("The installation was cancelled (exit 1602).", ExitUserCancelled),
         ExitCancelledByUser => InstallResult.Fail("The installation was cancelled (exit 1223).", ExitCancelledByUser),
-        ExitAnotherInstallInProgress => InstallResult.Fail(
+        // Not the update's fault: the service puts it back for a later attempt instead of counting a failure.
+        ExitAnotherInstallInProgress => InstallResult.Busy(
             "Another installation is already in progress (exit 1618, ERROR_INSTALL_ALREADY_RUNNING). " +
             "Wait for Windows Installer to finish and retry.", ExitAnotherInstallInProgress),
         ExitFatalError => InstallResult.Fail(

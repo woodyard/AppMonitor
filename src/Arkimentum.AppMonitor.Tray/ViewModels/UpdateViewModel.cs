@@ -127,8 +127,15 @@ public sealed class UpdateViewModel : ObservableObject
             // install or from the service; an older service sends nothing and the card says "Installing…" as before.
             if (_progress.Status is { } progress) return progress;
             if (_localStatus is { Length: > 0 }) return _localStatus;
+            // The update holds the install turn, but another installation (Windows Update, Intune) is using Windows
+            // Installer; the service waits for it before it closes or starts anything.
+            if (_update.WaitingForInstallerSinceUtc is not null && _update.State is not (UpdateState.Installing or UpdateState.Installed))
+                return Strings.StateWaitingForInstaller;
             return _update.State switch
             {
+                // The last attempt found Windows Installer busy; it is tried again by itself, so say when.
+                UpdateState.Available when _update.InstallerBusyUntilUtc is { } retry && _update.IsHeldForInstaller(DateTimeOffset.UtcNow)
+                    => Strings.StateInstallerBusyRetry(TimeFormat.Absolute(retry)),
                 UpdateState.Available => Strings.StateAvailable,
                 UpdateState.Deferred => Strings.StateDeferred(
                     _update.DeferredUntilUtc is { } until ? TimeFormat.Absolute(until) : Strings.DetailsNone),

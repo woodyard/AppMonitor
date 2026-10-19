@@ -60,6 +60,8 @@ public static class Strings
     public const string ProgressChecking = "Checking for updates…";
     /// <summary>Headline while the user still has to close an application before the install can start.</summary>
     public const string ProgressWaitingForClose = "Waiting for applications to close…";
+    /// <summary>Headline while the next install waits for another installation (Windows Update, Intune) to release Windows Installer.</summary>
+    public const string ProgressWaitingForInstaller = "Waiting for another installation to finish…";
 
     /// <summary>
     /// The tail of the progress line, e.g. "(3 of 6 finished, 1 failed, 2 queued)". Finished means installed or
@@ -107,6 +109,10 @@ public static class Strings
     public const string StateMandatory = "mandatory";
 
     public static string StateDeferred(string until) => $"Deferred until {until}";
+    /// <summary>The update's turn has come, but Windows Installer is busy with someone else's installation.</summary>
+    public const string StateWaitingForInstaller = "Waiting for another installation to finish";
+    /// <summary>The last attempt found Windows Installer busy; the service tries again by itself at that time.</summary>
+    public static string StateInstallerBusyRetry(string when) => $"Another installation was in progress; trying again at {when}";
     public static string StateWaitingForClose(string processes) => $"Waiting for you to close: {processes}";
 
     /// <summary>

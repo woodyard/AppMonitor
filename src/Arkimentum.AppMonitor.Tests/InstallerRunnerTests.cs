@@ -44,10 +44,11 @@ public class InstallerRunnerTests
     }
 
     [Fact]
-    public void AnotherInstallInProgressFailsWithAClearMessage()
+    public void AnotherInstallInProgressIsABusyRefusalWithAClearMessage()
     {
         var r = InstallerRunner.InterpretExitCode(1618, InstallerType.Msi);
         Assert.False(r.Success);
+        Assert.True(r.InstallerBusy); // not counted as a failure; the service tries again later
         Assert.Equal(1618, r.ExitCode);
         Assert.Contains("Another installation", r.Message, StringComparison.OrdinalIgnoreCase);
     }

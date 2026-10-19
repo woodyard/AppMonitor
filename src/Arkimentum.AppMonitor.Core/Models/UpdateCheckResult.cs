@@ -60,11 +60,25 @@ public sealed record InstallResult
     /// </summary>
     public bool AppRestartPending { get; init; }
 
+    /// <summary>
+    /// A failure that is no fault of the update: the installer was refused because another installation held Windows
+    /// Installer (MSI 1618, ERROR_INSTALL_ALREADY_RUNNING; winget 0x8A150102). Nothing was installed, and the same
+    /// install is likely to work once the other one is done, so the service puts the update back for a later attempt
+    /// instead of counting a failure. Seen on H-SURFACELAP5 (2026-10-19): five MSI-based updates in a row refused within
+    /// six minutes while something outside AppMonitor (Windows Update or Intune) installed. Added after 1.1.48; an IPC
+    /// message without it means false.
+    /// </summary>
+    public bool InstallerBusy { get; init; }
+
     public static InstallResult Ok(string? message = null, int exitCode = 0, bool reboot = false) =>
         new() { Success = true, ExitCode = exitCode, Message = message, RebootRequired = reboot };
 
     public static InstallResult Fail(string message, int exitCode = -1) =>
         new() { Success = false, ExitCode = exitCode, Message = message };
+
+    /// <summary>A refusal because another installation is in progress (see <see cref="InstallerBusy"/>).</summary>
+    public static InstallResult Busy(string message, int exitCode) =>
+        new() { Success = false, ExitCode = exitCode, Message = message, InstallerBusy = true };
 }
 
 /// <summary>Describes the security context the provider is running in.</summary>

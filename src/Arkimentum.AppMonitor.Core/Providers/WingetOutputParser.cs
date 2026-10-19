@@ -102,6 +102,19 @@ public static partial class WingetOutputParser
     public const int ExitRebootInitiated = unchecked((int)0x8A15010B);
 
     /// <summary>
+    /// winget exit code for "another installation is already in progress" (0x8A150102,
+    /// APPINSTALLER_CLI_ERROR_INSTALL_INSTALL_IN_PROGRESS): the installer answered MSI's 1618 because Windows Installer was
+    /// busy with someone else's installation. Nothing was installed.
+    /// </summary>
+    public const int ExitInstallInProgress = unchecked((int)0x8A150102);
+
+    /// <summary>
+    /// What winget prints when the installer itself returned 1618 (ERROR_INSTALL_ALREADY_RUNNING), also when the package's
+    /// manifest does not map that code and winget exits with a generic installer failure.
+    /// </summary>
+    public const string InstallerBusyMarker = "Installer failed with exit code: 1618";
+
+    /// <summary>
     /// What winget (1.30, English) prints after an MSIX upgrade of an application that is running: "Successfully
     /// installed. Restart the application to complete the upgrade." Windows has staged the new package and registers it
     /// the next time the application starts; winget exits 0 and lists the old version until then.
@@ -119,6 +132,17 @@ public static partial class WingetOutputParser
     public static bool IsAppRestartPendingOutput(string? output) =>
         !string.IsNullOrWhiteSpace(output)
         && WhitespaceRunRegex().Replace(output, " ").Contains(AppRestartPendingMarker, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether a winget run (or a hand-over's reply) was refused because another installation held Windows Installer:
+    /// exit 0x8A150102, the installer's own 1618 passed through as winget's exit code, or <see cref="InstallerBusyMarker"/>
+    /// in the output (any run of whitespace between its words). Pure, so the rule is testable. A success is never busy.
+    /// </summary>
+    public static bool IsInstallerBusy(int exitCode, string? output) =>
+        exitCode != 0
+        && (exitCode is ExitInstallInProgress or Install.InstallerRunner.ExitAnotherInstallInProgress
+            || (!string.IsNullOrWhiteSpace(output)
+                && WhitespaceRunRegex().Replace(output, " ").Contains(InstallerBusyMarker, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>True when the output says the package is not installed / not found.</summary>
     public static bool IsNotInstalledOutput(string? output)

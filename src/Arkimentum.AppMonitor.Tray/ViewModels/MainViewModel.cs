@@ -154,9 +154,11 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
         var installing = _store.CurrentInstall;
         var head = installing is not null
             ? Strings.ProgressInstalling(installing.DisplayName)
-            : inProgress.Any(u => u.State == UpdateState.WaitingForClose)
-                ? Strings.ProgressWaitingForClose
-                : Strings.ProgressPreparing;
+            : inProgress.Any(u => u.WaitingForInstallerSinceUtc is not null)
+                ? Strings.ProgressWaitingForInstaller
+                : inProgress.Any(u => u.State == UpdateState.WaitingForClose)
+                    ? Strings.ProgressWaitingForClose
+                    : Strings.ProgressPreparing;
 
         ShowProgressBanner = true;
         ProgressText = _round.ShowCounts

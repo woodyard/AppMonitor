@@ -87,6 +87,14 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     internal Func<IReadOnlyCollection<string>, ExecutionContextInfo, bool>? PackageProcessProbe { get; init; }
 
     /// <summary>
+    /// Opens the per-user Uninstall key whose Inno entries a user-context install makes very silent for its duration (see
+    /// <see cref="InnoQuietUninstall"/>). Tests point it at a throw-away key; null (the default) opens HKCU's own, except
+    /// in a test that scripts winget (<see cref="LookupRunner"/> / <see cref="InstallRunner"/>), which never touches the
+    /// real registry.
+    /// </summary>
+    internal Func<RegistryKey?>? UserUninstallRoot { get; init; }
+
+    /// <summary>
     /// Checks every id with winget's own per-id lookup, as the fallback for a failed full listing does, even when the
     /// listing is complete. For tests that prove both paths reach the same result for the same winget output.
     /// </summary>
@@ -618,8 +626,19 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         // Every winget run of this install writes its installer log to the same folder (see WingetProvider.InstallerLogs).
         var logs = BeginInstallerLogs();
         _installLogs.Value = logs;
+        // In a user's session, winget's removal of the previous version (UpgradeBehavior: uninstallPrevious) runs the
+        // registered quiet uninstall command, which for Inno is /SILENT: a visible progress window. Very silent for the
+        // duration of the install, restored afterwards whatever happens. Never in the service (HKLM, session 0).
+        using var quietUninstall = context.IsSystem ? null : BeginInnoQuietUninstall(app);
         var result = await InstallCoreAsync(app, update, context, progress, ct).ConfigureAwait(false);
         return WithInstallerLog(result, logs);
+    }
+
+    /// <summary>See <see cref="InnoQuietUninstall"/>; null when nothing was rewritten (or in a test that scripts winget without a key of its own).</summary>
+    private IDisposable? BeginInnoQuietUninstall(AppPolicy app)
+    {
+        var openRoot = UserUninstallRoot ?? (LookupRunner is not null || InstallRunner is not null ? null : InnoQuietUninstall.OpenUserUninstallRoot);
+        return openRoot is null ? null : InnoQuietUninstall.Begin(openRoot, app, _logger);
     }
 
     private async Task<InstallResult> InstallCoreAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, IProgress<string>? progress, CancellationToken ct)
@@ -795,6 +814,14 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             return UpgradeOutcome.Final(InstallResult.Fail($"winget upgrade timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.", -1));
 
         var result = InterpretWingetExitCode(run.ExitCode, run);
+
+        // Windows Installer was busy with someone else's installation: final, never a reason to try the next id or a
+        // fallback - every one of them would hit the same wall. The service puts the update back for a later attempt.
+        if (result.InstallerBusy)
+        {
+            _logger.LogWarning("{AppId}: winget upgrade of '{WingetId}' was refused because another installation is in progress - {Message}", app.AppId, wingetId, result.Message);
+            return UpgradeOutcome.Final(result);
+        }
 
         // Read the version winget now reports so the caller can record what actually got installed - and so a
         // "no applicable upgrade" / "success" answer can be checked against reality. With several installs of the package
@@ -1143,8 +1170,8 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         if (!result.Success || run.ExitCode == WingetOutputParser.ExitNoApplicableUpgrade)
         {
             var message = $"{prefix} Installing over it with 'winget install --force' failed as well: {result.Message}";
-            _logger.LogError("{AppId}: {Message}", app.AppId, message);
-            return InstallResult.Fail(message, run.ExitCode);
+            _logger.Log(result.InstallerBusy ? LogLevel.Warning : LogLevel.Error, "{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, run.ExitCode) with { InstallerBusy = result.InstallerBusy };
         }
         if (stillOutdated && !result.RebootRequired)
         {
@@ -1266,7 +1293,8 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
                 _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
                 // Nothing ran when there was no answer (or the service refused): "no applicable installer", as before.
                 var code = reply is null || reply.ExitCode == 0 ? WingetOutputParser.ExitNoApplicableInstaller : reply.ExitCode;
-                return InstallResult.Fail(message, code);
+                // The service's install was refused because Windows Installer was busy: a later attempt may well work.
+                return InstallResult.Fail(message, code) with { InstallerBusy = reply is not null && WingetOutputParser.IsInstallerBusy(reply.ExitCode, reply.Message) };
             }
         }
     }
@@ -1419,7 +1447,7 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         if (exitCode != 0 && IsNoApplicableInstaller(exitCode, run?.CombinedOutput))
             return InstallResult.Fail($"winget has no installer for the package even without a scope filter (exit 0x{exitCode:X8}).", exitCode);
         var result = InterpretWingetExitCode(exitCode, run);
-        if (result.Success) return result;
+        if (result.Success || result.InstallerBusy) return result;
         var detail = run?.LastLines() ?? string.Empty;
         return InstallResult.Fail($"winget install failed with exit code {exitCode} (0x{exitCode:X8})." +
             (string.IsNullOrWhiteSpace(detail) ? string.Empty : $" Output: {detail}"), exitCode);
@@ -1489,6 +1517,14 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         }
 
         var step = retriedAllVersions ? "winget uninstall --all-versions" : "winget uninstall";
+        // Windows Installer was busy with someone else's installation, so the uninstall did nothing: the current install
+        // is still in place, and the take-over is simply tried again later. No listing, no clean-up of registrations.
+        if (uninstall.Started && !uninstall.TimedOut && WingetOutputParser.IsInstallerBusy(uninstall.ExitCode, uninstall.CombinedOutput))
+        {
+            var message = $"{prefix} Removing the current install was refused because another installation is in progress ({step} exited with 0x{uninstall.ExitCode:X8}); the current install was left in place.";
+            _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Busy(message, uninstall.ExitCode);
+        }
         string? uninstallFailure = null;
         if (!uninstall.Started) uninstallFailure = uninstall.StartFailure;
         else if (uninstall.TimedOut) uninstallFailure = $"{step} timed out after {_options.InstallTimeout.TotalMinutes:0} minutes and was terminated.";
@@ -1605,7 +1641,9 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         var stillOutdated = IsStillOutdated(newVersion, update.AvailableVersion);
 
         // Stricter than the other paths: the old install is gone, so "winget says success but no version can be read"
-        // is not good enough to record a success - the next scan settles what is really on the device.
+        // is not good enough to record a success - the next scan settles what is really on the device. A refusal because
+        // Windows Installer was busy is deliberately reported as a plain failure here, not as InstallerBusy: the
+        // application is now missing, which the user must hear about, and a later "upgrade" would find nothing to upgrade.
         if (!result.Success || newVersion is null || (stillOutdated && !result.RebootRequired))
         {
             var detail = !result.Success ? result.Message
@@ -1696,8 +1734,8 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
                 : $"the registry still shows {registryVersion ?? "no version"}";
             var outcome = result.Success ? $"reported success (exit 0x{run.ExitCode:X8})" : $"failed (exit 0x{run.ExitCode:X8}): {result.Message}";
             var message = $"{prefix} 'winget install --id {wingetId}' {outcome}, but {found}, expected {update.AvailableVersion}.";
-            _logger.LogError("{AppId}: {Message}", app.AppId, message);
-            return InstallResult.Fail(message, run.ExitCode);
+            _logger.Log(result.InstallerBusy ? LogLevel.Warning : LogLevel.Error, "{AppId}: {Message}", app.AppId, message);
+            return InstallResult.Fail(message, run.ExitCode) with { InstallerBusy = result.InstallerBusy };
         }
 
         if (!result.Success)
@@ -2540,10 +2578,19 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         return new ListLookup(row, false, null);
     }
 
-    /// <summary>Maps a winget exit code to an <see cref="InstallResult"/>. Exposed for tests.</summary>
+    /// <summary>
+    /// Maps a winget exit code to an <see cref="InstallResult"/>. Exposed for tests. A refusal because another
+    /// installation held Windows Installer (<see cref="WingetOutputParser.IsInstallerBusy"/>) is marked
+    /// <see cref="InstallResult.InstallerBusy"/>; every path that builds its own failure from this result keeps the flag.
+    /// </summary>
     public static InstallResult InterpretWingetExitCode(int exitCode, ProcessRunResult? run = null)
     {
         var detail = run?.LastLines() ?? string.Empty;
+        if (WingetOutputParser.IsInstallerBusy(exitCode, run?.CombinedOutput))
+            return InstallResult.Busy(
+                $"Another installation was in progress, so Windows Installer refused this one (exit 0x{exitCode:X8}, MSI 1618)." +
+                (string.IsNullOrWhiteSpace(detail) ? string.Empty : $" Output: {detail}"),
+                exitCode);
         return exitCode switch
         {
             0 => InstallResult.Ok("Installed successfully."),

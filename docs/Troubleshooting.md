@@ -352,6 +352,36 @@ Internet Options proxy.
   `Debug` it says why it did not skip.
 - The install times out: raise `InstallTimeoutMinutes` for slow installers.
 
+### "Waiting for another installation to finish" / exit 1618 (0x8A150102)
+
+Windows Installer runs one installation at a time; while Windows Update, Intune or a setup someone started
+installs, every MSI-based installer is refused with 1618 (winget: 0x8A150102, *Another installation is
+already in progress*). From the release after 1.1.48 the service looks before each install, at the update's turn and before
+it asks anyone to close an application: while the `Global\_MSIExecute` mutex exists it keeps the turn,
+looks again every 10 seconds for up to 15 minutes, and the tray's card says *Waiting for another
+installation to finish*. The service log names who holds Windows Installer when the wait begins
+(*Windows Installer is in use by msiexec.exe pid … started by …*, every msiexec except the service
+instance `msiexec.exe /V`; none listed means the installing process uses Windows Installer directly) and
+how long the wait took. Still busy after 15 minutes, or refused with 1618 anyway (an installation that
+started after the look, a bootstrapper exe that starts msiexec later): the update goes back to Available
+and is tried again by itself about 10 minutes later (*trying again in about 10 min (not counted as a
+failure)*, Warning). That is no failure: no retry used up, no "failed" toast, no InstallFailed event, the
+user's deferrals untouched; *Install now* tries at once. A take-over (`WingetReplaceOnMismatch`) whose
+install is refused after the old version was removed is the exception: that is reported as a failure,
+because the application is missing then.
+
+### An uninstall window flashes up during a per-user update (Inno Setup)
+
+When a package's manifest says `UpgradeBehavior: uninstallPrevious`, winget first runs the old version's
+registered `QuietUninstallString`; Inno Setup registers `"…\unins000.exe" /SILENT`, which asks nothing but
+shows a progress window (GIMP on H-SURFACELAP5, 2026-10-19). For a user-context install the tray therefore
+rewrites, in the user's own `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall` only, the Inno entries
+of that application (`Inno Setup: Setup Version` present, matched by the app's detection rule) from `/SILENT`
+to `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` for the duration of the install, and puts the original back
+afterwards if the entry is still there with that value (tray log: *made the Inno uninstaller of … very
+silent*, *restored the quiet uninstall command of …*). The service never does this: its installs run in
+session 0, and it does not write HKLM.
+
 ## winget found no applicable upgrade, but winget upgrade lists the application
 
 Symptom: an update fails with *winget found no applicable upgrade for 'X' (User scope); installed

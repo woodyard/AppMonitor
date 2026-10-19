@@ -106,6 +106,22 @@ public sealed class PendingUpdate
     /// Added after 1.1.46; a state file or an IPC message without it means no wait.
     /// </summary>
     public DateTimeOffset? FailedAtUtc { get; set; }
+    /// <summary>
+    /// The last attempt found Windows Installer busy with another installation (the wait at the install turn ran out, or
+    /// the installer was refused with MSI 1618, see <see cref="InstallResult.InstallerBusy"/>): no automatic install,
+    /// close prompt or forced close before this time (see <c>PolicyEngine.Decide</c>). Not a failure and not a deferral -
+    /// <see cref="FailureCount"/> and the deferral fields are untouched; "Install now" and a newer version clear it.
+    /// Added after 1.1.48; a state file or an IPC message without it means no wait.
+    /// </summary>
+    public DateTimeOffset? InstallerBusyUntilUtc { get; set; }
+
+    /// <summary>
+    /// Set while this update holds the install turn and waits for another installation to release Windows Installer,
+    /// before anything is closed or started; the tray's card says so. Cleared when the wait ends. Not meaningful in a
+    /// state file read back after a restart. Added after 1.1.48; an older service leaves it null.
+    /// </summary>
+    public DateTimeOffset? WaitingForInstallerSinceUtc { get; set; }
+
     /// <summary>Set when the user chose "Dismiss" on a non-mandatory update; re-notified after the interval.</summary>
     public bool Dismissed { get; set; }
     /// <summary>
@@ -161,6 +177,9 @@ public sealed class PendingUpdate
     public bool IsPastDeadline(DateTimeOffset now) => Mandatory && DeadlineUtc is { } d && now >= d;
 
     public bool IsDeferred(DateTimeOffset now) => DeferredUntilUtc is { } u && now < u;
+
+    /// <summary>True while an automatic attempt waits out a busy Windows Installer (see <see cref="InstallerBusyUntilUtc"/>).</summary>
+    public bool IsHeldForInstaller(DateTimeOffset now) => InstallerBusyUntilUtc is { } u && now < u;
 
     public bool IsActive => State is not (UpdateState.Installed);
 

@@ -360,6 +360,7 @@ Rules encoded in the model (`PendingUpdate`):
 | Notification style | `NotificationMode` (global, per-app override). `Quiet` (default) announces an update once - `PendingUpdate.Announced` records it - and afterwards only notifies about a deadline approaching, applications to close, or a failed install; there is no "installing" toast. `Reminders` is the pre-1.2 behaviour: one reminder per `NotificationIntervalMinutes` for as long as the update is pending. |
 | Dismiss | A non-mandatory update the user dismissed is re-announced after `NotificationIntervalMinutes` in `Reminders` mode; in `Quiet` mode it stays dismissed until a new version appears or a deadline approaches. |
 | Failure | `FailureCount` and `LastError` are kept; the update reappears in the next scan and is retried. |
+| Windows Installer busy | An attempt refused because another installation held Windows Installer (MSI 1618, winget 0x8A150102; `InstallResult.InstallerBusy`), or whose wait at the turn ran out (below), is no failure: `PolicyEngine.MarkInstallerBusy` puts the update back to `Available` with `InstallerBusyUntilUtc = now + 10 min`, before which `Decide` neither installs, prompts nor force-closes for it. `FailureCount`, the deferrals and `InstallRequested` are untouched; *Install now* and a newer version clear it. |
 
 Pending state is persisted to `state.json` so deferrals, deadlines and deferral counts survive a
 service restart or reboot. The same file also holds `AppPresence` - what the last check concluded about
@@ -389,6 +390,22 @@ The policy tick likewise holds its own close prompt (an `AutoInstall` or mandato
 while an install is running or ready to start (`PolicyEngine.HoldPromptForTurn`). So "Update all" no
 longer asks for every application at once and then keeps the user waiting, application closed, while the
 other installs run, and nothing is killed long before its install begins.
+
+**Windows Installer first.** Before anything else at its turn - before the blocking check, so nobody is asked
+to close an application only to wait - the update looks whether Windows Installer is busy with someone else's
+installation (Windows Update, Intune): Windows Installer holds the mutex `Global\_MSIExecute` while an
+installation's transaction runs, and an MSI-based installer started meanwhile is refused with 1618. While it
+is busy the update keeps the turn (the installs behind it would hit the same wall), looks again every 10 s
+for up to 15 min (`WindowsInstallerWait`), and carries `WaitingForInstallerSinceUtc`, so the tray's card and
+banner say "Waiting for another installation to finish". The service logs the msiexec.exe processes other
+than the Windows Installer service (`msiexec.exe /V`) with session, command line and parent. No "Installing"
+toast and no install clock during the wait. Still busy after 15 min: the turn is handed on and the update is
+put back for about 10 minutes (the "Windows Installer busy" rule above). The check cannot catch everything
+(an installation that starts right after it, a bootstrapper exe that starts msiexec later), so a 1618
+refusal is classified the same way: the providers mark it `InstallerBusy` (and stop: no other id or fallback
+is tried), the tray carries the flag back in `UserInstallResultMessage`, and the service records no failure,
+history entry, cloud event or "failed" toast. The check runs before every install, since winget's installer
+type is not known up front.
 
 **Shortest first.** The install lock is a turn gate (`InstallTurnGate`): when an install ends, the waiting
 one with the highest priority goes next - a mandatory update past its deadline first, then the one whose

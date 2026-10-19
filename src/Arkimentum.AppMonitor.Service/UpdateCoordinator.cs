@@ -891,6 +891,23 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 return;
             }
 
+            // Before anything else at its turn - before a close prompt or a forced close - Windows Installer must be free:
+            // while another installation runs (Windows Update, Intune), every MSI-based installer is refused with 1618.
+            var installerWait = await WaitForWindowsInstallerAsync(u, ct).ConfigureAwait(false);
+            if (!installerWait.Free) return;
+            if (installerWait.WasBusy)
+            {
+                // The wait may have taken minutes: a scan, a deferral or a removal may have come in meanwhile.
+                u = Get(key);
+                if (u is null || u.State is UpdateState.Installing or UpdateState.Installed) return;
+                now = DateTimeOffset.UtcNow;
+                if (u.IsDeferred(now))
+                {
+                    _logger.LogInformation("{App}: deferred while it waited for Windows Installer; not installing it now", u.DisplayName);
+                    return;
+                }
+            }
+
             // Its turn: re-check blocking processes right before the installer starts. For a machine-wide update this
             // looks across every interactive session (sessionId is null), which is why a pwsh running elevated or under
             // another user used to land here again and again: no tray agent can close either, so the prompt came
@@ -1002,6 +1019,18 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         var doneAt = DateTimeOffset.UtcNow;
         TimeSpan? took = startedUtc is { } began && doneAt >= began ? doneAt - began : null;
         var tookText = took is { } t ? $" in {InstallHistory.FormatDuration(t)}" : "";
+        if (!result.Success && result.InstallerBusy)
+        {
+            // Another installation held Windows Installer (MSI 1618) after all - one that started after the turn's look,
+            // or a bootstrapper that only starts msiexec later. Nothing was installed and nothing is wrong with the update,
+            // so it is not a failure: no failure count, history entry, cloud event or "failed" toast. Back to Available,
+            // which also takes down the tray's "Installing" toast, and tried again in InstallerBusyRetryDelay.
+            _logger.LogWarning("{App}: the installer was refused because another installation is in progress{Took}; trying again in about {Retry} min (not counted as a failure): {Message}",
+                snapshot.DisplayName, took is { } refusedAfter ? $" (after {InstallHistory.FormatDuration(refusedAfter)})" : "",
+                (int)PolicyEngine.InstallerBusyRetryDelay.TotalMinutes, result.Message);
+            await MutateAsync(key, x => PolicyEngine.MarkInstallerBusy(x, doneAt), ct).ConfigureAwait(false);
+            return;
+        }
         if (result.Success && result.NothingInstalled)
         {
             // Nothing ran, so there is no install to show: no history entry, no cloud event, no "installed" toast. The
@@ -1042,6 +1071,62 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
 
         RaiseInstallCompleted(Get(key) ?? snapshot, result.Success);
+    }
+
+    /// <summary>
+    /// The wait at the install turn for another installation to release Windows Installer (<see cref="WindowsInstallerWait"/>):
+    /// the turn is kept, the tray's card says "Waiting for another installation to finish"
+    /// (<see cref="PendingUpdate.WaitingForInstallerSinceUtc"/>), and the log says who holds Windows Installer. No
+    /// "Installing" toast and no install clock: the install has not started. When Windows Installer is still busy after
+    /// <see cref="WindowsInstallerWait.MaxWait"/> the turn is handed on and the update is put back for a later attempt
+    /// (<see cref="PolicyEngine.MarkInstallerBusy"/>) - not a failure, and the user's deferrals are untouched.
+    /// </summary>
+    private async Task<WindowsInstallerWaitResult> WaitForWindowsInstallerAsync(PendingUpdate u, CancellationToken ct)
+    {
+        var key = u.PendingKey();
+        var wait = await WindowsInstallerWait.WaitUntilFreeAsync(WindowsInstallerBusy, async () =>
+        {
+            _logger.LogInformation("{App}: another installation is using Windows Installer; waiting up to {Max} min for it to finish before installing",
+                u.DisplayName, (int)WindowsInstallerWait.MaxWait.TotalMinutes);
+            LogWindowsInstallerHolders(u.DisplayName, ct);
+            await MutateAsync(key, x => x.WaitingForInstallerSinceUtc = DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
+        if (!wait.WasBusy) return wait;
+
+        if (wait.Free)
+        {
+            _logger.LogInformation("{App}: Windows Installer is free again after {Duration}; installing", u.DisplayName, InstallHistory.FormatDuration(wait.Waited));
+            await MutateAsync(key, x => x.WaitingForInstallerSinceUtc = null, ct).ConfigureAwait(false);
+            return wait;
+        }
+
+        _logger.LogWarning("{App}: Windows Installer is still busy after {Duration}; handing the install turn on and trying again in about {Retry} min (not counted as a failure)",
+            u.DisplayName, InstallHistory.FormatDuration(wait.Waited), (int)PolicyEngine.InstallerBusyRetryDelay.TotalMinutes);
+        LogWindowsInstallerHolders(u.DisplayName, ct);
+        var at = DateTimeOffset.UtcNow;
+        await MutateAsync(key, x => PolicyEngine.MarkInstallerBusy(x, at), ct).ConfigureAwait(false);
+        return wait;
+    }
+
+    /// <summary>
+    /// Logs the msiexec.exe processes other than the Windows Installer service (<c>msiexec.exe /V</c>) with pid, session,
+    /// command line and parent: one of them holds Windows Installer. When there is none, the installing process calls
+    /// Windows Installer itself (Windows Update, the Intune agent, a setup.exe). Best effort: a WMI failure is a debug line.
+    /// </summary>
+    private void LogWindowsInstallerHolders(string displayName, CancellationToken ct)
+    {
+        try
+        {
+            var installers = WindowsInstallerActivity.FindInstallers(ct);
+            if (installers.Count == 0)
+                _logger.LogInformation("{App}: no msiexec.exe besides the Windows Installer service is running; the installing process uses Windows Installer directly", displayName);
+            foreach (var p in installers)
+                _logger.LogInformation("{App}: Windows Installer is in use by {Installer}", displayName, p.Describe());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "{App}: could not list the msiexec.exe processes", displayName);
+        }
     }
 
     // =====================================================================================================================
@@ -1692,6 +1777,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// proceeds with the cached configuration.
     /// </summary>
     public Func<CancellationToken, Task>? ConfigRefresh { get; set; }
+
+    /// <summary>
+    /// Whether Windows Installer is busy with an installation right now, asked at every install turn before anything is
+    /// closed or started (see <see cref="WaitForWindowsInstallerAsync"/>). Settable so the turn can be driven without a
+    /// real <c>Global\_MSIExecute</c> mutex.
+    /// </summary>
+    public Func<bool> WindowsInstallerBusy { get; set; } = WindowsInstallerActivity.IsInstallInProgress;
 
     // =====================================================================================================================
     // Agent self-update on request (tray "Check for updates"/"Update now", admin console "Update agent")

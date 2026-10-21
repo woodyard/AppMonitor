@@ -370,6 +370,28 @@ user's deferrals untouched; *Install now* tries at once. A take-over (`WingetRep
 install is refused after the old version was removed is the exception: that is reported as a failure,
 because the application is missing then.
 
+### "winget's 1.142.0 package installs 1.141.2; waiting for a corrected package"
+
+Sometimes a winget-pkgs manifest carries a version label whose installers are an older release's:
+`Microsoft.VisualStudioCode` 1.142.0 pointed at the 1.141.2 installers for over a week (October 2026,
+winget-pkgs issue #453148). winget installs the installed version again and exits 0, so up to 1.1.50 every
+attempt asked the user to close VS Code, reinstalled 1.141.2 and failed as *winget reported success …
+but … is still at 1.141.2, expected 1.142.0*, using up a retry. From 1.1.51 the service checks first, at
+the update's turn and before the Windows Installer wait or any close prompt: `winget show --id X --exact
+--scope user|machine` (the update's context, run as SYSTEM) names the installer, and when that is an `.exe`
+the service reads the version resource from the start of the file - the PE image without its payload
+(VS Code's 230 MB setup: 0.9 MB, under a second) - once per installer URL. An installer that carries
+exactly the installed version while the package claims a newer one holds the update: nothing is closed
+or started, no failure is counted, no toast, history entry or InstallFailed event; the card says *winget's
+1.142.0 package installs 1.141.2; waiting for a corrected package*, the update's LastError (device report)
+says the same, and the service log has a Warning *winget's package … installs 1.141.2 (…exe), the version
+already installed*. The next automatic attempt checks again after 2 hours; *Install now* checks at once.
+A corrected manifest keeps its version label but points at other installers, so it installs at the next
+check without anyone pressing anything. Only exact equality with the installed version counts: a setup that
+carries a number of its own (a wrapper's 1.0.0.0, a build number), an MSI or MSIX installer, an exe without a
+version resource, a winget that prints its output in another language, or any failure of the check lets the
+install go ahead as before.
+
 ### An uninstall window flashes up during a per-user update (Inno Setup)
 
 When a package's manifest says `UpgradeBehavior: uninstallPrevious`, winget first runs the old version's

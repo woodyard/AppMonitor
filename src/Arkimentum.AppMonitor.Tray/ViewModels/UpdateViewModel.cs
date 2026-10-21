@@ -136,6 +136,9 @@ public sealed class UpdateViewModel : ObservableObject
                 // The last attempt found Windows Installer busy; it is tried again by itself, so say when.
                 UpdateState.Available when _update.InstallerBusyUntilUtc is { } retry && _update.IsHeldForInstaller(DateTimeOffset.UtcNow)
                     => Strings.StateInstallerBusyRetry(TimeFormat.Absolute(retry)),
+                // winget's package would only reinstall the installed version; the service checks it again at each turn.
+                UpdateState.Available when _update.MislabeledInstallerVersion is { } carried
+                    => Strings.StateMislabeled(_update.AvailableVersion ?? string.Empty, carried),
                 UpdateState.Available => Strings.StateAvailable,
                 UpdateState.Deferred => Strings.StateDeferred(
                     _update.DeferredUntilUtc is { } until ? TimeFormat.Absolute(until) : Strings.DetailsNone),

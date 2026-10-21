@@ -116,6 +116,20 @@ public sealed class PendingUpdate
     public DateTimeOffset? InstallerBusyUntilUtc { get; set; }
 
     /// <summary>
+    /// The check at the last install turn found winget's package mislabeled: the installer it would run carries
+    /// <see cref="MislabeledInstallerVersion"/>, the installed version, not <see cref="AvailableVersion"/>
+    /// (Microsoft.VisualStudioCode 1.142.0 with the 1.141.2 installers, October 2026). Nothing was closed or started; no
+    /// automatic install, close prompt or forced close before this time (see <c>PolicyEngine.Decide</c>), and every turn
+    /// checks again, so a corrected package (same version label, another installer URL) installs at the next one. Not a
+    /// failure: <see cref="FailureCount"/> is untouched. "Install now" and a newer version clear it. Added in 1.1.51; a state
+    /// file or an IPC message without it means no hold.
+    /// </summary>
+    public DateTimeOffset? MislabeledUntilUtc { get; set; }
+
+    /// <summary>The version the mislabeled package's installer carries (see <see cref="MislabeledUntilUtc"/>), for the tray's card.</summary>
+    public string? MislabeledInstallerVersion { get; set; }
+
+    /// <summary>
     /// Set while this update holds the install turn and waits for another installation to release Windows Installer,
     /// before anything is closed or started; the tray's card says so. Cleared when the wait ends. Not meaningful in a
     /// state file read back after a restart. Added after 1.1.48; an older service leaves it null.
@@ -180,6 +194,9 @@ public sealed class PendingUpdate
 
     /// <summary>True while an automatic attempt waits out a busy Windows Installer (see <see cref="InstallerBusyUntilUtc"/>).</summary>
     public bool IsHeldForInstaller(DateTimeOffset now) => InstallerBusyUntilUtc is { } u && now < u;
+
+    /// <summary>True while an automatic attempt waits for winget's package to be corrected (see <see cref="MislabeledUntilUtc"/>).</summary>
+    public bool IsHeldAsMislabeled(DateTimeOffset now) => MislabeledUntilUtc is { } u && now < u;
 
     public bool IsActive => State is not (UpdateState.Installed);
 

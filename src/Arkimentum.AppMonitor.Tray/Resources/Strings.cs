@@ -113,6 +113,9 @@ public static class Strings
     public const string StateWaitingForInstaller = "Waiting for another installation to finish";
     /// <summary>The last attempt found Windows Installer busy; the service tries again by itself at that time.</summary>
     public static string StateInstallerBusyRetry(string when) => $"Another installation was in progress; trying again at {when}";
+    /// <summary>winget's package for <paramref name="version"/> runs the installer of the installed version; nothing was installed.</summary>
+    public static string StateMislabeled(string version, string carried) =>
+        $"winget's {version} package installs {carried}; waiting for a corrected package";
     public static string StateWaitingForClose(string processes) => $"Waiting for you to close: {processes}";
 
     /// <summary>

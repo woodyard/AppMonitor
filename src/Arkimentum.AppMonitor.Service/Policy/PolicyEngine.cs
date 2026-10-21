@@ -86,6 +86,12 @@ public static class PolicyEngine
     /// something outside AppMonitor installed, and each one used up a retry and raised a "failed" toast.
     /// </summary>
     public static readonly TimeSpan InstallerBusyRetryDelay = TimeSpan.FromMinutes(10);
+    /// <summary>
+    /// How long an update whose winget package turned out mislabeled at its install turn (<see cref="MarkMislabeled"/>)
+    /// waits before the next automatic turn checks the package again. Upstream fixes take days (VS Code 1.142.0: over a
+    /// week), and each check costs a <c>winget show</c>; the installer's version is read only once per installer URL.
+    /// </summary>
+    public static readonly TimeSpan MislabeledRetryDelay = TimeSpan.FromHours(2);
 
     public static TimeSpan NotificationIntervalFor(PendingUpdate update, AppPolicy? policy, AgentSettings settings) =>
         policy?.NotificationIntervalMinutes is > 0 and var m ? TimeSpan.FromMinutes(m) : settings.NotificationInterval;
@@ -237,6 +243,7 @@ public static class PolicyEngine
                 if (existing.AppRestartPending) restartsEnded.Add(key);
                 existing.InstallVerified = false;
                 existing.InstallerBusyUntilUtc = null;
+                ClearMislabeled(existing);
                 existing.NothingToInstall = false;
                 existing.RebootPending = false;
                 existing.AppRestartPending = false;
@@ -254,8 +261,9 @@ public static class PolicyEngine
                 // simply warned (or asked) again when this version's turn comes.
                 existing.ForceCloseAtUtc = null;
                 existing.ForceCloseRequestedUtc = null;
-                // A busy Windows Installer held back the version it replaces; the new one is tried at once.
+                // A busy Windows Installer or a mislabeled package held back the version it replaces; the new one is tried at once.
                 existing.InstallerBusyUntilUtc = null;
+                ClearMislabeled(existing);
                 // A newer version superseded the one that failed: allow automatic retries again.
                 if (existing.State == UpdateState.Failed) { existing.State = UpdateState.Available; existing.FailureCount = 0; existing.LastError = null; }
             }
@@ -374,7 +382,9 @@ public static class PolicyEngine
         // The last attempt found Windows Installer busy with someone else's installation: nothing that leads to an install
         // - the install itself, a close prompt, a forced close - until the retry time. Notifications go on as usual, and a
         // mandatory update past its deadline keeps its deadline: it simply cannot install before Windows Installer is free.
-        return action.Kind is PolicyActionKind.Install or PolicyActionKind.ForceClose or PolicyActionKind.PromptClose && u.IsHeldForInstaller(now)
+        // The same for a winget package that was found mislabeled: the installer would only reinstall the installed version.
+        return action.Kind is PolicyActionKind.Install or PolicyActionKind.ForceClose or PolicyActionKind.PromptClose
+               && (u.IsHeldForInstaller(now) || u.IsHeldAsMislabeled(now))
             ? PolicyAction.None
             : action;
     }
@@ -556,8 +566,10 @@ public static class PolicyEngine
         u.InstallRequested = true;
         u.DeferredUntilUtc = null;
         u.Dismissed = false;
-        // "Install now" tries at once; the install turn still waits for a busy Windows Installer before it starts anything.
+        // "Install now" tries at once; the install turn still waits for a busy Windows Installer before it starts anything,
+        // and checks winget's package again.
         u.InstallerBusyUntilUtc = null;
+        u.MislabeledUntilUtc = null;
     }
 
     /// <summary>
@@ -574,6 +586,7 @@ public static class PolicyEngine
         u.DownloadTotalBytes = null;
         u.WaitingForInstallerSinceUtc = null;
         u.InstallerBusyUntilUtc = null;
+        ClearMislabeled(u);
         if (expectedInstallSeconds is not null) u.ExpectedInstallSeconds = expectedInstallSeconds;
     }
 
@@ -613,6 +626,7 @@ public static class PolicyEngine
         // The installed version stays the one still registered (the result's); Merge holds the update until it moves.
         u.AppRestartPending = result.AppRestartPending;
         u.InstallerBusyUntilUtc = null;
+        ClearMislabeled(u);
         ClearInstallProgress(u);
     }
 
@@ -627,7 +641,31 @@ public static class PolicyEngine
         u.ForceCloseRequestedUtc = null; // a new attempt must be asked for again
         u.InstallRequested = false;
         u.InstallerBusyUntilUtc = null; // the failure's own retry interval applies now
+        ClearMislabeled(u);
         ClearInstallProgress(u);
+    }
+
+    /// <summary>
+    /// The check at the install turn found winget's package mislabeled (<see cref="InstallerVersionCheck.Mislabeled"/>):
+    /// the installer it would run carries <paramref name="installerVersion"/>, the installed version. Nothing was closed
+    /// or started. Not a failure: no <see cref="PendingUpdate.FailureCount"/>, history entry, event or toast; the update
+    /// goes back to Available (a queued attempt) with <paramref name="message"/> as its reason, and is not tried again
+    /// automatically before <see cref="MislabeledRetryDelay"/> has passed (see <see cref="Decide"/>). A failed update whose
+    /// retries were used up stays as the user left it otherwise: only "Install now" brought it here.
+    /// </summary>
+    public static void MarkMislabeled(PendingUpdate u, string installerVersion, string message, DateTimeOffset now)
+    {
+        if (u.State is UpdateState.Installing or UpdateState.Scheduled) u.State = UpdateState.Available;
+        u.MislabeledUntilUtc = now + MislabeledRetryDelay;
+        u.MislabeledInstallerVersion = installerVersion;
+        u.LastError = message;
+        ClearInstallProgress(u);
+    }
+
+    private static void ClearMislabeled(PendingUpdate u)
+    {
+        u.MislabeledUntilUtc = null;
+        u.MislabeledInstallerVersion = null;
     }
 
     /// <summary>

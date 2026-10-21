@@ -73,6 +73,12 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     internal Func<string, TimeSpan, ExecutionContextInfo, CancellationToken, Task<ProcessRunResult>>? InstallRunner { get; init; }
 
     /// <summary>
+    /// Replaces the HTTP reads of <see cref="CheckInstallerVersionAsync"/> (see <see cref="InstallerVersionProbe.RangeReader"/>).
+    /// Tests serve installer bytes through it; null (the default) downloads, and only then are readings cached.
+    /// </summary>
+    internal InstallerVersionProbe.RangeReader? InstallerRangeReader { get; init; }
+
+    /// <summary>
     /// Replaces the registry read that verifies the install of an uncorrelated product: the application's best match
     /// among the Uninstall entries of the context. Tests feed the "after" state through it; null (the default) reads the
     /// registry (see <see cref="ReadInstalledFromRegistry"/>).
@@ -1457,6 +1463,83 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         else
             _logger.LogError("{AppId}: 'winget install' of '{WingetId}' for all users failed: {Message}", app.AppId, wingetId, result.Message);
         return result;
+    }
+
+    /// <summary>Installer versions already read, by installer URL: a corrected manifest points at another URL, so a reading never goes stale.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> InstallerVersions = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The check at an install turn, before anything is closed or started: which exe installer winget would run for the
+    /// update (<c>winget show</c> in the update's scope), and the product version in its version resource
+    /// (<see cref="InstallerVersionProbe"/>, a few MB of the file). Microsoft.VisualStudioCode 1.142.0 pointed at the
+    /// 1.141.2 installers for over a week (October 2026): every attempt reinstalled the installed version, asked the
+    /// user to close VS Code, failed as "still at 1.141.2" and used up a retry. Run by the service as LocalSystem for
+    /// both contexts: <c>show</c> does not depend on what is installed, and <c>--scope user</c> selects the installer the
+    /// user's session would. Null when there is nothing to judge - not a winget update, an uncorrelated install, no exe
+    /// installer, the package shown is another version, no version resource, any failure - and the install goes ahead as
+    /// before. Never throws, except for cancellation by <paramref name="ct"/>.
+    /// </summary>
+    public async Task<InstallerVersionCheck?> CheckInstallerVersionAsync(AppPolicy app, PendingUpdate update, CancellationToken ct)
+    {
+        if (!_options.WingetEnabled || update.Source != UpdateSource.Winget || update.WingetUncorrelated) return null;
+        var wingetId = SplitIds(update.WingetId).Concat(SplitIds(app.WingetId)).FirstOrDefault(id => !string.IsNullOrWhiteSpace(id));
+        if (wingetId is null) return null;
+        try
+        {
+            var context = ExecutionContextInfo.System;
+            var winget = LocateWinget(context);
+            if (winget is null) return null;
+            var sourceName = FirstNonEmpty(update.WingetSourceName, app.WingetSourceName, "winget");
+            var filter = update.Context == InstallContext.User ? " --scope user" : " --scope machine";
+            var show = await RunShowAsync(winget, wingetId, sourceName, context, filter, ct).ConfigureAwait(false);
+            if (!show.Started || show.TimedOut || show.ExitCode != 0 || IsNoApplicableInstaller(show.ExitCode, show.CombinedOutput)) return null;
+            // winget would install the version it shows; a manifest newer than the update's is judged at its own turn.
+            if (ParseShowVersion(show.CombinedOutput) is not { } shown || string.IsNullOrWhiteSpace(update.AvailableVersion)
+                || VersionComparer.Compare(shown, update.AvailableVersion) != 0) return null;
+            var url = ParseInstallerUrl(show.CombinedOutput);
+            if (url is null || !InstallerVersionProbe.IsExeUrl(url, out _)) return null;
+
+            string? version;
+            if (InstallerRangeReader is null && InstallerVersions.TryGetValue(url, out var cached)) version = cached;
+            else
+            {
+                version = await InstallerVersionProbe.ReadVersionAsync(url, _options.DownloadDirectory,
+                    InstallerRangeReader ?? InstallerVersionProbe.CreateReader(_options.ProxyUrl), ct).ConfigureAwait(false);
+                if (InstallerRangeReader is null && InstallerVersions.Count < 500) InstallerVersions[url] = version;
+            }
+            if (version is null) return null;
+
+            var check = new InstallerVersionCheck(wingetId, url, version,
+                InstallerVersionProbe.IsMislabeled(version, update.InstalledVersion, update.AvailableVersion));
+            _logger.LogInformation("{AppId}: winget's '{WingetId}' {Version} ({Scope} scope) runs {Installer}, which carries version {InstallerVersion}{Verdict}.",
+                app.AppId, wingetId, update.AvailableVersion, update.Context, check.InstallerFileName, version,
+                check.Mislabeled ? $" - the installed version, not {update.AvailableVersion}" : string.Empty);
+            return check;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "{AppId}: could not check the installer of '{WingetId}'.", app.AppId, wingetId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The installer URL <c>winget show</c> reports for the installer it selected ("Installer Url: https://…"), or null.
+    /// Pure, so the parsing is testable.
+    /// </summary>
+    internal static string? ParseInstallerUrl(string? showOutput)
+    {
+        if (string.IsNullOrWhiteSpace(showOutput)) return null;
+        const string label = "Installer Url:";
+        foreach (var raw in showOutput.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith(label, StringComparison.OrdinalIgnoreCase)) continue;
+            var value = line[label.Length..].Trim();
+            return value.Length == 0 ? null : value;
+        }
+        return null;
     }
 
     /// <summary>

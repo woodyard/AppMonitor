@@ -891,6 +891,10 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 return;
             }
 
+            // First of all: would winget's package deliver the version it promises? A mislabeled one (VS Code 1.142.0 ran the
+            // 1.141.2 installer) only reinstalls what is there, after a close prompt, and then fails as "still at".
+            if (await HoldMislabeledPackageAsync(u, policy, settings, ct).ConfigureAwait(false)) return;
+
             // Before anything else at its turn - before a close prompt or a forced close - Windows Installer must be free:
             // while another installation runs (Windows Update, Intune), every MSI-based installer is refused with 1618.
             var installerWait = await WaitForWindowsInstallerAsync(u, ct).ConfigureAwait(false);
@@ -1071,6 +1075,41 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
 
         RaiseInstallCompleted(Get(key) ?? snapshot, result.Success);
+    }
+
+    /// <summary>
+    /// The check at the install turn, before anything is waited for, closed or started: whether the exe installer winget
+    /// would run for a winget update carries the installed version instead of the one the package claims
+    /// (<see cref="WingetProvider.CheckInstallerVersionAsync"/>). When it does, the update is held
+    /// (<see cref="PolicyEngine.MarkMislabeled"/>) - not a failure: no history entry, cloud event or toast, the reason is
+    /// the update's LastError for the tray and the device report - and true is returned. Anything the check cannot tell
+    /// lets the install go ahead as before.
+    /// </summary>
+    private async Task<bool> HoldMislabeledPackageAsync(PendingUpdate u, AppPolicy policy, AgentSettings settings, CancellationToken ct)
+    {
+        if (u.Source != UpdateSource.Winget || u.WingetUncorrelated) return false;
+        InstallerVersionCheck? check;
+        try
+        {
+            var options = ProviderOptions.From(settings);
+            var provider = new WingetProvider(_loggerFactory.CreateLogger<WingetProvider>(), options) { WingetPathOverride = options.WingetPath };
+            check = await provider.CheckInstallerVersionAsync(policy, u, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "{App}: the check of winget's installer failed; installing as usual", u.DisplayName);
+            return false;
+        }
+        if (check is not { Mislabeled: true }) return false;
+
+        var message = $"winget's package '{check.WingetId}' {u.AvailableVersion} installs {check.InstallerVersion} ({check.InstallerFileName}), the version already installed; " +
+                      "nothing was installed. The package is mislabeled upstream (winget-pkgs) and is checked again at the next attempt.";
+        _logger.LogWarning("{App}: {Message} Next automatic attempt in about {Hours} h (not counted as a failure).", u.DisplayName, message,
+            (int)PolicyEngine.MislabeledRetryDelay.TotalHours);
+        var at = DateTimeOffset.UtcNow;
+        await MutateAsync(u.PendingKey(), x => PolicyEngine.MarkMislabeled(x, check.InstallerVersion, message, at), ct).ConfigureAwait(false);
+        return true;
     }
 
     /// <summary>

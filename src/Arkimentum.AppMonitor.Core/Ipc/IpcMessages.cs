@@ -185,6 +185,12 @@ public sealed class RequestSystemInstallMessage : IpcMessage
     public required string PackageFamilyName { get; set; }
     /// <summary>The highest MSIX package version registered for the user before the hand-over, when known.</summary>
     public string? UserPackageVersion { get; set; }
+    /// <summary>
+    /// Optional (added in 1.1.50): the user's own MSIX installer was refused because it needs administrator rights, so the
+    /// service provisions winget's MSIX installer for all users instead of an unscoped install (see
+    /// <see cref="Providers.SystemInstallHandOverRequest.MsixInstaller"/>).
+    /// </summary>
+    public bool MsixInstaller { get; set; }
 }
 
 // ------------------------------------------------------------------ server -> client

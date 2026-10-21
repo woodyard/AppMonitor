@@ -425,6 +425,20 @@ the update's own winget ids and a well-formed family name. It then runs an **uns
 Classic (exe/MSI) installs, portable-only packages and an older service (no answer within 60 seconds)
 keep the old failure unchanged.
 
+The same hand-over serves an MSIX installer that winget *does* select for the user but Windows refuses
+with **0x80073D28** (*The package installation failed because administrator privileges are
+required*, agents from 1.1.50): the package declares restricted capabilities such as
+`packagedServices` / `localSystemServices` (it installs its own Windows service), which only an
+administrator may add. `Anthropic.Claude` is the case (H-PARALLELSVM, 2026-10-21). Here the service
+runs `winget install --id X --exact --scope machine --installer-type msix`: winget ignores the
+manifest's scope for MSIX, stages the package and **provisions** it for all users, and as SYSTEM
+registers it for nobody ("registration deferred"). Unscoped it would try a per-user add as SYSTEM, or
+pick a user-scope exe that installs into SYSTEM's own profile. Expect the "next sign-in" outcome below:
+Windows registers a provisioned package at logon. A side effect: users who sign in to the device for
+the first time get the application too. The failure messages start with *winget could not upgrade
+'X' (User scope): Windows refused its MSIX package because installing it requires administrator
+rights (0x80073D28).*
+
 Reading the outcome from the cloud event alone (the tray's install result is the event text):
 
 - *... was installed for all users by the AppMonitor service; this user's copy is now 1.6.9 (package

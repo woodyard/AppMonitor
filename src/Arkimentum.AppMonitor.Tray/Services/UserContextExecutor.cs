@@ -394,6 +394,7 @@ public sealed class UserContextExecutor : IHostedService
             WingetId = request.WingetId,
             PackageFamilyName = request.PackageFamilyName,
             UserPackageVersion = request.UserPackageVersion,
+            MsixInstaller = request.MsixInstaller,
         };
         var wait = new HandOverWait();
         _pendingHandOvers[message.MessageId] = wait;

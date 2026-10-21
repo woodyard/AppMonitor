@@ -374,10 +374,13 @@ public class SystemInstallHandOverTests
     [Fact]
     public void The_hand_over_messages_round_trip()
     {
-        var request = new RequestSystemInstallMessage { UpdateKey = "k", WingetId = RuntimeId, PackageFamilyName = Family, UserPackageVersion = "6000.519.297.0" };
+        var request = new RequestSystemInstallMessage { UpdateKey = "k", WingetId = RuntimeId, PackageFamilyName = Family, UserPackageVersion = "6000.519.297.0", MsixInstaller = true };
         var backRequest = Assert.IsType<RequestSystemInstallMessage>(IpcJson.Deserialize(IpcJson.Serialize(request)));
-        Assert.Equal((request.MessageId, "k", RuntimeId, Family, "6000.519.297.0"),
-            (backRequest.MessageId, backRequest.UpdateKey, backRequest.WingetId, backRequest.PackageFamilyName, backRequest.UserPackageVersion));
+        Assert.Equal((request.MessageId, "k", RuntimeId, Family, "6000.519.297.0", true),
+            (backRequest.MessageId, backRequest.UpdateKey, backRequest.WingetId, backRequest.PackageFamilyName, backRequest.UserPackageVersion, backRequest.MsixInstaller));
+        // A request from a 1.1.39-1.1.49 tray carries no flag.
+        var older = Assert.IsType<RequestSystemInstallMessage>(IpcJson.Deserialize(IpcJson.Serialize(request).Replace(",\"msixInstaller\":true", string.Empty)));
+        Assert.False(older.MsixInstaller);
 
         var result = new SystemInstallResultMessage { InReplyTo = request.MessageId, UpdateKey = "k", Ok = true, Message = "m", ExitCode = 5, MachinePackageVersion = "6000.519.329.0" };
         var backResult = Assert.IsType<SystemInstallResultMessage>(IpcJson.Deserialize(IpcJson.Serialize(result)));
@@ -428,6 +431,8 @@ public class SystemInstallHandOverTests
         public string VersionBefore { get; init; } = "1.6.6";
         /// <summary>The user's version once the service has answered the hand-over.</summary>
         public string VersionAfter { get; set; } = "1.6.9";
+        /// <summary>What the plain upgrade answers; "no applicable upgrade" when not set.</summary>
+        public ProcessRunResult? Upgrade { get; init; }
         public bool HandedOver { get; set; }
         public List<string> Calls { get; } = [];
 
@@ -438,7 +443,7 @@ public class SystemInstallHandOverTests
                      || args.StartsWith("show --id ", StringComparison.Ordinal) || args.StartsWith("install --id ", StringComparison.Ordinal)
                 ? args.Split(' ')[2] : string.Empty;
             if (args.StartsWith("upgrade", StringComparison.Ordinal))
-                return Ok(new ProcessRunResult(WingetOutputParser.ExitNoApplicableUpgrade, "No available upgrade found.\r\n", string.Empty));
+                return Ok(Upgrade ?? new ProcessRunResult(WingetOutputParser.ExitNoApplicableUpgrade, "No available upgrade found.\r\n", string.Empty));
             if (args.StartsWith("list --id ", StringComparison.Ordinal) && args.Contains(" --details"))
                 return Ok(new ProcessRunResult(0, "   - \r\n" + Details(id, Category, HandedOver && VersionAfter != VersionBefore ? "6000.519.329.0" : "6000.519.297.0", "X86", "X64"), string.Empty));
             if (args.StartsWith("list --id ", StringComparison.Ordinal))
@@ -644,5 +649,129 @@ public class SystemInstallHandOverTests
         Assert.DoesNotContain("--scope", args);
         Assert.DoesNotContain("--installer-type", args);
         Assert.DoesNotContain("--force", args);
+    }
+
+    [Fact]
+    public async Task A_refused_msix_installer_is_provisioned_for_all_users_as_SYSTEM()
+    {
+        var calls = new List<string>();
+        var provider = new WingetProvider(NullLogger<WingetProvider>.Instance, new ProviderOptions())
+        {
+            InstallRunner = (args, _, _, _) =>
+            {
+                calls.Add(args);
+                return Task.FromResult(new ProcessRunResult(0, "Successfully installed\r\n", string.Empty));
+            },
+        };
+
+        var result = await provider.InstallForAllUsersAsync(Claude, ClaudePending(), ClaudeId, null, CancellationToken.None, msixInstaller: true);
+
+        Assert.True(result.Success, result.Message);
+        var args = Assert.Single(calls, c => c.StartsWith("install ", StringComparison.Ordinal));
+        Assert.Equal(
+            $"install --id {ClaudeId} --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity --scope machine --installer-type msix",
+            args);
+    }
+
+    // ---------------------------------------------------------------- an MSIX installer Windows refuses without administrator rights
+
+    // H-PARALLELSVM (2026-10-21): Anthropic.Claude 2.37337.1.0 -> 2.42304.2. The manifest's MSIX installer (no scope, so the
+    // user context selects it) declares packagedServices and localSystemServices; Windows refused it with 0x80073D28.
+
+    private const string ClaudeId = "Anthropic.Claude";
+
+    private static readonly AppPolicy Claude = new()
+    {
+        AppId = "Anthropic.Claude",
+        DisplayName = "Claude",
+        WingetId = ClaudeId,
+        Context = InstallContext.User,
+    };
+
+    private static PendingUpdate ClaudePending() => new()
+    {
+        AppId = "Anthropic.Claude",
+        DisplayName = "Claude",
+        Source = UpdateSource.Winget,
+        Context = InstallContext.User,
+        UserSid = User.UserSid,
+        InstalledVersion = "1.6.6",
+        AvailableVersion = "1.6.9",
+        WingetId = ClaudeId,
+        WingetSourceName = "winget",
+    };
+
+    /// <summary>What winget 1.30 printed on H-PARALLELSVM.</summary>
+    private static readonly ProcessRunResult AdminRequired = new(WingetOutputParser.ExitMsixRequiresAdmin,
+        "Successfully verified installer hash\r\nStarting package install...\r\nInstaller failed with exit code: 0x80073d28 : The package installation failed because administrator privileges are required. Please contact an administrator to install this package.\r\n",
+        string.Empty);
+
+    [Theory]
+    [InlineData(unchecked((int)0x80073D28), null, true)]
+    [InlineData(1, "Installer failed with exit code: 0x80073D28 : Die Paketinstallation ist fehlgeschlagen", true)]
+    [InlineData(0, "0x80073d28", false)]
+    [InlineData(unchecked((int)0x80073CF3), "Installer failed with exit code: 0x80073cf3", false)]
+    public void An_msix_refusal_for_want_of_administrator_rights_is_recognized(int exitCode, string? output, bool expected) =>
+        Assert.Equal(expected, WingetOutputParser.IsMsixAdminRequired(exitCode, output));
+
+    [Fact]
+    public async Task An_msix_installer_refused_for_administrator_rights_is_provisioned_by_the_service()
+    {
+        var winget = new FakeWinget { Upgrade = AdminRequired, VersionAfter = "1.6.6" };
+        var requests = new List<SystemInstallHandOverRequest>();
+        var pending = ClaudePending();
+
+        var result = await Provider(winget, Service(winget, requests)).InstallAsync(Claude, pending, User, null, CancellationToken.None);
+
+        // The user's registration only moves at the next sign-in: provisioned packages are registered at logon.
+        Assert.True(result.Success, result.Message);
+        Assert.True(result.RebootRequired);
+        Assert.Contains("next sign-in", result.Message);
+        var request = Assert.Single(requests);
+        Assert.Equal(new SystemInstallHandOverRequest(pending.Key, ClaudeId, "anthropic.claude_8wekyb3d8bbwe", "6000.519.297.0", MsixInstaller: true), request);
+        Assert.Empty(winget.Installs);
+        Assert.Single(winget.Calls, c => c.StartsWith("upgrade", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_classic_install_refused_for_administrator_rights_is_not_handed_over()
+    {
+        var winget = new FakeWinget { Upgrade = AdminRequired, Category = "exe" };
+        var called = false;
+
+        var result = await Provider(winget, (_, _) => { called = true; return Task.FromResult<SystemInstallHandOverReply?>(null); })
+            .InstallAsync(Claude, ClaudePending(), User, null, CancellationToken.None);
+
+        Assert.False(called);
+        Assert.False(result.Success);
+        Assert.Equal(WingetOutputParser.ExitMsixRequiresAdmin, result.ExitCode);
+        Assert.StartsWith($"winget could not upgrade '{ClaudeId}' (User scope): Windows refused its MSIX package because installing it requires administrator rights (0x80073D28).", result.Message);
+    }
+
+    [Fact]
+    public async Task A_failed_provisioning_keeps_the_refusal_first_and_the_services_reason()
+    {
+        var winget = new FakeWinget { Upgrade = AdminRequired };
+
+        var result = await Provider(winget, (_, _) => Task.FromResult<SystemInstallHandOverReply?>(null))
+            .InstallAsync(Claude, ClaudePending(), User, null, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(WingetOutputParser.ExitMsixRequiresAdmin, result.ExitCode);
+        Assert.StartsWith($"winget could not upgrade '{ClaudeId}' (User scope): Windows refused its MSIX package", result.Message);
+        Assert.Contains("The AppMonitor service could not install it for all users: it did not answer", result.Message);
+    }
+
+    [Fact]
+    public async Task Without_the_hook_the_msix_refusal_is_reported_as_winget_gave_it()
+    {
+        var winget = new FakeWinget { Upgrade = AdminRequired };
+
+        var result = await Provider(winget, null).InstallAsync(Claude, ClaudePending(), User, null, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(WingetOutputParser.ExitMsixRequiresAdmin, result.ExitCode);
+        Assert.Contains("administrator privileges are required", result.Message);
+        Assert.Empty(winget.DetailLookups);
     }
 }

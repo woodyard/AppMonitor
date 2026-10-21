@@ -875,6 +875,16 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             return UpgradeOutcome.Final(InstallResult.Ok("already up to date", run.ExitCode) with { InstalledVersion = newVersion, NothingInstalled = true });
         }
 
+        // Windows refused winget's MSIX installer in the user's session because the package needs administrator rights
+        // (it brings a Windows service): the SYSTEM service may provision it for all users (see HandOverToSystemAsync).
+        if (!result.Success && !context.IsSystem && WingetOutputParser.IsMsixAdminRequired(run.ExitCode, run.CombinedOutput)
+            && _options.SystemInstallHandOver is { } handOver)
+        {
+            var refused = $"winget could not upgrade '{wingetId}' ({context.Context} scope): Windows refused its MSIX package because installing it requires administrator rights (0x{run.ExitCode:X8}).";
+            return UpgradeOutcome.Final(await HandOverToSystemAsync(app, update, context, winget, wingetId, sourceName, refused, handOver, progress, ct,
+                msixInstaller: true, refusalCode: run.ExitCode).ConfigureAwait(false));
+        }
+
         if (!result.Success)
         {
             _logger.LogError("{AppId}: winget upgrade failed - {Message}", app.AppId, result.Message);
@@ -1206,16 +1216,21 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     /// registration moves at once or only at the next sign-in is not known yet, so both are handled, and the service's
     /// evidence (package registrations before and after) always goes into the result message, which is what reaches
     /// the cloud. Every failure message starts with the old "machine-wide installer only" text.
+    /// The same way out serves an MSIX installer that winget did select for the user but Windows refused because the
+    /// package needs administrator rights (<paramref name="msixInstaller"/>; Anthropic.Claude, whose package brings a
+    /// Windows service): the service then provisions winget's MSIX installer for all users, and every failure message
+    /// starts with that refusal (<paramref name="machineOnly"/>) and keeps its exit code (<paramref name="refusalCode"/>).
     /// </summary>
     private async Task<InstallResult> HandOverToSystemAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
         string wingetId, string sourceName, string machineOnly,
-        Func<SystemInstallHandOverRequest, CancellationToken, Task<SystemInstallHandOverReply?>> handOver, IProgress<string>? progress, CancellationToken ct)
+        Func<SystemInstallHandOverRequest, CancellationToken, Task<SystemInstallHandOverReply?>> handOver, IProgress<string>? progress, CancellationToken ct,
+        bool msixInstaller = false, int refusalCode = WingetOutputParser.ExitNoApplicableInstaller)
     {
         InstallResult NotHandedOver(string reason)
         {
             _logger.LogInformation("{AppId}: not asking the AppMonitor service to install '{WingetId}' for all users: {Reason}.", app.AppId, wingetId, reason);
             _logger.LogWarning("{AppId}: {Message}", app.AppId, machineOnly);
-            return InstallResult.Fail(machineOnly, WingetOutputParser.ExitNoApplicableInstaller);
+            return InstallResult.Fail(machineOnly, refusalCode);
         }
 
         if (Volatile.Read(ref _handedOver) == 1) return NotHandedOver("this install already handed a package to the service");
@@ -1229,14 +1244,16 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         var ownRows = before.Rows.Where(r => string.Equals(r.Id, wingetId, StringComparison.OrdinalIgnoreCase)).ToList();
         var userPackageBefore = WingetOutputParser.HighestMsixPackageVersion(ownRows);
         var name = string.IsNullOrWhiteSpace(app.DisplayName) ? app.AppId : app.DisplayName;
-        _logger.LogInformation("{AppId}: '{WingetId}' is installed for this user as the MSIX package {Family} ({PackageVersion}) and winget only offers an installer that needs administrator rights; asking the AppMonitor service to install {Version} for all users.",
-            app.AppId, wingetId, family, userPackageBefore ?? "version unknown", update.AvailableVersion);
+        _logger.LogInformation("{AppId}: '{WingetId}' is installed for this user as the MSIX package {Family} ({PackageVersion}) and {Why}; asking the AppMonitor service to install {Version} for all users.",
+            app.AppId, wingetId, family, userPackageBefore ?? "version unknown",
+            msixInstaller ? "Windows refused winget's MSIX installer without administrator rights" : "winget only offers an installer that needs administrator rights",
+            update.AvailableVersion);
         progress?.Report($"Installing {name} {update.AvailableVersion} for all users via the AppMonitor service...");
 
         SystemInstallHandOverReply? reply;
         try
         {
-            reply = await handOver(new SystemInstallHandOverRequest(update.Key, wingetId, family, userPackageBefore), ct).ConfigureAwait(false);
+            reply = await handOver(new SystemInstallHandOverRequest(update.Key, wingetId, family, userPackageBefore, msixInstaller), ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
@@ -1292,7 +1309,7 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
                 var message = $"{machineOnly} The AppMonitor service could not install it for all users: {reason}.";
                 _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
                 // Nothing ran when there was no answer (or the service refused): "no applicable installer", as before.
-                var code = reply is null || reply.ExitCode == 0 ? WingetOutputParser.ExitNoApplicableInstaller : reply.ExitCode;
+                var code = reply is null || reply.ExitCode == 0 ? refusalCode : reply.ExitCode;
                 // The service's install was refused because Windows Installer was busy: a later attempt may well work.
                 return InstallResult.Fail(message, code) with { InstallerBusy = reply is not null && WingetOutputParser.IsInstallerBusy(reply.ExitCode, reply.Message) };
             }
@@ -1404,8 +1421,14 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     /// errors here (<see cref="InterpretAllUsersInstallExit"/>): the caller's before/after check of the package
     /// registrations decides what happened. Must only be called by the service, for an id it has checked belongs to the
     /// update.
+    /// With <paramref name="msixInstaller"/> (the user's MSIX installer was refused for want of administrator rights) the
+    /// install is <c>--scope machine --installer-type msix</c> instead: winget ignores a manifest's scope for MSIX, and with
+    /// machine scope it stages the package and provisions it for all users (winget-cli <c>AddPackageMachineScope</c>; as
+    /// SYSTEM it registers it for nobody and reports the registration as deferred). Unscoped, winget would try a per-user
+    /// add as SYSTEM, or pick a user-scope exe that lands in SYSTEM's own profile (Anthropic.Claude has both).
     /// </summary>
-    public async Task<InstallResult> InstallForAllUsersAsync(AppPolicy app, PendingUpdate update, string wingetId, IProgress<string>? progress, CancellationToken ct)
+    public async Task<InstallResult> InstallForAllUsersAsync(AppPolicy app, PendingUpdate update, string wingetId, IProgress<string>? progress, CancellationToken ct,
+        bool msixInstaller = false)
     {
         if (!_options.WingetEnabled)
             return InstallResult.Fail("winget disabled by configuration");
@@ -1415,12 +1438,14 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             return InstallResult.Fail("winget.exe was not found on this machine.");
 
         var sourceName = FirstNonEmpty(update.WingetSourceName, app.WingetSourceName, "winget");
-        _logger.LogInformation("{AppId}: installing '{WingetId}' {Version} for all users with an unscoped 'winget install' using {Winget} as {Identity}.",
-            app.AppId, wingetId, update.AvailableVersion, winget, Native.ImpersonationGuard.DescribeCurrentIdentity());
+        _logger.LogInformation("{AppId}: installing '{WingetId}' {Version} for all users with {How} using {Winget} as {Identity}.",
+            app.AppId, wingetId, update.AvailableVersion, msixInstaller ? "a provisioning 'winget install' of its MSIX installer" : "an unscoped 'winget install'",
+            winget, Native.ImpersonationGuard.DescribeCurrentIdentity());
 
         var logs = BeginInstallerLogs();
         _installLogs.Value = logs;
-        var step = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: false, systemScope: false, progress, ct).ConfigureAwait(false);
+        var step = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: false, systemScope: msixInstaller, progress, ct,
+            systemInstallerType: msixInstaller ? "msix" : null).ConfigureAwait(false);
         var run = step.Run;
         if (!run.Started) return InstallResult.Fail(run.StartFailure!);
         if (run.TimedOut)
@@ -1832,10 +1857,11 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     /// instead of updating the real one. With <paramref name="installedAsMsix"/> (the installed copy is an MSIX package)
     /// the attempt is skipped as well when that installer is of any other type: it would install a classic copy next to
     /// the MSIX one. <c>NoPerUserInstaller</c> is set when the last attempt was refused as "no applicable installer",
-    /// i.e. winget ran nothing.
+    /// i.e. winget ran nothing. <paramref name="systemInstallerType"/> adds <c>--installer-type</c> as LocalSystem.
     /// </summary>
     private async Task<InstallStepResult> RunInstallStepAsync(AppPolicy app, PendingUpdate update, ExecutionContextInfo context, string winget,
-        string wingetId, string sourceName, bool force, bool systemScope, IProgress<string>? progress, CancellationToken ct, Lazy<Task<bool>>? installedAsMsix = null)
+        string wingetId, string sourceName, bool force, bool systemScope, IProgress<string>? progress, CancellationToken ct, Lazy<Task<bool>>? installedAsMsix = null,
+        string? systemInstallerType = null)
     {
         var attempts = context.IsSystem ? 1 : UserContextInstallAttempts;
         var firstAttempt = 0;
@@ -1871,11 +1897,14 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         }
         for (var attempt = firstAttempt; ; attempt++)
         {
-            var filter = context.IsSystem ? (systemScope ? ScopeArgument(context) : string.Empty) : UserContextInstallFilter(attempt);
+            var filter = context.IsSystem
+                ? (systemScope ? ScopeArgument(context) : string.Empty) + (systemInstallerType is null ? string.Empty : $" --installer-type {systemInstallerType}")
+                : UserContextInstallFilter(attempt);
             var extraArgs = update.WingetExtraArgs ?? app.WingetExtraArgs;
             var skipDependencies = await SkipDependenciesArgumentAsync(app, winget, wingetId, sourceName, filter, extraArgs, context, ct).ConfigureAwait(false);
             var stepName = (force ? "reinstall" : "install")
-                           + (!context.IsSystem && attempt > 0 ? "-msix" : context.IsSystem && !systemScope ? "-allusers" : string.Empty);
+                           + (!context.IsSystem && attempt > 0 ? "-msix" : context.IsSystem && systemInstallerType is not null ? "-provision"
+                               : context.IsSystem && !systemScope ? "-allusers" : string.Empty);
             var log = NewInstallerLog(app, wingetId, stepName, extraArgs);
             LogInstallerLogPath(app, wingetId, log);
             var args = new StringBuilder()

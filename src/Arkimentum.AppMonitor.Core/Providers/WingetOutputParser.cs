@@ -121,6 +121,24 @@ public static partial class WingetOutputParser
     /// </summary>
     public const string AppRestartPendingMarker = "Restart the application to complete the upgrade";
 
+    /// <summary>
+    /// The MSIX deployment's refusal 0x80073D28 ("The package installation failed because administrator privileges are
+    /// required"), which winget passes through as its exit code: the package declares restricted capabilities that only an
+    /// administrator may install, such as its own Windows service (<c>packagedServices</c>, <c>localSystemServices</c>).
+    /// Anthropic.Claude on H-PARALLELSVM (2026-10-21): an MSIX installer with no scope, so the user context selects it and
+    /// Windows refuses it after the download. Nothing was installed.
+    /// </summary>
+    public const int ExitMsixRequiresAdmin = unchecked((int)0x80073D28);
+
+    /// <summary>
+    /// Whether a winget run was refused because the MSIX package needs administrator rights (<see cref="ExitMsixRequiresAdmin"/>
+    /// as the exit code, or its hex code in the output, which winget prints in any language). Pure, so the rule is
+    /// testable. A success never is.
+    /// </summary>
+    public static bool IsMsixAdminRequired(int exitCode, string? output) =>
+        exitCode != 0
+        && (exitCode == ExitMsixRequiresAdmin || (output?.Contains("0x80073d28", StringComparison.OrdinalIgnoreCase) ?? false));
+
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhitespaceRunRegex();
 

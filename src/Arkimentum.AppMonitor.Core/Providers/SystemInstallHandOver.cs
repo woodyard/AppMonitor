@@ -11,7 +11,11 @@ namespace Arkimentum.AppMonitor.Providers;
 /// <param name="WingetId">The winget id winget refused in the user context; the service only installs it when it is one of the update's own ids.</param>
 /// <param name="PackageFamilyName">The MSIX package family of the user's installed copy, for the service's before/after evidence.</param>
 /// <param name="UserPackageVersion">The highest MSIX package version registered for the user before the hand-over (e.g. 6000.519.297.0), or null.</param>
-public sealed record SystemInstallHandOverRequest(string UpdateKey, string WingetId, string PackageFamilyName, string? UserPackageVersion);
+/// <param name="MsixInstaller">True when winget's own MSIX installer was refused in the user's session because it needs
+/// administrator rights (Anthropic.Claude: the package brings a Windows service). The service then provisions that MSIX
+/// installer for all users (<c>--scope machine --installer-type msix</c>) instead of running whatever winget picks.</param>
+public sealed record SystemInstallHandOverRequest(string UpdateKey, string WingetId, string PackageFamilyName, string? UserPackageVersion,
+    bool MsixInstaller = false);
 
 /// <summary>The service's answer to a <see cref="SystemInstallHandOverRequest"/>.</summary>
 /// <param name="Ok">True when the service's machine-wide install succeeded (or winget found nothing newer to install).</param>

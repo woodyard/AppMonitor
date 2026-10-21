@@ -1496,8 +1496,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             refusal = "an install for all users of this update is still running";
         }
 
-        _logger.LogInformation("{Client} asked the service to install '{WingetId}' (package family {Family}, user package {Version}) for all users for {Key}{Refusal}",
-            conn, m.WingetId, m.PackageFamilyName, m.UserPackageVersion ?? "unknown", key, refusal is null ? "" : $"; refused: {refusal}");
+        _logger.LogInformation("{Client} asked the service to install '{WingetId}' (package family {Family}, user package {Version}{Msix}) for all users for {Key}{Refusal}",
+            conn, m.WingetId, m.PackageFamilyName, m.UserPackageVersion ?? "unknown", m.MsixInstaller ? ", its MSIX installer" : "", key, refusal is null ? "" : $"; refused: {refusal}");
         if (refusal is not null)
         {
             await _pipe.SendAsync(conn, new SystemInstallResultMessage
@@ -1513,7 +1513,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
 
         ExtendUserInstallTimeout(key, HandOverWait(settings));
         await _pipe.SendAsync(conn, new AckMessage { InReplyTo = m.MessageId, Ok = true, Message = "Installing for all users" }, ct).ConfigureAwait(false);
-        var request = new SystemInstallHandOverRequest(key, m.WingetId.Trim(), m.PackageFamilyName.Trim(), m.UserPackageVersion);
+        var request = new SystemInstallHandOverRequest(key, m.WingetId.Trim(), m.PackageFamilyName.Trim(), m.UserPackageVersion, m.MsixInstaller);
         _ = Task.Run(() => RunSystemInstallHandOverAsync(conn, m.MessageId, request, update!.Clone(), policy!, settings), CancellationToken.None);
     }
 
@@ -1544,7 +1544,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 wingetId: request.WingetId, version: update.AvailableVersion, deliveryOptimization: _wingetDownloader?.WinInetInEffect != true);
             var progress = new LineProgress(line => { _logger.LogDebug("[{App}] {Line}", update.DisplayName, line); tracker.Report(line); });
             InstallResult install;
-            try { install = await provider.InstallForAllUsersAsync(policy, update, request.WingetId, progress, CancellationToken.None).ConfigureAwait(false); }
+            try { install = await provider.InstallForAllUsersAsync(policy, update, request.WingetId, progress, CancellationToken.None, request.MsixInstaller).ConfigureAwait(false); }
             catch (Exception ex) { install = InstallResult.Fail(ex.Message); _logger.LogError(ex, "The install for all users of {App} threw", update.DisplayName); }
 
             var after = await AppxPackageProbe.RunAsync(_logger, request.PackageFamilyName, CancellationToken.None).ConfigureAwait(false);

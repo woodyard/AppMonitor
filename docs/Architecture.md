@@ -636,8 +636,10 @@ Notes:
   registrations before and after; the service's `InstallAsync` for that update keeps waiting (its
   timeout is pushed out, the install lock stays with it), and the tray judges and reports the result
   as usual - installed, or installed with a restart pending when only the user's next sign-in moves
-  their registration. See Troubleshooting, *An MSIX package whose manifest only has an elevated
-  installer*.
+  their registration. The same hand-over follows an MSIX installer that Windows refused in the user's
+  session for want of administrator rights (0x80073D28; `Anthropic.Claude`, whose package brings a
+  Windows service); the service then provisions it with `--scope machine --installer-type msix`. See
+  Troubleshooting, *An MSIX package whose manifest only has an elevated installer*.
 
 ## Files and paths
 

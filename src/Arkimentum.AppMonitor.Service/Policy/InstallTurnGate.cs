@@ -3,17 +3,19 @@ using Arkimentum.AppMonitor.Models;
 namespace Arkimentum.AppMonitor.Service.Policy;
 
 /// <summary>
-/// Where a queued install stands when the install turn is handed on: a mandatory update past its deadline first, then
-/// the one expected to take the shortest time (so a queue of updates is not held up by one long install, and the
-/// user sees most of them done early), then the one that asked first.
+/// Where a queued install stands when the install turn is handed on: an update the user picked on its own first (the
+/// earliest pick first), then a mandatory update past its deadline, then the one expected to take the shortest time
+/// (so a queue of updates is not held up by one long install, and the user sees most of them done early), then the one
+/// that asked first.
 /// </summary>
 /// <param name="Overdue">A mandatory update whose deadline has passed.</param>
 /// <param name="ExpectedSeconds">How long the install usually takes on this device (<see cref="InstallTurnGate.UnknownExpectedSeconds"/> when never timed).</param>
-public readonly record struct InstallTurnPriority(bool Overdue, int ExpectedSeconds)
+/// <param name="PrioritizedUtc">When the user picked this update to go first (<see cref="PendingUpdate.PrioritizedUtc"/>), or null.</param>
+public readonly record struct InstallTurnPriority(bool Overdue, int ExpectedSeconds, DateTimeOffset? PrioritizedUtc = null)
 {
     /// <param name="expectedSeconds">How long the install usually takes (from the install history); null or 0 = unknown.</param>
     public static InstallTurnPriority For(PendingUpdate u, int? expectedSeconds, DateTimeOffset now) =>
-        new(u.IsPastDeadline(now), expectedSeconds is { } s && s > 0 ? s : InstallTurnGate.UnknownExpectedSeconds);
+        new(u.IsPastDeadline(now), expectedSeconds is { } s && s > 0 ? s : InstallTurnGate.UnknownExpectedSeconds, u.PrioritizedUtc);
 }
 
 /// <summary>
@@ -118,6 +120,10 @@ public sealed class InstallTurnGate
     /// <summary>Negative when (a, orderA) goes before (b, orderB).</summary>
     public static int Compare(InstallTurnPriority a, long orderA, InstallTurnPriority b, long orderB)
     {
+        // The user's own pick goes before an overdue mandatory update: it delays that one by a single install, and an
+        // "Update" button that does not go next would look broken.
+        if (a.PrioritizedUtc.HasValue != b.PrioritizedUtc.HasValue) return a.PrioritizedUtc.HasValue ? -1 : 1;
+        if (a.PrioritizedUtc is { } pickedA && b.PrioritizedUtc is { } pickedB && pickedA != pickedB) return pickedA.CompareTo(pickedB);
         if (a.Overdue != b.Overdue) return a.Overdue ? -1 : 1;
         var bySeconds = a.ExpectedSeconds.CompareTo(b.ExpectedSeconds);
         return bySeconds != 0 ? bySeconds : orderA.CompareTo(orderB);

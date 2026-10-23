@@ -54,6 +54,73 @@ public class InstallTurnGateTests
         Assert.Equal(["overdue chrome (600 s)", "7-zip (30 s)", "putty (30 s, later)", "never timed", "acrobat (300 s)"], order);
     }
 
+    // ------------------------------------------------------------------ the card's Update button (PrioritizedUtc)
+
+    private static readonly DateTimeOffset Picked = new(2026, 10, 23, 14, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void A_picked_update_goes_before_shorter_and_overdue_ones_and_earlier_picks_go_first()
+    {
+        var picked = new InstallTurnPriority(false, 900, Picked);
+        var pickedLater = new InstallTurnPriority(false, 10, Picked.AddSeconds(5));
+        Assert.True(InstallTurnGate.Compare(picked, 9, P(10), 0) < 0);
+        Assert.True(InstallTurnGate.Compare(picked, 9, P(600, overdue: true), 0) < 0);
+        Assert.True(InstallTurnGate.Compare(picked, 9, pickedLater, 0) < 0);
+        Assert.True(InstallTurnGate.Compare(P(10), 0, P(600, overdue: true), 1) > 0);
+    }
+
+    [Fact]
+    public async Task An_update_picked_while_it_waits_takes_the_next_turn()
+    {
+        var gate = new InstallTurnGate();
+        var holder = await gate.EnterAsync(() => P(1), CancellationToken.None);
+        DateTimeOffset? pickedUtc = null;
+
+        // "Update all" queued both; the user then pressed "Update next" on the long one.
+        var shortOne = gate.EnterAsync(() => P(10), CancellationToken.None);
+        var longOne = gate.EnterAsync(() => new InstallTurnPriority(false, 900, pickedUtc), CancellationToken.None);
+        pickedUtc = Picked;
+
+        holder.Dispose();
+        var turn = await longOne.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(shortOne.IsCompleted);
+        turn.Dispose();
+        (await shortOne.WaitAsync(TimeSpan.FromSeconds(5))).Dispose();
+    }
+
+    [Fact]
+    public void A_pick_lasts_until_the_install_ends_and_a_second_pick_keeps_the_first_time()
+    {
+        var u = new PendingUpdate { AppId = "putty", DisplayName = "PuTTY", InstalledVersion = "0.82", AvailableVersion = "0.83", State = UpdateState.Available };
+
+        PolicyEngine.RequestInstall(u); // "Update all"
+        Assert.Null(u.PrioritizedUtc);
+        Assert.Null(InstallTurnPriority.For(u, 30, Picked).PrioritizedUtc);
+
+        PolicyEngine.RequestInstall(u, Picked);
+        PolicyEngine.RequestInstall(u, Picked.AddMinutes(1));
+        Assert.Equal(Picked, u.PrioritizedUtc);
+        Assert.Equal(Picked, InstallTurnPriority.For(u, 30, Picked).PrioritizedUtc);
+
+        PolicyEngine.MarkFailed(u, "boom", Picked);
+        Assert.Null(u.PrioritizedUtc);
+
+        PolicyEngine.RequestInstall(u, Picked);
+        PolicyEngine.MarkInstalled(u, new InstallResult { Success = true, InstalledVersion = "0.83" }, Picked);
+        Assert.Null(u.PrioritizedUtc);
+    }
+
+    [Fact]
+    public void Deferring_a_picked_update_that_waits_for_its_apps_to_close_withdraws_the_pick()
+    {
+        var u = new PendingUpdate { AppId = "putty", DisplayName = "PuTTY", State = UpdateState.Available, MaxDeferrals = 3, DeferralOptionsMinutes = [60] };
+        PolicyEngine.RequestInstall(u, Picked);
+        PolicyEngine.MarkWaitingForClose(u, ["putty"], Picked, scheduleForcedClose: false);
+        Assert.Equal(Picked, u.PrioritizedUtc);
+        Assert.True(PolicyEngine.TryDefer(u, 60, Picked, out _));
+        Assert.Null(u.PrioritizedUtc);
+    }
+
     [Fact]
     public async Task The_priority_is_read_when_the_turn_is_handed_on_not_when_the_wait_began()
     {

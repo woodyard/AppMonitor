@@ -317,7 +317,8 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
     }
 
     /// <summary>
-    /// "Update all": one install request per installable update, the same as pressing Install now on each card.
+    /// "Update all": one install request per installable update. Unlike a card's Update button it picks none of them,
+    /// so the service keeps its own order (overdue first, then the shortest installs), and a card can still jump ahead.
     /// The service queues them and runs the installs one after another; the button greys out at once (the store
     /// remembers the requested keys) instead of staying live until the state message with "scheduled" comes back.
     /// </summary>
@@ -375,8 +376,9 @@ public sealed class MainViewModel : ObservableObject, IUpdateActions
 
     public void Install(PendingUpdate update)
     {
-        _log.LogInformation("User chose Install now for {App} ({Key})", update.DisplayName, update.Key);
-        _ = _ipc.InstallNowAsync(update.Key);
+        // The card's own button picks this update to go before the rest of the queue ("Update all" does not).
+        _log.LogInformation("User chose Update for {App} ({Key}): it goes before the other queued updates", update.DisplayName, update.Key);
+        _ = _ipc.InstallNowAsync(update.Key, prioritize: true);
     }
 
     public void Defer(PendingUpdate update, int minutes)

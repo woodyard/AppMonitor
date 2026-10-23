@@ -92,7 +92,10 @@ public static class Strings
     public static string EmptySubtitle(string when) => $"All monitored applications were up to date at {when}.";
 
     // ---------------------------------------------------------------- update card
-    public const string InstallNow = "Install now";
+    /// <summary>The pill on an update card: installs this one before the rest of the queue.</summary>
+    public const string UpdateApp = "Update";
+    /// <summary>The same pill on a card "Update all" has already queued: moves it to the front.</summary>
+    public const string UpdateAppNext = "Update next";
     public const string Defer = "Defer";
     public const string RemindMeLater = "Remind me later";
     public const string NoMoreDeferrals = "No more deferrals left";
@@ -105,6 +108,8 @@ public static class Strings
 
     public const string StateAvailable = "Available";
     public const string StateScheduled = "Queued for installation";
+    /// <summary>A queued update the user picked: it goes before the ones queued by "Update all" or by policy.</summary>
+    public const string StateScheduledFirst = "Queued · goes before the others";
     public const string StateInstalling = "Installing…";
     public const string StateMandatory = "mandatory";
 

@@ -74,6 +74,12 @@ public sealed class InstallNowMessage : IpcMessage
     /// tray never sets it, so an older tray against a newer service keeps the pre-1.2 prompt-and-wait behaviour.
     /// </summary>
     public bool CloseBlockingProcesses { get; set; }
+
+    /// <summary>
+    /// Optional (added in 1.1.53): the user picked this update on its own, so it goes before every other queued install
+    /// (<see cref="Models.PendingUpdate.PrioritizedUtc"/>). "Update all" leaves it false; an older service ignores it.
+    /// </summary>
+    public bool Prioritize { get; set; }
 }
 
 public sealed class DeferMessage : IpcMessage

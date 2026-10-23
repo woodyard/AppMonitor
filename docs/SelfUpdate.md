@@ -111,10 +111,15 @@ what would have been executed.
 - Once a newer release is being downloaded, and until the installer has replaced the service (at most 30 minutes after
   it was started), no scan runs and no application install, close prompt or forced close starts. Scheduled installs
   stay scheduled and run in the restarted service.
-- At service start the first scan waits for the first agent update check (it runs about 10 seconds after the start,
-  right after the configuration poll; at most 10 minutes). A device that is behind therefore updates the agent first
-  and looks for application updates with the new one. Due or requested scans are postponed, never dropped, and the
-  log says why (`Scan (scheduled) postponed: ...`).
+- At service start the first scan, and every application install, close prompt and notification, waits for the first
+  agent update check (it runs about 10 seconds after the start, right after the configuration poll; at most 10
+  minutes). Installs matter as much as scans here: updates found before the device was switched off are still queued
+  in the state file. A device that is behind therefore updates the agent first and looks for and installs application
+  updates with the new one. Due or requested scans are postponed, never dropped, and the log says why
+  (`Scan (scheduled) postponed: ...`).
+- A first check that cannot read the feed (right after boot the network is often not up yet) does not end that wait;
+  it is tried again every minute until it succeeds or the 10 minutes are over. Any later check that cannot read the
+  feed or download the release is tried again after 30 minutes rather than at the next `AgentUpdateCheckIntervalHours`.
 
 ## Command line
 

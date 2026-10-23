@@ -142,7 +142,7 @@ public sealed class UpdateViewModel : ObservableObject
                 UpdateState.Available => Strings.StateAvailable,
                 UpdateState.Deferred => Strings.StateDeferred(
                     _update.DeferredUntilUtc is { } until ? TimeFormat.Absolute(until) : Strings.DetailsNone),
-                UpdateState.Scheduled => Strings.StateScheduled,
+                UpdateState.Scheduled => _update.PrioritizedUtc is not null ? Strings.StateScheduledFirst : Strings.StateScheduled,
                 // The card is the only place left explaining this once the prompt's toast is gone, so it also says how
                 // to get the prompt back - it goes away by itself after half a minute.
                 UpdateState.WaitingForClose => ShowCloseApps
@@ -207,9 +207,20 @@ public sealed class UpdateViewModel : ObservableObject
 
     // ---------------------------------------------------------------- buttons
 
-    public bool ShowInstall => _update.State is not (UpdateState.Installing or UpdateState.Installed) && _localStatus is null;
+    /// <summary>
+    /// The pill at the top right of the card, as in an app store: "Update" installs this one before the rest of the
+    /// queue, and on a card that is already queued ("Update all", policy) it reads "Update next" and moves it to the
+    /// front. Not while it installs, once it was picked, or while it waits for the user to close applications (the
+    /// card's "Close apps and update" is the way on then).
+    /// </summary>
+    public bool ShowInstall =>
+        _localStatus is null
+        && _update.State is not (UpdateState.Installing or UpdateState.Installed or UpdateState.WaitingForClose)
+        && !(_update.State == UpdateState.Scheduled && _update.PrioritizedUtc is not null);
 
-    public bool IsInstallEnabled => ShowInstall && _isConnected && _update.State != UpdateState.Scheduled;
+    public string InstallText => _update.State == UpdateState.Scheduled ? Strings.UpdateAppNext : Strings.UpdateApp;
+
+    public bool IsInstallEnabled => ShowInstall && _isConnected;
 
     /// <summary>
     /// "Close apps and update" on the card: only while the service is actually waiting for this update's blocking
@@ -233,7 +244,8 @@ public sealed class UpdateViewModel : ObservableObject
         _update.State is UpdateState.Available or UpdateState.Deferred or UpdateState.WaitingForClose or UpdateState.Failed &&
         _localStatus is null;
 
-    public bool ShowAnyAction => ShowInstall || ShowCloseApps || ShowDefer || ShowRemindMeLater || ShowNoMoreDeferrals;
+    /// <summary>The row of secondary actions under the card; the Update pill sits in the title row instead.</summary>
+    public bool ShowAnyAction => ShowCloseApps || ShowDefer || ShowRemindMeLater || ShowNoMoreDeferrals;
 
     // ---------------------------------------------------------------- refresh
 
@@ -281,7 +293,7 @@ public sealed class UpdateViewModel : ObservableObject
         OnPropertyChanged(
             nameof(DisplayName), nameof(Monogram), nameof(VersionText), nameof(SourceBadge), nameof(ContextBadge),
             nameof(StatusText), nameof(Severity), nameof(DeadlineText), nameof(HasDeadline),
-            nameof(ShowInstall), nameof(IsInstallEnabled), nameof(ShowCloseApps), nameof(ShowDefer),
+            nameof(ShowInstall), nameof(InstallText), nameof(IsInstallEnabled), nameof(ShowCloseApps), nameof(ShowDefer),
             nameof(ShowNoMoreDeferrals), nameof(DeferralsUsedText), nameof(ShowRemindMeLater), nameof(ShowAnyAction),
             nameof(ShowInstallProgress), nameof(IsProgressIndeterminate), nameof(ProgressValue), nameof(QueuedHintText), nameof(HasQueuedHint));
     }

@@ -128,10 +128,11 @@ public sealed class IpcClientService : IHostedService
     /// <summary>
     /// Asks the service to install one update now. <paramref name="closeBlockingProcesses"/> is only set from the
     /// close-apps prompt's "Close apps and update": it tells the service it may end the processes this agent could not reach itself (elevated,
-    /// or in another user's session), which it can because it runs as LocalSystem.
+    /// or in another user's session), which it can because it runs as LocalSystem. <paramref name="prioritize"/> = the
+    /// user picked this one update (its card's Update button, a toast): it goes before the other queued installs.
     /// </summary>
-    public Task<bool> InstallNowAsync(string updateKey, bool closeBlockingProcesses = false) =>
-        SendAsync(new InstallNowMessage { UpdateKey = updateKey, CloseBlockingProcesses = closeBlockingProcesses });
+    public Task<bool> InstallNowAsync(string updateKey, bool closeBlockingProcesses = false, bool prioritize = false) =>
+        SendAsync(new InstallNowMessage { UpdateKey = updateKey, CloseBlockingProcesses = closeBlockingProcesses, Prioritize = prioritize });
 
     /// <summary>
     /// Queues several updates at once ("Update all"): one install request per key, in order. The service marks each
@@ -166,7 +167,7 @@ public sealed class IpcClientService : IHostedService
 
     private static string Describe(IpcMessage message) => message switch
     {
-        InstallNowMessage m => m.CloseBlockingProcesses ? $"{m.UpdateKey} (close blocking apps)" : m.UpdateKey,
+        InstallNowMessage m => m.CloseBlockingProcesses ? $"{m.UpdateKey} (close blocking apps)" : m.Prioritize ? $"{m.UpdateKey} (first)" : m.UpdateKey,
         DeferMessage m => $"{m.UpdateKey} +{m.Minutes}min",
         DismissMessage m => m.UpdateKey,
         UserInstallProgressMessage m => $"{m.UpdateKey}: {m.Status}",

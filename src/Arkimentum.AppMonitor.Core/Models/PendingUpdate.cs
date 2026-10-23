@@ -146,6 +146,12 @@ public sealed class PendingUpdate
     public bool Announced { get; set; }
     /// <summary>Set when the user asked to install; keeps the intent alive while blocking apps are being closed.</summary>
     public bool InstallRequested { get; set; }
+    /// <summary>
+    /// When the user chose this one update to go first (its card's Update button, a toast's Install now, Close apps and
+    /// update; not "Update all"): it takes the next install turn ahead of every other queued update, earlier choices
+    /// first. Lives and ends with <see cref="InstallRequested"/>.
+    /// </summary>
+    public DateTimeOffset? PrioritizedUtc { get; set; }
 
     // installer plan (so the tray agent can perform user-context installs)
     /// <summary>The winget id the update was detected under.</summary>

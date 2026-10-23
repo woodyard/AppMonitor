@@ -594,10 +594,11 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     {
         ImpersonationGuard.RevertIfImpersonating(_logger, "policy evaluation");
         // Nothing new starts while the agent replaces itself: the installer stops this service, and an application
-        // install it interrupted would be lost. What is scheduled stays scheduled and runs after the restart.
-        if (SelfUpdater?.ReplacementUnderway(DateTimeOffset.UtcNow) is { } replacing)
+        // install it interrupted would be lost. What is scheduled stays scheduled and runs after the restart. After the
+        // start it also waits for the first agent update check, so a device that is behind updates the agent first.
+        if (PolicyHoldReason() is { } held)
         {
-            _logger.LogDebug("Policy evaluation held: {Reason}", replacing);
+            _logger.LogDebug("Policy evaluation held: {Reason}", held);
             return;
         }
         if (!await _policyLock.WaitAsync(0, ct).ConfigureAwait(false)) return;
@@ -1361,9 +1362,12 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             case InstallNowMessage m:
                 // CloseBlockingProcesses means the user pressed "Close apps and update": the tray has already closed
                 // and killed everything in its own session, so what is left needs SYSTEM rights and is ours to end.
-                await HandleUserActionAsync(conn, m.CloseBlockingProcesses ? "close apps and update" : "install now", m.UpdateKey, m.MessageId, u =>
+                // A pick of this one update (its card's Update button, a toast, Close apps and update) goes before the
+                // other queued installs at the next turn; the install that is running is never interrupted.
+                var picked = m.Prioritize || m.CloseBlockingProcesses;
+                await HandleUserActionAsync(conn, m.CloseBlockingProcesses ? "close apps and update" : picked ? "update this one first" : "install now", m.UpdateKey, m.MessageId, u =>
                 {
-                    PolicyEngine.RequestInstall(u);
+                    PolicyEngine.RequestInstall(u, picked ? DateTimeOffset.UtcNow : null);
                     if (m.CloseBlockingProcesses) PolicyEngine.RequestForcedClose(u, DateTimeOffset.UtcNow);
                     return null;
                 }, ct).ConfigureAwait(false);
@@ -1850,7 +1854,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// <summary>What the agent updater is doing while it holds the scan lock, for the log line of a postponed scan.</summary>
     private volatile string? _agentUpdateActivity;
 
-    /// <summary>Called by the cloud sync loop once its first scheduled agent update check is over, whatever it concluded.</summary>
+    /// <summary>True after the start until the first agent update check has concluded, for at most <see cref="FirstAgentCheckWait"/>.</summary>
+    public bool FirstAgentCheckPending => !_firstAgentCheckSettled && DateTimeOffset.UtcNow - _startedUtc < FirstAgentCheckWait;
+
+    /// <summary>
+    /// Called by the cloud sync loop once its first scheduled agent update check has concluded. A check that could not
+    /// read the feed (the network is often not up yet right after boot) does not count; it is tried again shortly.
+    /// </summary>
     public void AgentUpdateCheckSettled()
     {
         if (_firstAgentCheckSettled) return;
@@ -1896,6 +1906,27 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         !updaterAvailable ? null
         : replacementUnderway is not null ? replacementUnderway + "; application scans resume after the restart"
         : agentUpdateActivity is not null ? agentUpdateActivity
+        : !firstAgentCheckSettled && sinceStart < FirstAgentCheckWait ? "waiting for the agent update check that runs at start"
+        : null;
+
+    /// <summary>Why the policy tick (installs, prompts, notifications) must wait now, or null (see <see cref="PolicyHold"/>).</summary>
+    private string? PolicyHoldReason()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var updater = SelfUpdater;
+        return PolicyHold(updater is not null, updater?.ReplacementUnderway(now), _firstAgentCheckSettled, now - _startedUtc);
+    }
+
+    /// <summary>
+    /// Pure rule for <see cref="PolicyHoldReason"/>: nothing new starts while the agent replaces itself, nor after the
+    /// start until the first agent update check is over (at most <see cref="FirstAgentCheckWait"/>). Updates found
+    /// before the device was switched off are still queued in the state file, and installed at once they kept the
+    /// agent from updating itself (it does not replace itself during an install). A running check alone does not hold
+    /// the tick; a newer release it finds holds it from the download on (<paramref name="replacementUnderway"/>).
+    /// </summary>
+    public static string? PolicyHold(bool updaterAvailable, string? replacementUnderway, bool firstAgentCheckSettled, TimeSpan sinceStart) =>
+        !updaterAvailable ? null
+        : replacementUnderway is not null ? replacementUnderway
         : !firstAgentCheckSettled && sinceStart < FirstAgentCheckWait ? "waiting for the agent update check that runs at start"
         : null;
 

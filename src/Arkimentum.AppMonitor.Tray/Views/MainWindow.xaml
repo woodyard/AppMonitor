@@ -48,6 +48,45 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <!-- An update card's "Update" pill, as in an app store: a tinted capsule that fills with olive under the
+             pointer. Its own template, so the Fluent button's square corners and accent fill stay out of it. -->
+        <Style x:Key="UpdatePill" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource BrandPrimaryTextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource BrandPrimarySurfaceBrush}" />
+            <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="16,5" />
+            <Setter Property="MinWidth" Value="76" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Pill"
+                                CornerRadius="14"
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="False" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource BrandPrimaryFillBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource BrandOnPrimaryBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource BrandPrimaryFillPressedBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource BrandOnPrimaryBrush}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45" />
+                    <Setter Property="Cursor" Value="Arrow" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <Grid x:Name="LayoutRoot" Margin="24,20,24,20">
@@ -154,7 +193,7 @@
                             <Border Style="{StaticResource UpdateCard}" Margin="0,0,0,12">
                                 <StackPanel>
 
-                                    <!-- icon, name + version, badges -->
+                                    <!-- icon, name + version + badges, the Update pill -->
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto" />
@@ -185,19 +224,28 @@
                                                        FontSize="15"
                                                        TextTrimming="CharacterEllipsis"
                                                        Text="{Binding DisplayName}" />
-                                            <TextBlock Style="{StaticResource TertiaryCaptionText}"
-                                                       Margin="0,2,0,0"
-                                                       Text="{Binding VersionText}" />
+                                            <WrapPanel Margin="0,2,0,0" Orientation="Horizontal">
+                                                <TextBlock Style="{StaticResource TertiaryCaptionText}"
+                                                           Margin="0,0,8,0"
+                                                           VerticalAlignment="Center"
+                                                           Text="{Binding VersionText}" />
+                                                <Border Style="{StaticResource SourceBadge}" Margin="0,0,4,0">
+                                                    <TextBlock Style="{StaticResource SourceBadgeText}" Text="{Binding SourceBadge}" />
+                                                </Border>
+                                                <Border Style="{StaticResource ContextBadge}">
+                                                    <TextBlock Style="{StaticResource BadgeText}" Text="{Binding ContextBadge}" />
+                                                </Border>
+                                            </WrapPanel>
                                         </StackPanel>
 
-                                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,2,0,0">
-                                            <Border Style="{StaticResource SourceBadge}" Margin="0,0,4,0">
-                                                <TextBlock Style="{StaticResource SourceBadgeText}" Text="{Binding SourceBadge}" />
-                                            </Border>
-                                            <Border Style="{StaticResource ContextBadge}">
-                                                <TextBlock Style="{StaticResource BadgeText}" Text="{Binding ContextBadge}" />
-                                            </Border>
-                                        </StackPanel>
+                                        <!-- This one first: before the rest of the queue, and the running install is never interrupted. -->
+                                        <Button Grid.Column="2"
+                                                VerticalAlignment="Center"
+                                                Style="{StaticResource UpdatePill}"
+                                                Content="{Binding InstallText}"
+                                                Command="{Binding InstallCommand}"
+                                                AutomationProperties.Name="{Binding InstallText}"
+                                                Visibility="{Binding ShowInstall, Converter={StaticResource BoolToVisibility}}" />
                                     </Grid>
 
                                     <TextBlock Style="{StaticResource StatusText}"
@@ -230,14 +278,6 @@
                                     <!-- actions -->
                                     <WrapPanel Margin="0,16,0,0"
                                                Visibility="{Binding ShowAnyAction, Converter={StaticResource BoolToVisibility}}">
-                                        <Button MinWidth="104"
-                                                Margin="0,0,8,0"
-                                                Padding="14,6"
-                                                Style="{DynamicResource AccentButtonStyle}"
-                                                Content="{x:Static res:Strings.InstallNow}"
-                                                Command="{Binding InstallCommand}"
-                                                Visibility="{Binding ShowInstall, Converter={StaticResource BoolToVisibility}}" />
-
                                         <!-- Brings the close-apps prompt back: its toast goes away after half a minute. -->
                                         <Button MinWidth="168"
                                                 Margin="0,0,8,0"

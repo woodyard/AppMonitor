@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text.Json;
 using Arkimentum.AppMonitor.Cloud;
 using Arkimentum.AppMonitor.Service;
+using Arkimentum.AppMonitor.Service.Cloud;
 using Arkimentum.AppMonitor.Service.Update;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -349,6 +350,60 @@ public class AgentUpdaterTests
     public void Without_a_self_updater_nothing_holds_a_scan() =>
         Assert.Null(UpdateCoordinator.ScanHold(updaterAvailable: false, agentUpdateActivity: null, replacementUnderway: null,
             firstAgentCheckSettled: false, sinceStart: TimeSpan.Zero));
+
+    // Oliver's PC, 2026-10-23: switched on after 17 days on 1.1.47, it installed an update before the agent updated.
+    [Fact]
+    public void Installs_wait_for_the_agent_update_check_that_runs_at_start() =>
+        Assert.NotNull(UpdateCoordinator.PolicyHold(updaterAvailable: true, replacementUnderway: null,
+            firstAgentCheckSettled: false, sinceStart: TimeSpan.FromSeconds(15)));
+
+    [Fact]
+    public void Installs_run_once_the_first_agent_update_check_is_over() =>
+        Assert.Null(UpdateCoordinator.PolicyHold(updaterAvailable: true, replacementUnderway: null,
+            firstAgentCheckSettled: true, sinceStart: TimeSpan.FromSeconds(30)));
+
+    [Fact]
+    public void A_first_agent_update_check_that_never_ends_holds_installs_only_for_a_while() =>
+        Assert.Null(UpdateCoordinator.PolicyHold(updaterAvailable: true, replacementUnderway: null,
+            firstAgentCheckSettled: false, sinceStart: UpdateCoordinator.FirstAgentCheckWait));
+
+    [Fact]
+    public void Installs_wait_while_the_agent_is_being_replaced() =>
+        Assert.Equal("the agent is being replaced by 1.1.53",
+            UpdateCoordinator.PolicyHold(updaterAvailable: true, replacementUnderway: "the agent is being replaced by 1.1.53",
+                firstAgentCheckSettled: true, sinceStart: TimeSpan.FromHours(3)));
+
+    [Fact]
+    public void A_first_check_that_could_not_read_the_feed_keeps_the_hold_and_is_retried_within_a_minute()
+    {
+        Assert.False(CloudSyncService.SettlesFirstAgentCheck(AgentUpdateAction.NoManifest, firstCheckPending: true));
+        Assert.Equal(TimeSpan.FromMinutes(1), CloudSyncService.AgentCheckRetry(AgentUpdateAction.NoManifest, hasManifest: false, firstCheckPending: true));
+    }
+
+    [Theory]
+    [InlineData(AgentUpdateAction.UpToDate)]
+    [InlineData(AgentUpdateAction.Launched)]
+    [InlineData(AgentUpdateAction.Failed)]
+    [InlineData(AgentUpdateAction.Disabled)]
+    [InlineData(AgentUpdateAction.PinnedByTargetVersion)]
+    public void A_first_check_that_concluded_releases_the_hold(AgentUpdateAction action) =>
+        Assert.True(CloudSyncService.SettlesFirstAgentCheck(action, firstCheckPending: true));
+
+    [Fact]
+    public void A_later_check_that_could_not_read_the_feed_is_retried_in_half_an_hour_not_at_the_next_interval()
+    {
+        Assert.True(CloudSyncService.SettlesFirstAgentCheck(AgentUpdateAction.NoManifest, firstCheckPending: false));
+        Assert.Equal(TimeSpan.FromMinutes(30), CloudSyncService.AgentCheckRetry(AgentUpdateAction.NoManifest, hasManifest: false, firstCheckPending: false));
+        Assert.Equal(TimeSpan.FromMinutes(30), CloudSyncService.AgentCheckRetry(AgentUpdateAction.Failed, hasManifest: true, firstCheckPending: false));
+    }
+
+    [Fact]
+    public void An_agent_update_kept_out_by_an_install_is_retried_in_five_minutes_and_an_up_to_date_check_waits_for_the_interval()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(5), CloudSyncService.AgentCheckRetry(AgentUpdateAction.Blocked, hasManifest: true, firstCheckPending: false));
+        Assert.Null(CloudSyncService.AgentCheckRetry(AgentUpdateAction.Blocked, hasManifest: false, firstCheckPending: false));
+        Assert.Null(CloudSyncService.AgentCheckRetry(AgentUpdateAction.UpToDate, hasManifest: true, firstCheckPending: true));
+    }
 
     // ------------------------------------------------------------------ client-initiated update (UpdateAgentMessage)
 

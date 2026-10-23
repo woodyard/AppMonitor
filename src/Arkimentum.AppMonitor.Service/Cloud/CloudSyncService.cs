@@ -199,11 +199,34 @@ public sealed class CloudSyncService : BackgroundService
 
     /// <summary>How soon a scheduled agent update check is tried again when an application install stood in its way.</summary>
     private static readonly TimeSpan AgentCheckRetryAfterBlocked = TimeSpan.FromMinutes(5);
+    /// <summary>How soon the first check after the start is tried again when it could not read the feed.</summary>
+    private static readonly TimeSpan AgentCheckRetryAtStart = TimeSpan.FromMinutes(1);
+    /// <summary>How soon any other check that could not read the feed, or could not download the release, is tried again.</summary>
+    private static readonly TimeSpan AgentCheckRetryAfterFailure = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// When a check that ended in <paramref name="action"/> is tried again, if sooner than the regular interval (null
+    /// = the interval). The first check after a boot often runs before the network is up and cannot read the feed;
+    /// until it succeeds, scans and installs are held (<see cref="UpdateCoordinator.FirstAgentCheckPending"/>), so it is
+    /// tried again every minute, and a failure later in the day does not leave the device behind for a full interval.
+    /// </summary>
+    public static TimeSpan? AgentCheckRetry(AgentUpdateAction action, bool hasManifest, bool firstCheckPending) => action switch
+    {
+        AgentUpdateAction.Blocked when hasManifest => AgentCheckRetryAfterBlocked,
+        AgentUpdateAction.NoManifest when firstCheckPending => AgentCheckRetryAtStart,
+        AgentUpdateAction.NoManifest or AgentUpdateAction.Failed => AgentCheckRetryAfterFailure,
+        _ => null,
+    };
+
+    /// <summary>A first check that could not read the feed does not release the scans and installs held for it.</summary>
+    public static bool SettlesFirstAgentCheck(AgentUpdateAction action, bool firstCheckPending) =>
+        !(firstCheckPending && action == AgentUpdateAction.NoManifest);
 
     /// <summary>
     /// The scheduled agent update check. Never during a scan: it waits for the next tick instead of holding up the
     /// configuration polls (the updater would wait for the scan itself). An install that kept the agent from replacing
-    /// itself gets it tried again in a few minutes rather than at the next interval.
+    /// itself, or a feed that could not be read, gets it tried again sooner than at the next interval (see
+    /// <see cref="AgentCheckRetry"/>).
     /// </summary>
     private async Task CheckAgentUpdateIfDueAsync(AgentSettings settings, CancellationToken ct)
     {
@@ -222,17 +245,21 @@ public sealed class CloudSyncService : BackgroundService
         }
 
         _nextAgentCheckUtc = DateTimeOffset.UtcNow + TimeSpan.FromHours(Math.Clamp(settings.AgentUpdateCheckIntervalHours, 1, 720));
+        var firstCheckPending = _coordinator.FirstAgentCheckPending;
+        var settled = true;
         try
         {
             var outcome = await _updater.UpdateAsync("scheduled", null, ct).ConfigureAwait(false);
-            if (outcome.Action == AgentUpdateAction.Blocked && outcome.Manifest is not null)
+            settled = SettlesFirstAgentCheck(outcome.Action, firstCheckPending);
+            if (AgentCheckRetry(outcome.Action, outcome.Manifest is not null, firstCheckPending) is { } retry)
             {
-                _nextAgentCheckUtc = DateTimeOffset.UtcNow + AgentCheckRetryAfterBlocked;
-                _logger.LogInformation("Agent update to {Version} will be tried again at {Time}: {Reason}",
-                    outcome.Manifest.Version, _nextAgentCheckUtc.ToLocalTime().ToString("t"), outcome.Reason);
+                _nextAgentCheckUtc = DateTimeOffset.UtcNow + retry;
+                _logger.LogInformation("Agent update{Version} will be tried again at {Time}{Held}: {Reason}",
+                    outcome.Manifest is { } m ? " to " + m.Version : " check", _nextAgentCheckUtc.ToLocalTime().ToString("t"),
+                    settled ? "" : "; application scans and installs wait for it", outcome.Reason);
             }
         }
-        finally { _coordinator.AgentUpdateCheckSettled(); }
+        finally { if (settled) _coordinator.AgentUpdateCheckSettled(); }
     }
 
     // =================================================================================================================

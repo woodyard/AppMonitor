@@ -595,7 +595,7 @@ public sealed class NotificationService : IHostedService
 
                 case ToastAction.Install when key is not null:
                     _log.LogInformation("User chose Install now from a toast for {Key}", key);
-                    _ = _ipc.InstallNowAsync(key);
+                    _ = _ipc.InstallNowAsync(key, prioritize: true);
                     break;
 
                 case ToastAction.Defer when key is not null:

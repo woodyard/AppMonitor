@@ -408,10 +408,14 @@ history entry, cloud event or "failed" toast. The check runs before every instal
 type is not known up front.
 
 **Shortest first.** The install lock is a turn gate (`InstallTurnGate`): when an install ends, the waiting
-one with the highest priority goes next - a mandatory update past its deadline first, then the one whose
-installs have taken the least time on this device (the median of its last three successful, timed installs
-in the history; never timed counts as two minutes), then the one queued first. The installs of one policy
-tick are queued in that order too, so the first of them is already the right one.
+one with the highest priority goes next - an update the user picked on its own first (the *Update* pill on
+its tray card, a toast's *Install now*, *Close apps and update*: `InstallNowMessage.Prioritize`, kept as
+`PendingUpdate.PrioritizedUtc` until the install ends, earlier picks first; *Update all* picks none), then a
+mandatory update past its deadline, then the one whose installs have taken the least time on this device
+(the median of its last three successful, timed installs in the history; never timed counts as two
+minutes), then the one queued first. A pick never interrupts the install that is running; on a card that is
+already queued the pill reads *Update next*. The installs of one policy tick are queued in that order too,
+so the first of them is already the right one.
 
 **Progress.** While an install runs the tracked update carries its phase (`Starting`, `Downloading`,
 `Verifying`, `Installing`, `Checking`), the downloaded and total bytes when they can be seen, the start time

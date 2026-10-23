@@ -545,6 +545,7 @@ public static class PolicyEngine
         u.LastNotifiedUtc = now;
         u.Dismissed = false;
         u.InstallRequested = false;
+        u.PrioritizedUtc = null;
         return true;
     }
 
@@ -553,17 +554,23 @@ public static class PolicyEngine
         if (u.State is UpdateState.Installing or UpdateState.Installed or UpdateState.Scheduled) return;
         u.Dismissed = true;
         u.InstallRequested = false;
+        u.PrioritizedUtc = null;
         u.ForceCloseRequestedUtc = null; // the user changed their mind; withdraw the licence to kill
         u.LastNotifiedUtc = now;
         if (u.State is UpdateState.WaitingForClose or UpdateState.Deferred) u.State = UpdateState.Available;
         if (!u.IsPastDeadline(now)) u.ForceCloseAtUtc = null;
     }
 
-    public static void RequestInstall(PendingUpdate u)
+    /// <param name="prioritizedUtc">
+    /// Set when the user picked this update on its own: it goes before the other queued installs. A second pick keeps
+    /// the first one's time, so two picked updates keep the order they were picked in.
+    /// </param>
+    public static void RequestInstall(PendingUpdate u, DateTimeOffset? prioritizedUtc = null)
     {
         if (u.State is UpdateState.Installing or UpdateState.Installed) return;
         u.State = UpdateState.Scheduled;
         u.InstallRequested = true;
+        if (prioritizedUtc is not null) u.PrioritizedUtc ??= prioritizedUtc;
         u.DeferredUntilUtc = null;
         u.Dismissed = false;
         // "Install now" tries at once; the install turn still waits for a busy Windows Installer before it starts anything,
@@ -611,6 +618,7 @@ public static class PolicyEngine
         u.ForceCloseAtUtc = null;
         u.ForceCloseRequestedUtc = null;
         u.InstallRequested = false;
+        u.PrioritizedUtc = null;
         u.BlockingProcesses = [];
         u.BlockingDetails = [];
         if (!string.IsNullOrWhiteSpace(result.InstalledVersion)) u.InstalledVersion = result.InstalledVersion;
@@ -640,6 +648,7 @@ public static class PolicyEngine
         u.ForceCloseAtUtc = null;
         u.ForceCloseRequestedUtc = null; // a new attempt must be asked for again
         u.InstallRequested = false;
+        u.PrioritizedUtc = null;
         u.InstallerBusyUntilUtc = null; // the failure's own retry interval applies now
         ClearMislabeled(u);
         ClearInstallProgress(u);

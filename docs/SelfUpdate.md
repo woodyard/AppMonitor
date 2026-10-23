@@ -78,11 +78,27 @@ zip. `.github/workflows/release.yml` writes it on every `v*` tag:
                   -SourceRoot "<dir>" -NoSampleApps -SkipPrerequisites -Force        > <dir>\install.log 2>&1
    ```
 
-   The script stops the service, mirrors the new binaries into `%ProgramFiles%\Arkimentum\AppMonitor` and starts it
-   again; the tray agent's Run value and the Start Menu shortcut are handled by that same script.
+   The script stops the service and the tray/admin processes, mirrors the new binaries into
+   `%ProgramFiles%\Arkimentum\AppMonitor` (Tray, Admin, then Service) and starts it again; the tray agent's Run value
+   and the Start Menu shortcut are handled by that same script. Files still in use (a tray agent that has not exited
+   yet, or one started again by a click on one of its notifications) are retried up to four times, stopping the
+   holding processes again in between. Should the script fail anyway after it stopped the service, it starts the
+   service again with whatever binaries are in place before it exits with the error, so a device is never left
+   without its agent until the next reboot.
 5. **Confirm** - on its next start the service reads `update-pending.json`: a changed version is logged as
    *Agent updated* and reported to the cloud as an `AgentUpdated` event; an unchanged version after 30 minutes is
    logged as a failed update (with a pointer to `install.log`). The two most recent package folders are kept.
+
+### Repair: a tray agent left on another release
+
+The check also compares the installed tray agent (`<InstallDir>\Tray\Arkimentum.AppMonitor.Tray.dll`) with the
+service. When the feed offers exactly the release the service runs but the tray's files are another version, the
+verdict `UpToDate` becomes `UpdateAvailable` ("The tray agent's files are 1.1.49 but the service runs 1.1.51; 1.1.51
+is installed again to repair them") and the same release goes through steps 2-5. The repair is confirmed at the next
+start once the tray's files match (*Agent files repaired*, also an `AgentUpdated` event). This catches an update whose
+installer replaced the service but not the tray, which otherwise left the device on mixed versions for good: the
+service considered itself current. A device pinned below the running version (`AgentTargetVersion`) is never
+"repaired" with the older release.
 
 In `--user-config` testing mode everything up to step 4 runs, but the installer is never started: the log says exactly
 what would have been executed.

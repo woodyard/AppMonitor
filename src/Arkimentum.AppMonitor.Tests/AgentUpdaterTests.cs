@@ -252,6 +252,53 @@ public class AgentUpdaterTests
         Assert.Equal(AgentUpdateAction.UpdateAvailable, AgentUpdater.Decide(Manifest("1.0.10"), "1.0.9", "", "stable").Action);
 
     [Fact]
+    public void A_tray_left_on_the_old_release_turns_up_to_date_into_a_repair()
+    {
+        var outcome = AgentUpdater.DecideRepair(AgentUpdater.Decide(Manifest("1.1.51"), "1.1.51", "", "stable"), "1.1.51", "1.1.49");
+        Assert.Equal(AgentUpdateAction.UpdateAvailable, outcome.Action);
+        Assert.Equal("1.1.51", outcome.Manifest!.Version);
+        Assert.Contains("1.1.49", outcome.Reason);
+    }
+
+    [Theory]
+    [InlineData("1.1.51")]   // tray matches the service
+    [InlineData(null)]       // no installed tray to compare (development run)
+    public void A_matching_or_missing_tray_leaves_up_to_date_alone(string? tray) =>
+        Assert.Equal(AgentUpdateAction.UpToDate,
+            AgentUpdater.DecideRepair(AgentUpdater.Decide(Manifest("1.1.51"), "1.1.51", "", "stable"), "1.1.51", tray).Action);
+
+    [Fact]
+    public void No_repair_when_the_feed_offers_another_release_than_the_service_runs() =>
+        // Pinned below the running version: reinstalling the older release would be a downgrade, not a repair.
+        Assert.Equal(AgentUpdateAction.UpToDate,
+            AgentUpdater.DecideRepair(AgentUpdater.Decide(Manifest("1.1.50"), "1.1.51", "", "stable"), "1.1.51", "1.1.49").Action);
+
+    [Fact]
+    public void A_real_update_is_not_rewritten_as_a_repair()
+    {
+        var update = AgentUpdater.Decide(Manifest("1.1.52"), "1.1.51", "", "stable");
+        Assert.Same(update, AgentUpdater.DecideRepair(update, "1.1.51", "1.1.49"));
+    }
+
+    [Fact]
+    public void The_installed_tray_version_is_read_from_the_tray_folder_next_to_the_service()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        try
+        {
+            var service = Directory.CreateDirectory(Path.Combine(root, "Service")).FullName;
+            Assert.Null(AgentUpdater.InstalledTrayVersion(service));
+
+            var tray = Directory.CreateDirectory(Path.Combine(root, "Tray")).FullName;
+            var assembly = typeof(AgentUpdater).Assembly.Location;
+            File.Copy(assembly, Path.Combine(tray, "Arkimentum.AppMonitor.Tray.dll"));
+            var expected = System.Diagnostics.FileVersionInfo.GetVersionInfo(assembly).ProductVersion!.Split('+')[0];
+            Assert.Equal(expected, AgentUpdater.InstalledTrayVersion(service));
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
+
+    [Fact]
     public void Sha256_of_a_file_is_lower_case_hex()
     {
         var path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());

@@ -63,6 +63,8 @@ public sealed class AgentUpdaterOptions
     public bool DryRun { get; init; }
     /// <summary>Test seam: HTTP handler used for both the feed and the package download.</summary>
     public HttpMessageHandler? Handler { get; init; }
+    /// <summary>The service's own folder; the tray agent's files are installed next to it (<c>..\Tray</c>).</summary>
+    public string ServiceDirectory { get; init; } = AppContext.BaseDirectory;
 }
 
 /// <summary>
@@ -229,6 +231,42 @@ public sealed class AgentUpdater : IAgentSelfUpdate
         return new AgentUpdateOutcome(AgentUpdateAction.UpdateAvailable, $"{currentVersion} -> {manifest.Version} ({published})", manifest);
     }
 
+    /// <summary>
+    /// An update the installer could not finish can leave the service on the new release and the tray agent's files on
+    /// the old one (a tray started again while its files were copied); the service then considers itself current for
+    /// good. "Up to date" with the very release the service runs becomes a repair when the installed tray is another
+    /// version: the same release is installed again. <paramref name="trayVersion"/> null = nothing to compare.
+    /// </summary>
+    public static AgentUpdateOutcome DecideRepair(AgentUpdateOutcome outcome, string currentVersion, string? trayVersion)
+    {
+        if (outcome.Action != AgentUpdateAction.UpToDate || outcome.Manifest is not { } manifest || string.IsNullOrWhiteSpace(trayVersion))
+            return outcome;
+        if (VersionComparer.Compare(manifest.Version, currentVersion) != 0 || VersionComparer.Compare(trayVersion, currentVersion) == 0)
+            return outcome;
+        return outcome with
+        {
+            Action = AgentUpdateAction.UpdateAvailable,
+            Reason = $"The tray agent's files are {trayVersion.Trim()} but the service runs {currentVersion}; {manifest.Version} is installed again to repair them",
+        };
+    }
+
+    /// <summary>
+    /// Version of the tray agent installed next to the service (<c>&lt;InstallDir&gt;\Tray</c>), or null when there is none
+    /// (a development run from the build output) or it cannot be read.
+    /// </summary>
+    public static string? InstalledTrayVersion(string serviceDirectory)
+    {
+        try
+        {
+            var path = Path.GetFullPath(Path.Combine(serviceDirectory, "..", "Tray", "Arkimentum.AppMonitor.Tray.dll"));
+            if (!File.Exists(path)) return null;
+            var info = FileVersionInfo.GetVersionInfo(path);
+            var version = (info.ProductVersion ?? info.FileVersion)?.Split('+')[0].Trim();
+            return string.IsNullOrEmpty(version) ? null : version;
+        }
+        catch (Exception) { return null; }
+    }
+
     // =================================================================================================================
     // Resolve / check / update
     // =================================================================================================================
@@ -283,6 +321,7 @@ public sealed class AgentUpdater : IAgentSelfUpdate
         var outcome = Decide(manifest, CurrentVersion, targetVersionOverride ?? settings.AgentTargetVersion, settings.AgentUpdateChannel, _logger);
         // "No release manifest could be resolved" alone sent the user to the service log; the tray shows the reason.
         if (outcome.Action == AgentUpdateAction.NoManifest && problem is not null) outcome = outcome with { Reason = $"{outcome.Reason}: {problem}" };
+        outcome = DecideRepair(outcome, CurrentVersion, InstalledTrayVersion(_options.ServiceDirectory));
         _logger.LogInformation("Agent update decision: {Outcome}", outcome);
         return outcome;
     }
@@ -496,6 +535,17 @@ public sealed class AgentUpdater : IAgentSelfUpdate
     {
         var marker = ReadMarker();
         if (marker is null) return;
+        // A repair (DecideRepair: the release the service runs, installed again) is done once the tray's files match.
+        if (VersionComparer.Compare(marker.FromVersion, marker.ToVersion) == 0
+            && VersionComparer.Compare(CurrentVersion, marker.ToVersion) == 0
+            && InstalledTrayVersion(_options.ServiceDirectory) is { } tray
+            && VersionComparer.Compare(tray, CurrentVersion) == 0)
+        {
+            _logger.LogInformation("Agent files repaired: the tray agent is {Version} again, like the service (started {Started:u})", CurrentVersion, marker.StartedUtc);
+            _coordinator.RecordEvent(ReportedEventKind.AgentUpdated, null, $"Agent files repaired ({CurrentVersion}): the tray agent had been left on another release", marker.FromVersion, CurrentVersion);
+            TryDelete(MarkerPath);
+            return;
+        }
         if (VersionComparer.Compare(CurrentVersion, marker.ToVersion) >= 0 && !CurrentVersion.Equals(marker.FromVersion, StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogInformation("Agent updated: {From} -> {To} (started {Started:u}, {Reason})", marker.FromVersion, CurrentVersion, marker.StartedUtc, marker.Reason ?? "scheduled");

@@ -12,8 +12,10 @@
 
     What it does:
       1. Stops the ArkimentumAppMonitor service and any running tray/admin/service processes.
-      2. Mirrors Service\, Tray\ and Admin\ into <InstallDir> with robocopy /MIR, and creates the
-         all-users Start Menu shortcut for the admin console (unless -NoAdminConsole).
+      2. Mirrors Tray\, Admin\ and Service\ into <InstallDir> with robocopy /MIR (files still in use
+         are retried after stopping their processes again), and creates the all-users Start Menu
+         shortcut for the admin console (unless -NoAdminConsole). Should anything fail before the
+         service is running again, it is started with the binaries in place and the script fails.
       3. Creates %ProgramData%\Arkimentum\AppMonitor\Logs (the service writes there as LocalSystem;
          the tray agent logs to each user's %LOCALAPPDATA% and needs no shared folder).
       4. Creates or reconfigures the ArkimentumAppMonitor service (LocalSystem, delayed auto-start)
@@ -246,6 +248,8 @@ $ProgramDataRoot    = Join-Path $env:ProgramData 'Arkimentum\AppMonitor'
 $LogDirectory       = Join-Path $ProgramDataRoot 'Logs'
 
 $script:StepNumber = 0
+# True while this run has the service stopped (see the trap after "Stopping the service").
+$script:AgentDown = $false
 
 function Write-Step {
     param([Parameter(Mandatory)][string]$Message)
@@ -285,30 +289,53 @@ function Invoke-Sc {
 }
 
 function Stop-AgentProcesses {
-    foreach ($name in @('Arkimentum.AppMonitor.Tray', 'Arkimentum.AppMonitor.Admin', 'Arkimentum.AppMonitor.Service')) {
+    param([string[]]$Names = @('Arkimentum.AppMonitor.Tray', 'Arkimentum.AppMonitor.Admin', 'Arkimentum.AppMonitor.Service'))
+    $stopped = @()
+    foreach ($name in $Names) {
         $procs = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
         foreach ($p in $procs) {
             try {
                 $p | Stop-Process -Force -ErrorAction Stop
+                $stopped += $p
                 Write-Info ("Stopped process {0} (pid {1})" -f $name, $p.Id)
             } catch {
                 Write-Warning ("Could not stop {0} (pid {1}): {2}" -f $name, $p.Id, $_.Exception.Message)
             }
         }
     }
+    # Stop-Process returns before the process is gone, and its files stay locked until it is.
+    foreach ($p in $stopped) {
+        try {
+            if (-not $p.WaitForExit(15000)) { Write-Warning ("{0} (pid {1}) has not exited after 15 s" -f $p.ProcessName, $p.Id) }
+        } catch { }
+    }
 }
 
 function Copy-Payload {
+    <#
+        Mirrors one payload folder. When files are in use - a tray agent started again after Stop-AgentProcesses (a
+        click on one of its notifications does that) or one that has not exited yet - the processes named in
+        -LockingProcesses are stopped again and the copy is retried, a few times, before the installation fails.
+    #>
     param(
         [Parameter(Mandatory)][string]$Source,
-        [Parameter(Mandatory)][string]$Destination
+        [Parameter(Mandatory)][string]$Destination,
+        [string[]]$LockingProcesses = @(),
+        [int]$Attempts = 4
     )
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     $roboArgs = @($Source, $Destination, '/MIR', '/R:2', '/W:2', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')
-    $output = & "$env:SystemRoot\System32\robocopy.exe" @roboArgs
-    # robocopy: 0-7 = success (files copied / nothing to do), 8+ = at least one failure
-    if ($LASTEXITCODE -ge 8) {
-        throw ("robocopy '{0}' -> '{1}' failed with exit code {2}: {3}" -f $Source, $Destination, $LASTEXITCODE, ($output -join ' '))
+    for ($attempt = 1; ; $attempt++) {
+        $output = & "$env:SystemRoot\System32\robocopy.exe" @roboArgs
+        # robocopy: 0-7 = success (files copied / nothing to do), 8+ = at least one failure
+        if ($LASTEXITCODE -lt 8) { break }
+        if ($attempt -ge $Attempts -or $LockingProcesses.Count -eq 0) {
+            throw ("robocopy '{0}' -> '{1}' failed with exit code {2}: {3}" -f $Source, $Destination, $LASTEXITCODE, ($output -join ' '))
+        }
+        Write-Warning ("Copying {0} failed (robocopy exit code {1}, attempt {2} of {3}); stopping {4} again and retrying" -f
+            $Destination, $LASTEXITCODE, $attempt, $Attempts, ($LockingProcesses -join ', '))
+        Stop-AgentProcesses -Names $LockingProcesses
+        Start-Sleep -Seconds 3
     }
     $global:LASTEXITCODE = 0
     Write-Info ("Copied {0} -> {1}" -f $Source, $Destination)
@@ -461,14 +488,34 @@ if ($existingService) {
 }
 Stop-AgentProcesses
 
+# From here until the service is started again the device has no running agent. Whatever fails in between, it must
+# not stay that way (a self-update whose tray copy failed once left a device without its service until the next
+# reboot): the service is started again with whatever binaries are in place, and the installation still fails.
+$script:AgentDown = [bool]$existingService
+trap {
+    if ($script:AgentDown -and -not $NoStart -and (Get-ServiceOrNull -Name $ServiceName)) {
+        Write-Warning ("The installation failed: {0}" -f $_.Exception.Message)
+        try {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+            Write-Warning 'The service was started again with the binaries that are in place.'
+        } catch {
+            Write-Warning ("The service could not be started again: {0}" -f $_.Exception.Message)
+        }
+    }
+    if ($script:TranscriptStarted) { try { Stop-Transcript | Out-Null } catch { } }
+    break
+}
+
 # --------------------------------------------------------------------------------- copy
 
 Write-Step 'Copying binaries'
 if ($PSCmdlet.ShouldProcess($InstallDir, 'Copy payload')) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Copy-Payload -Source $serviceSource -Destination $serviceInstallDir
-    Copy-Payload -Source $traySource -Destination $trayInstallDir
-    if ($hasAdminPayload) { Copy-Payload -Source $adminSource -Destination $adminInstallDir }
+    # The service last: when the tray or admin files cannot be replaced, the service that is started again is still
+    # the release it was, which looks for the update again, instead of a new service that believes it is current.
+    Copy-Payload -Source $traySource -Destination $trayInstallDir -LockingProcesses @('Arkimentum.AppMonitor.Tray')
+    if ($hasAdminPayload) { Copy-Payload -Source $adminSource -Destination $adminInstallDir -LockingProcesses @('Arkimentum.AppMonitor.Admin') }
+    Copy-Payload -Source $serviceSource -Destination $serviceInstallDir -LockingProcesses @('Arkimentum.AppMonitor.Service')
 }
 
 Write-Step 'Admin console Start Menu shortcut (all users)'
@@ -709,6 +756,7 @@ if ($NoStart) {
             Start-Sleep -Milliseconds 500
         }
         $status = (Get-ServiceOrNull -Name $ServiceName).Status
+        $script:AgentDown = $false
         Write-Info "Service status: $status"
         if ($status -ne 'Running') {
             Write-Warning "The service did not reach Running. Check $LogDirectory and the Application event log (source '$EventLogSource')."

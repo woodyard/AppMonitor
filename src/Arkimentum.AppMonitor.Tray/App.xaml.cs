@@ -57,9 +57,20 @@ public partial class App : Application
 
         var settings = ReadRegistrySettings();
         _host = BuildHost(settings);
-        _host.Start();
-
         _log = _host.Services.GetRequiredService<ILogger<App>>();
+        try { _host.Start(); }
+        catch (Exception ex)
+        {
+            // Leave rather than linger: the dispatcher handler below would swallow this, and a process with no host, no
+            // icon and no pipe connection kept the service from starting a working agent in this session (it starts
+            // one only where no tray process runs). Exiting lets it start a fresh one within a couple of minutes.
+            _log.LogCritical(ex, "The tray agent could not start; exiting so the service can start it again");
+            _host.Dispose();
+            _host = null;
+            Shutdown(1);
+            return;
+        }
+
         _log.LogInformation(
             "{Product} tray agent {Version} started in session {Session} for {User} (show={Show}, minimized={Minimized}, debug={Debug}, toastActivated={Toast})",
             AgentSettings.ProductName, AppInfo.Version, AppInfo.SessionId, AppInfo.UserName,

@@ -73,13 +73,35 @@ public sealed class TrayIconService : IHostedService
         _dispatcher = dispatcher;
     }
 
+    /// <summary>The icon's identity in the notification area; Windows ties it to this executable's path.</summary>
+    private static readonly Guid IconId = new("2d6a4f1e-9c6b-4f2a-9a0f-2b5c5b4d9b01");
+
+    /// <summary>How soon the icon is tried again when the shell refuses it, at first and after two minutes of refusals.</summary>
+    private static readonly TimeSpan CreateRetryInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CreateSlowRetryInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan CreateFastRetryPeriod = TimeSpan.FromMinutes(2);
+
+    private DispatcherTimer? _createRetry;
+    private DateTimeOffset _firstCreateAttemptUtc;
+    private int _createAttempts;
+
+    /// <summary>
+    /// Never fails the start: a refused icon (Shell_NotifyIcon, "TryCreate failed") used to fail the whole host, and the
+    /// process stayed behind with no icon and no pipe connection; the service saw a tray process in the session and
+    /// never started another. DESKTOP-V1CDE3I, 2026-10-23 13:14, the tray started by the service after the self-update
+    /// to 1.1.53, three minutes after the user signed in. The icon is now tried again until the shell takes it, and the
+    /// agent works meanwhile (pipe, toasts, user-context installs).
+    /// </summary>
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        _dispatcher.Invoke(Create);
         _store.Changed += Refresh;
         _store.AgentUpdateAnswered += OnAgentUpdateAnswered;
-        // Refresh renders the badge and touches the icon, both of which belong to the UI thread.
-        _dispatcher.Invoke(Refresh);
+        // Creating the icon, rendering the badge and touching the icon all belong to the UI thread.
+        _dispatcher.Invoke(() =>
+        {
+            _firstCreateAttemptUtc = DateTimeOffset.UtcNow;
+            if (!TryCreate()) ScheduleCreateRetry(CreateRetryInterval);
+        });
         return Task.CompletedTask;
     }
 
@@ -89,12 +111,63 @@ public sealed class TrayIconService : IHostedService
         _store.AgentUpdateAnswered -= OnAgentUpdateAnswered;
         _dispatcher.Invoke(() =>
         {
+            _createRetry?.Stop();
+            _createRetry = null;
             _icon?.Dispose();
             _icon = null;
             _badgeIcon?.Dispose();
             _badgeIcon = null;
         });
         return Task.CompletedTask;
+    }
+
+    /// <summary>One attempt at the icon; on success it is brought up to date with the agent's state at once.</summary>
+    private bool TryCreate()
+    {
+        _createAttempts++;
+        // A tray agent that was killed (the self-update installer stops it with Stop-Process -Force) cannot remove its
+        // icon, and the shell refuses a second icon with the same GUID while that one is registered. Removing it first
+        // is harmless when there is none.
+        RemoveLeftoverIcon();
+        try
+        {
+            Create();
+            if (_createAttempts > 1)
+                _log.LogInformation("Tray icon created at attempt {Attempt}, {Seconds:F0} s after the first", _createAttempts,
+                    (DateTimeOffset.UtcNow - _firstCreateAttemptUtc).TotalSeconds);
+            Refresh();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _icon?.Dispose();
+            _icon = null;
+            // The first refusal with its stack, then one line per attempt so a long outage does not flood the log.
+            if (_createAttempts == 1) _log.LogWarning(ex, "The notification area refused the tray icon; trying again");
+            else _log.LogWarning("The notification area refused the tray icon again (attempt {Attempt}): {Message}", _createAttempts, ex.Message);
+            return false;
+        }
+    }
+
+    private void ScheduleCreateRetry(TimeSpan interval)
+    {
+        _createRetry ??= new DispatcherTimer(DispatcherPriority.Normal, _dispatcher);
+        _createRetry.Interval = interval;
+        _createRetry.Tick -= OnCreateRetry;
+        _createRetry.Tick += OnCreateRetry;
+        _createRetry.Start();
+    }
+
+    private void OnCreateRetry(object? sender, EventArgs e)
+    {
+        if (TryCreate())
+        {
+            _createRetry?.Stop();
+            return;
+        }
+        // Without the shell (Explorer restarting, or not running at all) every attempt fails; keep trying, less often.
+        if (DateTimeOffset.UtcNow - _firstCreateAttemptUtc >= CreateFastRetryPeriod && _createRetry?.Interval != CreateSlowRetryInterval)
+            ScheduleCreateRetry(CreateSlowRetryInterval);
     }
 
     private void Create()
@@ -106,7 +179,7 @@ public sealed class TrayIconService : IHostedService
 
         _icon = new TaskbarIcon
         {
-            Id = new Guid("2d6a4f1e-9c6b-4f2a-9a0f-2b5c5b4d9b01"),
+            Id = IconId,
             IconSource = _normal,
             ToolTipText = Strings.TrayTooltipDisconnected,
             NoLeftClickDelay = true,
@@ -354,6 +427,52 @@ public sealed class TrayIconService : IHostedService
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DestroyIcon(IntPtr handle);
+
+    /// <summary>Deletes an icon registered under <see cref="IconId"/> (one a killed agent left behind); nothing happens when there is none.</summary>
+    private void RemoveLeftoverIcon()
+    {
+        try
+        {
+            var data = new NotifyIconData
+            {
+                cbSize = Marshal.SizeOf<NotifyIconData>(),
+                uFlags = NifGuid,
+                guidItem = IconId,
+                szTip = string.Empty,
+                szInfo = string.Empty,
+                szInfoTitle = string.Empty,
+            };
+            if (Shell_NotifyIconW(NimDelete, ref data)) _log.LogInformation("Removed a tray icon left behind by an earlier agent");
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "Removing a leftover tray icon failed"); }
+    }
+
+    private const uint NimDelete = 0x2;
+    private const uint NifGuid = 0x20;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NotifyIconData
+    {
+        public int cbSize;
+        public IntPtr hWnd;
+        public uint uID;
+        public uint uFlags;
+        public uint uCallbackMessage;
+        public IntPtr hIcon;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+        public uint dwState;
+        public uint dwStateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+        public uint uVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+        public uint dwInfoFlags;
+        public Guid guidItem;
+        public IntPtr hBalloonIcon;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Shell_NotifyIconW(uint message, ref NotifyIconData data);
 
     private static Brush Freeze(Brush brush)
     {

@@ -4,6 +4,7 @@ using System.Text.Json;
 using Arkimentum.AppMonitor.Cloud;
 using Arkimentum.AppMonitor.Service;
 using Arkimentum.AppMonitor.Service.Cloud;
+using Arkimentum.AppMonitor.Service.Policy;
 using Arkimentum.AppMonitor.Service.Update;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -409,27 +410,84 @@ public class AgentUpdaterTests
 
     [Fact]
     public void A_client_may_ask_for_an_update_when_nothing_stands_in_the_way() =>
-        Assert.Null(UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, applicationInstallRunning: false, agentUpdateRunning: false));
+        Assert.Null(UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, runningInstall: null, agentUpdateRunning: false));
 
     [Fact]
     public void A_client_request_is_refused_when_the_administrator_turned_agent_updates_off() =>
         Assert.Equal("Agent updates are disabled by policy",
-            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: false, applicationInstallRunning: false, agentUpdateRunning: false));
+            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: false, runningInstall: null, agentUpdateRunning: false));
 
     [Fact]
-    public void A_client_request_is_refused_while_an_application_is_being_installed() =>
-        Assert.Equal("An application is being updated; try the agent update again when it has finished",
-            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, applicationInstallRunning: true, agentUpdateRunning: false));
+    public void A_client_request_is_refused_while_an_application_is_being_installed_and_names_it() =>
+        Assert.Equal("TeamViewer is being installed; try the agent update again when it has finished",
+            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, runningInstall: "TeamViewer", agentUpdateRunning: false));
 
     [Fact]
     public void A_client_request_is_refused_while_an_agent_update_is_already_running() =>
         Assert.Equal("An agent update is already running",
-            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, applicationInstallRunning: false, agentUpdateRunning: true));
+            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: true, autoUpdateEnabled: true, runningInstall: null, agentUpdateRunning: true));
 
     [Fact]
     public void A_client_request_is_refused_when_this_process_has_no_self_updater() =>
         Assert.Equal("Agent updates are not available in this mode",
-            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: false, autoUpdateEnabled: true, applicationInstallRunning: false, agentUpdateRunning: false));
+            UpdateCoordinator.RefuseAgentUpdate(updaterAvailable: false, autoUpdateEnabled: true, runningInstall: null, agentUpdateRunning: false));
+
+    // ------------------------------------------------------------------ installs that have begun (RunningInstallers)
+
+    // H-SURFACELAP5, 2026-10-30: PowerToys waited 4 min 41 s for another msiexec, and three agent updates were refused
+    // although nothing of ours ran. Waiting updates no longer count; they cannot begin while the agent is replaced.
+    [Fact]
+    public void Only_an_install_that_has_begun_stands_in_the_way_of_an_agent_update()
+    {
+        var installers = new RunningInstallers();
+        Assert.Null(installers.Running);
+
+        Assert.True(installers.TryBegin("powertoys|System", "PowerToys", () => null, out var refusal));
+        Assert.Null(refusal);
+        Assert.Equal("PowerToys", installers.Running);
+
+        installers.End("powertoys|System");
+        Assert.Null(installers.Running);
+        installers.End("powertoys|System"); // ending twice, or an install that never began, is harmless
+    }
+
+    [Fact]
+    public void An_install_does_not_begin_while_the_agent_is_being_replaced()
+    {
+        var installers = new RunningInstallers();
+
+        Assert.False(installers.TryBegin("git|System", "Git", () => "the agent update to 1.1.55 is being downloaded", out var refusal));
+        Assert.Equal("the agent update to 1.1.55 is being downloaded", refusal);
+        Assert.Null(installers.Running);
+    }
+
+    [Fact]
+    public async Task Of_an_install_and_an_agent_replacement_racing_each_other_exactly_one_goes_ahead()
+    {
+        // The updater announces the replacement, then asks Running; the install asks for a replacement and is added
+        // under one lock. Whatever the interleaving, they never both go ahead.
+        for (var i = 0; i < 2000; i++)
+        {
+            var installers = new RunningInstallers();
+            var announced = 0;
+            var start = new Barrier(2);
+            var installBegan = false;
+            var agentWentAhead = false;
+            var install = Task.Run(() =>
+            {
+                start.SignalAndWait();
+                installBegan = installers.TryBegin("k", "App", () => Volatile.Read(ref announced) == 1 ? "replacing" : null, out _);
+            });
+            var agent = Task.Run(() =>
+            {
+                start.SignalAndWait();
+                Volatile.Write(ref announced, 1);
+                agentWentAhead = installers.Running is null;
+            });
+            await Task.WhenAll(install, agent);
+            Assert.False(installBegan && agentWentAhead);
+        }
+    }
 
     [Fact]
     public void A_check_reports_an_available_update_without_promising_an_install()

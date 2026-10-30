@@ -56,6 +56,8 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     private readonly ConcurrentDictionary<string, byte> _systemHandOversRunning = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<ProcessesClosedMessage> Tcs, string ConnectionId)> _pendingCloses = new();
     private readonly HashSet<string> _installsInFlight = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The installs in flight that have got past their waits and begun; only these keep the agent from replacing itself.</summary>
+    private readonly RunningInstallers _runningInstallers = new();
     /// <summary>
     /// 1 when a blocked update gave up its turn to the installs queued with it (InstallAsync), or the tick held its
     /// close prompt back for them; the policy is then evaluated again the moment the last of those installs ends.
@@ -182,8 +184,12 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// <summary>Clones of every tracked update, including the ones already installed (the report needs their outcome).</summary>
     public IReadOnlyList<PendingUpdate> TrackedUpdates() => _state.Updates.Values.Select(u => u.Clone()).ToList();
 
-    /// <summary>True while an install of a monitored application is running (the agent must not replace itself then).</summary>
-    public bool InstallInProgress { get { lock (_installsInFlight) return _installsInFlight.Count > 0; } }
+    /// <summary>
+    /// The application whose install has begun (blocking applications closed, installer running, result being recorded),
+    /// or null. The agent must not replace itself then. Updates that only wait - for their install turn, for Windows
+    /// Installer - do not count; they cannot begin while the agent is being replaced (<see cref="RunningInstallers"/>).
+    /// </summary>
+    public string? RunningInstall => _runningInstallers.Running;
 
     /// <summary>The user of the most recently connected tray agent, else the interactive console session's user.</summary>
     public string? LastLogonUser
@@ -859,8 +865,15 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     {
         // However the attempt ends (finished, postponed, yielded, thrown), its progress is no longer shown.
         try { await InstallAtTurnAsync(snapshot, turnWait, ct).ConfigureAwait(false); }
-        finally { _progress.End(snapshot.PendingKey()); }
+        finally
+        {
+            _runningInstallers.End(snapshot.PendingKey());
+            _progress.End(snapshot.PendingKey());
+        }
     }
+
+    /// <summary>What the agent's own update is doing while it replaces the agent (download included), or null.</summary>
+    private string? AgentReplacementUnderway() => SelfUpdater?.ReplacementUnderway(DateTimeOffset.UtcNow);
 
     private async Task InstallAtTurnAsync(PendingUpdate snapshot, Task<IDisposable> turnWait, CancellationToken ct)
     {
@@ -874,6 +887,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         {
             var u = Get(key);
             if (u is null || u.State is UpdateState.Installing or UpdateState.Installed) return;
+            // The agent began replacing itself while this update was queued: it stays queued for the restarted service
+            // (the policy tick is held meanwhile, and resumes should the agent update fail).
+            if (AgentReplacementUnderway() is { } replacing)
+            {
+                _logger.LogInformation("{App}: not installing now, {Reason}; it stays queued", u.DisplayName, replacing);
+                return;
+            }
             var policy = settings.Apps.FirstOrDefault(a => a.AppId.Equals(u.AppId, StringComparison.OrdinalIgnoreCase));
             if (policy is null)
             {
@@ -911,6 +931,14 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                     _logger.LogInformation("{App}: deferred while it waited for Windows Installer; not installing it now", u.DisplayName);
                     return;
                 }
+            }
+
+            // The waits are over and the install begins: from here until its result is recorded the agent does not replace
+            // itself - unless it already began to, possibly during those waits, and then this update stays queued instead.
+            if (!_runningInstallers.TryBegin(key, u.DisplayName, AgentReplacementUnderway, out var replacement))
+            {
+                _logger.LogInformation("{App}: not installing now, {Reason}; it stays queued", u.DisplayName, replacement);
+                return;
             }
 
             // Its turn: re-check blocking processes right before the installer starts. For a machine-wide update this
@@ -1940,12 +1968,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     /// Why a client-initiated agent update is refused, or null when it may run. Pure, so the rules are testable and
     /// the tray and the admin console get exactly the same answer. The agent replaces its own binaries as SYSTEM, so
     /// an administrator who turned <c>AgentAutoUpdate</c> off (Intune or an RMM owns the binaries) must not be
-    /// overruled from a client, and nothing may run while an application install or another agent update is going on.
+    /// overruled from a client, and nothing may run while an application install (<see cref="RunningInstall"/>, named in
+    /// the answer) or another agent update is going on.
     /// </summary>
-    public static string? RefuseAgentUpdate(bool updaterAvailable, bool autoUpdateEnabled, bool applicationInstallRunning, bool agentUpdateRunning) =>
+    public static string? RefuseAgentUpdate(bool updaterAvailable, bool autoUpdateEnabled, string? runningInstall, bool agentUpdateRunning) =>
         !updaterAvailable ? "Agent updates are not available in this mode"
         : !autoUpdateEnabled ? "Agent updates are disabled by policy"
-        : applicationInstallRunning ? "An application is being updated; try the agent update again when it has finished"
+        : runningInstall is not null ? $"{runningInstall} is being installed; try the agent update again when it has finished"
         : agentUpdateRunning ? "An agent update is already running"
         : null;
 
@@ -1976,7 +2005,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     private async Task HandleAgentUpdateRequestAsync(PipeClientConnection conn, UpdateAgentMessage message, CancellationToken ct)
     {
         var updater = SelfUpdater;
-        var refusal = RefuseAgentUpdate(updater is not null, _settings.Current.AgentAutoUpdate, InstallInProgress,
+        var refusal = RefuseAgentUpdate(updater is not null, _settings.Current.AgentAutoUpdate, RunningInstall,
             _agentUpdateRequestRunning == 1 || updater?.Status.InProgress == true);
         _logger.LogInformation("{Client} asked the agent to {Kind}{Refusal}", conn,
             message.CheckOnly ? "check for a newer release" : "update itself",

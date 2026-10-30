@@ -64,9 +64,11 @@ zip. `.github/workflows/release.yml` writes it on every `v*` tag:
 1. **Check** - every `AgentUpdateCheckIntervalHours` (and on the `UpdateAgent` cloud command or the CLI switches), the
    manifest is resolved and the decision is logged: `UpToDate`, `ChannelMismatch`, `PinnedByTargetVersion`,
    `NoManifest` or `UpdateAvailable`.
-2. **Guard** - an update is postponed while an application install is running or queued (checked again right before
-   the installer is started), or while an earlier agent update started less than 30 minutes ago. A scheduled check that
-   was postponed by an install is tried again after 5 minutes instead of at the next interval.
+2. **Guard** - an update is postponed while an application install has begun (checked again right before the installer
+   is started), or while an earlier agent update started less than 30 minutes ago. An application update that is only
+   waiting - for its install turn, or for another installation (Intune, Windows Update) to release Windows Installer -
+   does not count: it cannot begin while the agent is replaced, stays queued and is installed by the new release. A
+   scheduled check that was postponed by an install is tried again after 5 minutes instead of at the next interval.
 3. **Download** - to `<StateDirectory>\AgentUpdates\<version>\` (`%ProgramData%\Arkimentum\AppMonitor\AgentUpdates`),
    then the SHA-256 is verified and the zip extracted into the same folder. The package must contain
    `Install-ArkimentumAppMonitor.ps1` and `Service\Arkimentum.AppMonitor.Service.exe`, or the update is abandoned.
@@ -110,7 +112,9 @@ what would have been executed.
   the next cloud sync tick (15 s).
 - Once a newer release is being downloaded, and until the installer has replaced the service (at most 30 minutes after
   it was started), no scan runs and no application install, close prompt or forced close starts. Scheduled installs
-  stay scheduled and run in the restarted service.
+  stay scheduled and run in the restarted service, and so does one that was already queued for its turn or waiting for
+  Windows Installer when the download began (*not installing now, the agent update to ... is being downloaded; it stays
+  queued*).
 - At service start the first scan, and every application install, close prompt and notification, waits for the first
   agent update check (it runs about 10 seconds after the start, right after the configuration poll; at most 10
   minutes). Installs matter as much as scans here: updates found before the device was switched off are still queued
@@ -153,7 +157,7 @@ The service refuses the request, with the reason in its acknowledgement, when:
 | Refused because | The client is told |
 | --- | --- |
 | `AgentAutoUpdate` is `0` | *Agent updates are disabled by policy* - Intune, an RMM or a GPO owns the binaries, and a user must not overrule that. |
-| An application update is installing | *An application is being updated; try the agent update again when it has finished.* |
+| An application update is installing (not merely waiting) | *TeamViewer is being installed; try the agent update again when it has finished.* |
 | An agent update is already running | *An agent update is already running.* |
 | The process has no self-updater (the CLI entry points) | *Agent updates are not available in this mode.* |
 

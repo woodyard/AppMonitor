@@ -368,10 +368,12 @@ public sealed class AgentUpdater : IAgentSelfUpdate
             if (outcome.Action != AgentUpdateAction.UpdateAvailable) return outcome;
             var manifest = outcome.Manifest!;
 
-            if (_coordinator.InstallInProgress)
+            // Only an install that has begun stands in the way; updates still waiting for their turn or for Windows
+            // Installer stay queued once the replacement is announced below, and are installed by the new release.
+            if (_coordinator.RunningInstall is { } installing)
             {
-                _logger.LogInformation("Agent update to {Version} postponed: an application install is in progress", manifest.Version);
-                return outcome with { Action = AgentUpdateAction.Blocked, Reason = "An application install is in progress; the agent update is postponed" };
+                _logger.LogInformation("Agent update to {Version} postponed: {App} is being installed", manifest.Version, installing);
+                return outcome with { Action = AgentUpdateAction.Blocked, Reason = $"{installing} is being installed; the agent update is postponed" };
             }
             if (File.Exists(MarkerPath) && ReadMarker() is { } pending && DateTimeOffset.UtcNow - pending.StartedUtc < MarkerTimeout)
                 return outcome with { Action = AgentUpdateAction.Blocked, Reason = $"An update to {pending.ToVersion} started {pending.StartedUtc:u} is still in progress" };
@@ -417,11 +419,13 @@ public sealed class AgentUpdater : IAgentSelfUpdate
                 return outcome with { Action = AgentUpdateAction.Failed, Reason = "Download or extraction failed: " + ex.Message };
             }
 
-            // Installs are held from the moment the download began, but one queued just before may have started since.
-            if (_coordinator.InstallInProgress)
+            // No install can begin since the replacement was announced (RunningInstallers.TryBegin asks for it), but one
+            // may have begun between the check above and the announcement. Asked after the announcement, so either this
+            // sees that install or the install sees the replacement.
+            if (_coordinator.RunningInstall is { } begun)
             {
-                _logger.LogInformation("Agent update to {Version} postponed: an application install started while the package was downloaded", manifest.Version);
-                return outcome with { Action = AgentUpdateAction.Blocked, Reason = "An application install is in progress; the agent update is postponed", PackageDirectory = directory };
+                _logger.LogInformation("Agent update to {Version} postponed: the install of {App} began while the package was downloaded", manifest.Version, begun);
+                return outcome with { Action = AgentUpdateAction.Blocked, Reason = $"{begun} is being installed; the agent update is postponed", PackageDirectory = directory };
             }
 
             WriteMarker(new AgentUpdateMarker

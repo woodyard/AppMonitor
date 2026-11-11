@@ -244,6 +244,7 @@ public static class PolicyEngine
                 existing.InstallVerified = false;
                 existing.InstallerBusyUntilUtc = null;
                 ClearMislabeled(existing);
+                ClearTechnologyMismatch(existing);
                 existing.NothingToInstall = false;
                 existing.RebootPending = false;
                 existing.AppRestartPending = false;
@@ -264,6 +265,7 @@ public static class PolicyEngine
                 // A busy Windows Installer or a mislabeled package held back the version it replaces; the new one is tried at once.
                 existing.InstallerBusyUntilUtc = null;
                 ClearMislabeled(existing);
+                ClearTechnologyMismatch(existing);
                 // A newer version superseded the one that failed: allow automatic retries again.
                 if (existing.State == UpdateState.Failed) { existing.State = UpdateState.Available; existing.FailureCount = 0; existing.LastError = null; }
             }
@@ -383,8 +385,10 @@ public static class PolicyEngine
         // - the install itself, a close prompt, a forced close - until the retry time. Notifications go on as usual, and a
         // mandatory update past its deadline keeps its deadline: it simply cannot install before Windows Installer is free.
         // The same for a winget package that was found mislabeled: the installer would only reinstall the installed version.
+        // And for a version winget refuses for its installer type while the take-over is off: until a newer version, the
+        // take-over or the user's own "Update", every attempt would be refused alike.
         return action.Kind is PolicyActionKind.Install or PolicyActionKind.ForceClose or PolicyActionKind.PromptClose
-               && (u.IsHeldForInstaller(now) || u.IsHeldAsMislabeled(now))
+               && (u.IsHeldForInstaller(now) || u.IsHeldAsMislabeled(now) || u.IsHeldAsTechnologyMismatch())
             ? PolicyAction.None
             : action;
     }
@@ -577,6 +581,8 @@ public static class PolicyEngine
         // and checks winget's package again.
         u.InstallerBusyUntilUtc = null;
         u.MislabeledUntilUtc = null;
+        // A version winget refused for its installer type is tried again when the user asks: it may simply be refused again.
+        ClearTechnologyMismatch(u);
     }
 
     /// <summary>
@@ -594,6 +600,7 @@ public static class PolicyEngine
         u.WaitingForInstallerSinceUtc = null;
         u.InstallerBusyUntilUtc = null;
         ClearMislabeled(u);
+        u.TechnologyMismatchVersion = null;
         if (expectedInstallSeconds is not null) u.ExpectedInstallSeconds = expectedInstallSeconds;
     }
 
@@ -635,6 +642,38 @@ public static class PolicyEngine
         u.AppRestartPending = result.AppRestartPending;
         u.InstallerBusyUntilUtc = null;
         ClearMislabeled(u);
+        u.TechnologyMismatchVersion = null;
+        ClearInstallProgress(u);
+    }
+
+    /// <summary>
+    /// A partial upgrade (<see cref="InstallResult.PartialUpgrade"/>): winget moved the product to
+    /// <see cref="InstallResult.InstalledVersion"/>, above the version before but below the target, because it has no
+    /// installer of the installed copy's type for the target (PowerShell 7.6.9 -> 7.6.10 MSI; 7.7.0 is MSIX only). The
+    /// reached version is installed - the caller records the history entry, event and toast for it - but the update for
+    /// the target is not done: it goes back to Available with the new installed version, with no post-install grace that
+    /// would hide the target (<see cref="PendingUpdate.InstalledAtUtc"/> stays unset) and no failure counted. The user's
+    /// request and any licence to close applications belonged to this attempt and end with it.
+    /// </summary>
+    public static void MarkPartiallyInstalled(PendingUpdate u, InstallResult result, DateTimeOffset now)
+    {
+        u.State = UpdateState.Available;
+        if (!string.IsNullOrWhiteSpace(result.InstalledVersion)) u.InstalledVersion = result.InstalledVersion;
+        u.InstalledAtUtc = null;
+        u.InstallVerified = false;
+        u.NothingToInstall = false;
+        u.RebootPending = false;
+        u.AppRestartPending = false;
+        u.LastError = null;
+        u.ForceCloseAtUtc = null;
+        u.ForceCloseRequestedUtc = null;
+        u.InstallRequested = false;
+        u.PrioritizedUtc = null;
+        u.BlockingProcesses = [];
+        u.BlockingDetails = [];
+        u.InstallerBusyUntilUtc = null;
+        ClearMislabeled(u);
+        u.TechnologyMismatchVersion = null;
         ClearInstallProgress(u);
     }
 
@@ -651,6 +690,7 @@ public static class PolicyEngine
         u.PrioritizedUtc = null;
         u.InstallerBusyUntilUtc = null; // the failure's own retry interval applies now
         ClearMislabeled(u);
+        u.TechnologyMismatchVersion = null;
         ClearInstallProgress(u);
     }
 
@@ -675,6 +715,36 @@ public static class PolicyEngine
     {
         u.MislabeledUntilUtc = null;
         u.MislabeledInstallerVersion = null;
+    }
+
+    /// <summary>
+    /// winget refused the update's version because its installer is of another type than the installed copy (0x8A15008E,
+    /// <see cref="InstallResult.TechnologyMismatch"/>) and the take-over is off. Nothing was installed. Not a failure: no
+    /// <see cref="PendingUpdate.FailureCount"/>, history entry, event or toast; the update goes back to Available with
+    /// <paramref name="message"/> as its reason (the tray's card shows it) and is held for that version (see
+    /// <see cref="PendingUpdate.IsHeldAsTechnologyMismatch"/> and <see cref="Decide"/>) - without a time limit, since every
+    /// attempt would be refused alike - until a newer version is offered (<see cref="Merge"/>), the take-over is switched on
+    /// for the application, or the user asks for the install (<see cref="RequestInstall"/>). The user's request and its
+    /// place in the queue end with this attempt: they would otherwise outlive a hold that may last weeks.
+    /// </summary>
+    public static void MarkTechnologyMismatch(PendingUpdate u, string message, DateTimeOffset now)
+    {
+        if (u.State is UpdateState.Installing or UpdateState.Scheduled) u.State = UpdateState.Available;
+        u.TechnologyMismatchVersion = u.AvailableVersion;
+        u.LastError = message;
+        u.InstallRequested = false;
+        u.PrioritizedUtc = null;
+        u.ForceCloseAtUtc = null;
+        u.ForceCloseRequestedUtc = null;
+        ClearInstallProgress(u);
+    }
+
+    /// <summary>Ends a technology-mismatch hold and its reason (see <see cref="MarkTechnologyMismatch"/>).</summary>
+    private static void ClearTechnologyMismatch(PendingUpdate u)
+    {
+        if (u.TechnologyMismatchVersion is null) return;
+        u.TechnologyMismatchVersion = null;
+        if (u.State != UpdateState.Failed) u.LastError = null;
     }
 
     /// <summary>

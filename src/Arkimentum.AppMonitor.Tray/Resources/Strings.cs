@@ -121,6 +121,13 @@ public static class Strings
     /// <summary>winget's package for <paramref name="version"/> runs the installer of the installed version; nothing was installed.</summary>
     public static string StateMislabeled(string version, string carried) =>
         $"winget's {version} package installs {carried}; waiting for a corrected package";
+    /// <summary>
+    /// winget refused <paramref name="version"/> because its installer is of another type than the installed copy, and the
+    /// take-over is off; nothing was installed and the service holds the update for that version.
+    /// </summary>
+    public static string StateTechnologyMismatch(string version) =>
+        $"winget offers {version} only with a different installer type than the installed copy; it cannot be upgraded in place. " +
+        "Turning on “Replace mismatched installs” for this app switches it.";
     public static string StateWaitingForClose(string processes) => $"Waiting for you to close: {processes}";
 
     /// <summary>

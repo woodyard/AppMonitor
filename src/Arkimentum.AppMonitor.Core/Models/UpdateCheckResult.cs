@@ -70,6 +70,46 @@ public sealed record InstallResult
     /// </summary>
     public bool InstallerBusy { get; init; }
 
+    /// <summary>
+    /// A success that did not reach the target: winget exited with success and the version read back afterwards
+    /// (<see cref="InstalledVersion"/>) is above the one installed before but below the update's available version. winget
+    /// installs the latest version that has an installer of the installed copy's type, so when a product changes its
+    /// installer technology (PowerShell 7.7.0 ships only as MSIX, devices have the MSI) the upgrade quietly stops at the last
+    /// release of the old type (7.6.10). That version is recorded as installed (history, event, toast), but the update for
+    /// the target stays pending - no post-install grace hides it, and nothing counts as a failure. See
+    /// <see cref="IsPartialUpgrade"/>. Added after 1.1.55; an IPC message without it means false.
+    /// </summary>
+    public bool PartialUpgrade { get; init; }
+
+    /// <summary>
+    /// A refusal that is no fault of the attempt: winget answered "the install technology is different from the current
+    /// version installed" (0x8A15008E) and no take-over ran (<c>WingetReplaceOnMismatch</c> is off). Nothing was installed,
+    /// and every further attempt would be refused the same way until a newer version, the take-over or the user changes
+    /// something, so the service holds the update (<c>PolicyEngine.MarkTechnologyMismatch</c>) instead of counting a
+    /// failure. Added after 1.1.55; an IPC message without it means false.
+    /// </summary>
+    public bool TechnologyMismatch { get; init; }
+
+    /// <summary>
+    /// The MSIX package family the service's take-over (<c>WingetReplaceOnMismatch</c>, as LocalSystem) just staged and
+    /// provisioned for all users, e.g. <c>Microsoft.PowerShell_8wekyb3d8bbwe</c>. Windows registers a provisioned package
+    /// for existing users only at their next sign-in, so the service asks the tray agents of the signed-in users to
+    /// register it right away. Null for every other install; never set by a user-context install.
+    /// </summary>
+    public string? ProvisionedPackageFamilyName { get; init; }
+
+    /// <summary>
+    /// Whether <paramref name="reached"/> is a partial upgrade from <paramref name="before"/> towards
+    /// <paramref name="target"/> (see <see cref="PartialUpgrade"/>): all three versions known, and
+    /// before &lt; reached &lt; target. Pure, so the rule is testable.
+    /// </summary>
+    public static bool IsPartialUpgrade(string? before, string? reached, string? target) =>
+        Known(before) && Known(reached) && Known(target)
+        && Versioning.VersionComparer.Compare(reached, before) > 0
+        && Versioning.VersionComparer.Compare(reached, target) < 0;
+
+    private static bool Known(string? version) => !string.IsNullOrWhiteSpace(version) && !Versioning.VersionComparer.IsUnknown(version);
+
     public static InstallResult Ok(string? message = null, int exitCode = 0, bool reboot = false) =>
         new() { Success = true, ExitCode = exitCode, Message = message, RebootRequired = reboot };
 

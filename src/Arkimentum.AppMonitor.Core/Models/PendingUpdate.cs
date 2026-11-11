@@ -130,6 +130,17 @@ public sealed class PendingUpdate
     public string? MislabeledInstallerVersion { get; set; }
 
     /// <summary>
+    /// The <see cref="AvailableVersion"/> winget refused to install over the installed copy because its installer is of
+    /// another type ("the install technology is different", 0x8A15008E; see <see cref="InstallResult.TechnologyMismatch"/>),
+    /// while the take-over (<see cref="WingetReplaceOnMismatch"/>) was off. PowerShell 7.7.0 (November 2026) ships only as
+    /// MSIX; devices have the MSI. No automatic install, close prompt or forced close for that version while this holds
+    /// (see <see cref="IsHeldAsTechnologyMismatch"/>); no time limit, since every attempt would be refused the same way. A
+    /// newer version, the take-over being switched on, or the user's own "Update" ends it. Not a failure:
+    /// <see cref="FailureCount"/> is untouched. Added after 1.1.55; a state file or an IPC message without it means no hold.
+    /// </summary>
+    public string? TechnologyMismatchVersion { get; set; }
+
+    /// <summary>
     /// Set while this update holds the install turn and waits for another installation to release Windows Installer,
     /// before anything is closed or started; the tray's card says so. Cleared when the wait ends. Not meaningful in a
     /// state file read back after a restart. Added after 1.1.48; an older service leaves it null.
@@ -203,6 +214,15 @@ public sealed class PendingUpdate
 
     /// <summary>True while an automatic attempt waits for winget's package to be corrected (see <see cref="MislabeledUntilUtc"/>).</summary>
     public bool IsHeldAsMislabeled(DateTimeOffset now) => MislabeledUntilUtc is { } u && now < u;
+
+    /// <summary>
+    /// True while winget's refusal of <see cref="AvailableVersion"/> for its installer type holds the update (see
+    /// <see cref="TechnologyMismatchVersion"/>): the refused version is still the one offered and the take-over is off.
+    /// </summary>
+    public bool IsHeldAsTechnologyMismatch() =>
+        TechnologyMismatchVersion is { } refused && !WingetReplaceOnMismatch
+        && !string.IsNullOrWhiteSpace(AvailableVersion)
+        && Versioning.VersionComparer.Compare(refused, AvailableVersion) == 0;
 
     public bool IsActive => State is not (UpdateState.Installed);
 

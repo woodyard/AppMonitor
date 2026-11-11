@@ -139,6 +139,9 @@ public sealed class UpdateViewModel : ObservableObject
                 // winget's package would only reinstall the installed version; the service checks it again at each turn.
                 UpdateState.Available when _update.MislabeledInstallerVersion is { } carried
                     => Strings.StateMislabeled(_update.AvailableVersion ?? string.Empty, carried),
+                // winget refuses the version for its installer type and the take-over is off: held until something changes.
+                UpdateState.Available when _update.IsHeldAsTechnologyMismatch()
+                    => Strings.StateTechnologyMismatch(_update.AvailableVersion ?? string.Empty),
                 UpdateState.Available => Strings.StateAvailable,
                 UpdateState.Deferred => Strings.StateDeferred(
                     _update.DeferredUntilUtc is { } until ? TimeFormat.Absolute(until) : Strings.DetailsNone),

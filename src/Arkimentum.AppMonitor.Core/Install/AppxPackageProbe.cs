@@ -11,10 +11,17 @@ namespace Arkimentum.AppMonitor.Install;
 public sealed record AppxPackageUser(string Sid, string InstallState);
 
 /// <summary>One MSIX package of the family present on the machine (<c>Get-AppxPackage -AllUsers</c>).</summary>
-public sealed record AppxPackageRegistration(string FullName, string Version, string Architecture, IReadOnlyList<AppxPackageUser> Users);
+/// <param name="PackageFamilyName">The package's family (null in output of an older probe script).</param>
+public sealed record AppxPackageRegistration(string FullName, string Version, string Architecture, IReadOnlyList<AppxPackageUser> Users,
+    string? PackageFamilyName = null);
 
 /// <summary>One provisioned package (<c>Get-AppxProvisionedPackage -Online</c>): installed for every new user at sign-in.</summary>
-public sealed record AppxProvisionedPackage(string DisplayName, string Version);
+/// <param name="PackageName">The provisioned package's full name (<c>Name_Version_Arch_ResourceId_PublisherId</c>), when known.</param>
+public sealed record AppxProvisionedPackage(string DisplayName, string Version, string? PackageName = null)
+{
+    /// <summary>The family of <see cref="PackageName"/> (see <see cref="AppxPackageProbe.FamilyFromFullName"/>), or null.</summary>
+    public string? PackageFamilyName => AppxPackageProbe.FamilyFromFullName(PackageName);
+}
 
 /// <summary>
 /// What <see cref="AppxPackageProbe"/> found for one package family: the packages on the machine with their users, the
@@ -78,7 +85,7 @@ public static partial class AppxPackageProbe
     private static partial Regex WhitespaceRegex();
 
     /// <summary>Whether <paramref name="packageFamilyName"/> is a well-formed package family name (see <see cref="PackageFamilyNameRegex"/>).</summary>
-    public static bool IsValidPackageFamilyName(string? packageFamilyName) =>
+    public static bool IsValidPackageFamilyName([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? packageFamilyName) =>
         !string.IsNullOrEmpty(packageFamilyName) && PackageFamilyNameRegex().IsMatch(packageFamilyName);
 
     /// <summary>
@@ -92,17 +99,58 @@ public static partial class AppxPackageProbe
         if (!IsValidPackageFamilyName(packageFamilyName))
             throw new ArgumentException($"'{packageFamilyName}' is not a valid package family name.", nameof(packageFamilyName));
         var name = packageFamilyName[..packageFamilyName.LastIndexOf('_')];
-        return "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " +
-               $"$pfn='{packageFamilyName}'; $name='{name}'; " +
-               "$r=[ordered]@{packages=@(); provisioned=@(); errors=@()}; " +
-               "try { $r.packages=@(Get-AppxPackage -AllUsers | Where-Object { $_.PackageFamilyName -eq $pfn } | ForEach-Object { $p=$_; " +
-               "[ordered]@{fullName=[string]$p.PackageFullName; version=[string]$p.Version; architecture=[string]$p.Architecture; " +
-               "users=@($p.PackageUserInformation | ForEach-Object { $s=$_.UserSecurityId; if ($s.Sid) { $s=$s.Sid }; ([string]$s)+'='+([string]$_.InstallState) })} }) } " +
-               "catch { $r.errors+=('Get-AppxPackage: '+$_.Exception.Message) }; " +
-               "try { $r.provisioned=@(Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -eq $name } | ForEach-Object { " +
-               "[ordered]@{displayName=[string]$_.DisplayName; version=[string]$_.Version} }) } " +
-               "catch { $r.errors+=('Get-AppxProvisionedPackage: '+$_.Exception.Message) }; " +
-               "$r | ConvertTo-Json -Depth 5 -Compress";
+        return Script($"$pfn='{packageFamilyName}'; $name='{name}'; ", "$_.PackageFamilyName -eq $pfn");
+    }
+
+    /// <summary>
+    /// The script for every package whose package name (the family name without the publisher id) is
+    /// <paramref name="packageName"/>, whatever its publisher: for the take-over's check after it provisioned an MSIX
+    /// package whose family winget did not name (<c>winget show</c> prints none). Same output as <see cref="BuildScript"/>,
+    /// each package with its family. Throws for a name that is not valid (see <see cref="IsValidPackageName"/>).
+    /// </summary>
+    public static string BuildScriptForName(string packageName)
+    {
+        if (!IsValidPackageName(packageName))
+            throw new ArgumentException($"'{packageName}' is not a valid package name.", nameof(packageName));
+        return Script($"$name='{packageName}'; ", "$_.Name -eq $name");
+    }
+
+    private static string Script(string variables, string packageFilter) =>
+        "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " +
+        variables +
+        "$r=[ordered]@{packages=@(); provisioned=@(); errors=@()}; " +
+        $"try {{ $r.packages=@(Get-AppxPackage -AllUsers | Where-Object {{ {packageFilter} }} | ForEach-Object {{ $p=$_; " +
+        "[ordered]@{fullName=[string]$p.PackageFullName; version=[string]$p.Version; architecture=[string]$p.Architecture; family=[string]$p.PackageFamilyName; " +
+        "users=@($p.PackageUserInformation | ForEach-Object { $s=$_.UserSecurityId; if ($s.Sid) { $s=$s.Sid }; ([string]$s)+'='+([string]$_.InstallState) })} }) } " +
+        "catch { $r.errors+=('Get-AppxPackage: '+$_.Exception.Message) }; " +
+        "try { $r.provisioned=@(Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -eq $name } | ForEach-Object { " +
+        "[ordered]@{displayName=[string]$_.DisplayName; version=[string]$_.Version; packageName=[string]$_.PackageName} }) } " +
+        "catch { $r.errors+=('Get-AppxProvisionedPackage: '+$_.Exception.Message) }; " +
+        "$r | ConvertTo-Json -Depth 5 -Compress";
+
+    /// <summary>
+    /// An MSIX package name: 3 to 50 letters, digits, dots and dashes (the AppxManifest's <c>Identity Name</c> rule).
+    /// Strict, because the value is put into a PowerShell command line.
+    /// </summary>
+    [GeneratedRegex(@"^[A-Za-z0-9.\-]{3,50}$", RegexOptions.CultureInvariant)]
+    private static partial Regex PackageNameRegex();
+
+    /// <summary>Whether <paramref name="packageName"/> is a well-formed MSIX package name (see <see cref="PackageNameRegex"/>).</summary>
+    public static bool IsValidPackageName([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? packageName) =>
+        !string.IsNullOrEmpty(packageName) && PackageNameRegex().IsMatch(packageName);
+
+    /// <summary>
+    /// The package family of a package full name (<c>Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe</c> ->
+    /// <c>Microsoft.PowerShell_8wekyb3d8bbwe</c>): the name and the publisher id, the first and the last of its five
+    /// <c>_</c>-separated parts. Null for anything that does not yield a valid family. Pure.
+    /// </summary>
+    public static string? FamilyFromFullName(string? fullName)
+    {
+        if (string.IsNullOrWhiteSpace(fullName)) return null;
+        var parts = fullName.Trim().Split('_');
+        if (parts.Length != 5) return null;
+        var family = $"{parts[0]}_{parts[4]}";
+        return IsValidPackageFamilyName(family) ? family : null;
     }
 
     /// <summary>
@@ -125,11 +173,12 @@ public static partial class AppxPackageProbe
                 .Where(p => p.ValueKind == JsonValueKind.Object)
                 .Select(p => new AppxPackageRegistration(
                     Text(p, "fullName"), Text(p, "version"), Text(p, "architecture"),
-                    Items(p, "users").Select(u => ParseUser(TextOf(u))).Where(u => u is not null).Select(u => u!).ToList()))
+                    Items(p, "users").Select(u => ParseUser(TextOf(u))).Where(u => u is not null).Select(u => u!).ToList(),
+                    NullIfEmpty(Text(p, "family"))))
                 .ToList();
             var provisioned = Items(root, "provisioned")
                 .Where(p => p.ValueKind == JsonValueKind.Object)
-                .Select(p => new AppxProvisionedPackage(Text(p, "displayName"), Text(p, "version")))
+                .Select(p => new AppxProvisionedPackage(Text(p, "displayName"), Text(p, "version"), NullIfEmpty(Text(p, "packageName"))))
                 .ToList();
             // Cmdlet messages come with line breaks ("Access is denied.\r\n\r\nAccess is denied.\r\n"); one line each.
             var errors = Items(root, "errors").Select(e => WhitespaceRegex().Replace(TextOf(e), " ").Trim()).Where(e => e.Length > 0).ToList();
@@ -149,10 +198,27 @@ public static partial class AppxPackageProbe
         Func<string, string, TimeSpan, CancellationToken, Task<ProcessRunResult>>? runner = null)
     {
         if (!IsValidPackageFamilyName(packageFamilyName)) return AppxProbeResult.Failed($"'{packageFamilyName}' is not a valid package family name");
+        return await RunScriptAsync(logger, BuildScript(packageFamilyName), packageFamilyName, ct, runner).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the probe for every package named <paramref name="packageName"/> (see <see cref="BuildScriptForName"/>), the
+    /// way <see cref="RunAsync"/> does for a family. <paramref name="runner"/> replaces the process in tests.
+    /// </summary>
+    public static async Task<AppxProbeResult> RunForNameAsync(ILogger logger, string packageName, CancellationToken ct,
+        Func<string, string, TimeSpan, CancellationToken, Task<ProcessRunResult>>? runner = null)
+    {
+        if (!IsValidPackageName(packageName)) return AppxProbeResult.Failed($"'{packageName}' is not a valid package name");
+        return await RunScriptAsync(logger, BuildScriptForName(packageName), packageName, ct, runner).ConfigureAwait(false);
+    }
+
+    private static async Task<AppxProbeResult> RunScriptAsync(ILogger logger, string script, string subject, CancellationToken ct,
+        Func<string, string, TimeSpan, CancellationToken, Task<ProcessRunResult>>? runner)
+    {
         try
         {
             var powershell = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
-            var arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{BuildScript(packageFamilyName)}\"";
+            var arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{script}\"";
             var run = runner is not null
                 ? await runner(powershell, arguments, Timeout, ct).ConfigureAwait(false)
                 : await ProcessRunner.RunAsync(logger, powershell, arguments, Timeout, ct: ct).ConfigureAwait(false);
@@ -166,10 +232,12 @@ public static partial class AppxPackageProbe
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "The Appx package probe for {Family} failed.", packageFamilyName);
+            logger.LogDebug(ex, "The Appx package probe for {Family} failed.", subject);
             return AppxProbeResult.Failed($"{ex.GetType().Name}: {ex.Message}");
         }
     }
+
+    private static string? NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static string? LastJsonLine(string? output) =>
         string.IsNullOrWhiteSpace(output)

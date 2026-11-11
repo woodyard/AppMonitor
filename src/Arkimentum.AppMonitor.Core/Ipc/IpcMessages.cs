@@ -34,6 +34,7 @@ namespace Arkimentum.AppMonitor.Ipc;
 [JsonDerivedType(typeof(CloseProcessesMessage), "closeProcesses")]
 [JsonDerivedType(typeof(AckMessage), "ack")]
 [JsonDerivedType(typeof(SystemInstallResultMessage), "systemInstallResult")]
+[JsonDerivedType(typeof(RegisterPackageMessage), "registerPackage")]
 public abstract class IpcMessage
 {
     public string MessageId { get; set; } = Guid.NewGuid().ToString("N");
@@ -384,6 +385,26 @@ public sealed class SystemInstallResultMessage : IpcMessage
     public int ExitCode { get; set; }
     /// <summary>The highest package version of the family on the machine after the install (any user, or provisioned); null when unknown.</summary>
     public string? MachinePackageVersion { get; set; }
+}
+
+/// <summary>
+/// Ask the tray agent to register an MSIX package family for its own user right away (added after 1.1.55). Sent after the
+/// service's take-over (<c>WingetReplaceOnMismatch</c>, as LocalSystem) replaced a classic install with an MSIX package it
+/// staged and provisioned for all users (PowerShell 7.7: MSI to MSIX): Windows registers a provisioned package for existing
+/// users only at their next sign-in, so the application would be missing for a signed-in user until then. Only ever for
+/// the family that take-over just provisioned, so a package a user removed is never registered again behind their back.
+/// The agent registers it unelevated (<c>PackageManager.RegisterPackageByFamilyNameAsync</c>, as <c>Add-AppxPackage
+/// -RegisterByFamilyName</c>) unless it is registered already; a failure is only logged. An older tray does not know the
+/// discriminator and ignores the line; the user then gets the package at the next sign-in.
+/// </summary>
+public sealed class RegisterPackageMessage : IpcMessage
+{
+    /// <summary>The package family, e.g. <c>Microsoft.PowerShell_8wekyb3d8bbwe</c>; the agent refuses anything that is not a well-formed family name.</summary>
+    public string PackageFamilyName { get; set; } = string.Empty;
+    public string? AppId { get; set; }
+    public string? DisplayName { get; set; }
+    /// <summary>The package version the take-over verified on the device, for the log.</summary>
+    public string? Version { get; set; }
 }
 
 public static class IpcJson

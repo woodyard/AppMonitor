@@ -102,9 +102,9 @@
     "downloadUrl": "https://github.com/PowerShell/PowerShell/releases/download/v{version}/PowerShell-{version}-win-x64.msi",
     "installerArgs": "",
     "installerType": "msi",
-    "detectDisplayNameRegex": "^PowerShell 7(?!.*preview)",
+    "detectDisplayNameRegex": "^PowerShell(?: 7(?!.*preview)|$)",
     "processNames": [ "pwsh" ],
-    "notes": "Verified 2026-09-14: tag_name v7.6.6, MSI URL returns 200."
+    "notes": "Verified 2026-09-14: tag_name v7.6.6, MSI URL returns 200. From 7.7.0 (2026-11-10) PowerShell ships only as MSIX (winget Microsoft.PowerShell, family Microsoft.PowerShell_8wekyb3d8bbwe, display name PowerShell); the regex matches both the MSI (PowerShell 7-x64) and the MSIX, never PowerShell 7-preview or Windows PowerShell. Moving MSI devices to the MSIX needs WingetReplaceOnMismatch."
   },
   {
     "appId": "git",

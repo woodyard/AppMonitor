@@ -100,6 +100,9 @@ public sealed class UserContextExecutor : IHostedService
             case RunUserPackageListMessage list:
                 _ = RunPackageListAsync(list);
                 break;
+            case RegisterPackageMessage register:
+                _ = Task.Run(() => RegisterPackageAsync(register));
+                break;
             case SystemInstallResultMessage result:
                 if (result.InReplyTo is not null && _pendingHandOvers.TryGetValue(result.InReplyTo, out var answered))
                 {
@@ -133,6 +136,54 @@ public sealed class UserContextExecutor : IHostedService
         {
             wait.Accepted.TrySetResult(false);
             wait.Result.TrySetResult(null);
+        }
+    }
+
+    // ---------------------------------------------------------------- package registration
+
+    /// <summary>
+    /// Registers an MSIX package family the service has just provisioned for all users (its take-over replaced a classic
+    /// install, see <see cref="RegisterPackageMessage"/>) for this agent's user right away, unelevated - what
+    /// <c>Add-AppxPackage -RegisterByFamilyName -MainPackage</c> does. Windows would only do it at the next sign-in, and
+    /// until then the application is missing for the signed-in user. Nothing happens when the family is registered for the
+    /// user already. Never throws; a failure is a warning in the agent's log and the next sign-in registers it anyway.
+    /// </summary>
+    private async Task RegisterPackageAsync(RegisterPackageMessage message)
+    {
+        var family = message.PackageFamilyName?.Trim();
+        var name = string.IsNullOrWhiteSpace(message.DisplayName) ? message.AppId ?? family : message.DisplayName;
+        if (!AppxPackageProbe.IsValidPackageFamilyName(family))
+        {
+            _log.LogWarning("Not registering the package family '{Family}' for {App}: not a valid package family name", message.PackageFamilyName, name);
+            return;
+        }
+        try
+        {
+            var manager = new Windows.Management.Deployment.PackageManager();
+            var registered = manager.FindPackagesForUser(string.Empty, family).Select(p => p.Id.FullName).ToList();
+            if (registered.Count > 0)
+            {
+                _log.LogInformation("{App}: the MSIX package {Family} is registered for this user already ({Packages}); nothing to do", name, family, string.Join(", ", registered));
+                return;
+            }
+            _log.LogInformation("{App}: registering the MSIX package {Family} {Version}, which the service provisioned for all users, for this user", name, family, message.Version ?? string.Empty);
+            var result = await manager.RegisterPackageByFamilyNameAsync(family, null, Windows.Management.Deployment.DeploymentOptions.None, null, null)
+                .AsTask(_cts.Token).ConfigureAwait(false);
+            if (result.IsRegistered || result.ExtendedErrorCode is null)
+            {
+                var now = manager.FindPackagesForUser(string.Empty, family).Select(p => p.Id.FullName).ToList();
+                _log.LogInformation("{App}: the MSIX package {Family} is registered for this user ({Packages})", name, family, now.Count == 0 ? "not listed yet" : string.Join(", ", now));
+            }
+            else
+            {
+                _log.LogWarning("{App}: registering the MSIX package {Family} for this user failed (0x{Code:X8}): {Error}; it is registered at the next sign-in",
+                    name, family, result.ExtendedErrorCode.HResult, result.ErrorText);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "{App}: registering the MSIX package {Family} for this user failed; it is registered at the next sign-in", name, family);
         }
     }
 

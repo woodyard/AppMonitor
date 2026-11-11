@@ -624,6 +624,13 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 lock (_installsInFlight) { if (_installsInFlight.Contains(u.Key)) continue; }
                 if (PolicyEngine.ClearStaleForceClose(u)) changed = true;
                 var policy = settings.Apps.FirstOrDefault(a => a.AppId.Equals(u.AppId, StringComparison.OrdinalIgnoreCase));
+                // The take-over setting decides whether a technology-mismatch hold applies (PendingUpdate.IsHeldAsTechnologyMismatch):
+                // switched on in the configuration, the next turn runs the take-over, without waiting for a scan to copy it over.
+                if (policy is not null && u.WingetReplaceOnMismatch != policy.WingetReplaceOnMismatch)
+                {
+                    u.WingetReplaceOnMismatch = policy.WingetReplaceOnMismatch;
+                    changed = true;
+                }
                 var interval = PolicyEngine.NotificationIntervalFor(u, policy, settings);
                 var mode = PolicyEngine.NotificationModeFor(policy, settings);
 
@@ -1040,9 +1047,14 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
         finally { turn.Dispose(); }
 
+        // A partial upgrade (above the version before, below the target) is a success for the version it reached; the update
+        // for the target stays pending. Only when the versions bear the provider's word out.
+        var partial = result.Success && result.PartialUpgrade
+                      && InstallResult.IsPartialUpgrade(snapshot.InstalledVersion, result.InstalledVersion, snapshot.AvailableVersion);
+
         // Defence in depth: never record "installed" when the provider itself tells us the version did not move - unless
         // it says why the old version is still registered: a reboot, or an application restart (a running MSIX package).
-        if (result.Success && !string.IsNullOrWhiteSpace(result.InstalledVersion) && !string.IsNullOrWhiteSpace(snapshot.AvailableVersion)
+        if (result.Success && !partial && !string.IsNullOrWhiteSpace(result.InstalledVersion) && !string.IsNullOrWhiteSpace(snapshot.AvailableVersion)
             && !Versioning.VersionComparer.IsUnknown(result.InstalledVersion)
             && Versioning.VersionComparer.Compare(result.InstalledVersion, snapshot.AvailableVersion) < 0 && !result.RebootRequired && !result.AppRestartPending)
         {
@@ -1062,6 +1074,32 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 snapshot.DisplayName, took is { } refusedAfter ? $" (after {InstallHistory.FormatDuration(refusedAfter)})" : "",
                 (int)PolicyEngine.InstallerBusyRetryDelay.TotalMinutes, result.Message);
             await MutateAsync(key, x => PolicyEngine.MarkInstallerBusy(x, doneAt), ct).ConfigureAwait(false);
+            return;
+        }
+        if (!result.Success && result.TechnologyMismatch)
+        {
+            // winget refused the version for its installer type and the take-over is off: nothing was installed, and every
+            // further attempt would be refused alike. Held for that version, not a failure: no failure count, history entry,
+            // cloud event or toast; the reason is the update's LastError for the tray's card and the device report.
+            _logger.LogWarning("{App}: winget refused {Version} because its installer type differs from the installed copy's; held until a newer version, the take-over (WingetReplaceOnMismatch) or an explicit install (not counted as a failure): {Message}",
+                snapshot.DisplayName, snapshot.AvailableVersion, result.Message);
+            var reason = result.Message ?? $"winget refused {snapshot.AvailableVersion} because its installer type differs from the installed copy's.";
+            await MutateAsync(key, x => PolicyEngine.MarkTechnologyMismatch(x, reason, doneAt), ct).ConfigureAwait(false);
+            return;
+        }
+        if (partial)
+        {
+            // The version winget reached is installed: history entry, cloud event and "installed" toast say so ("7.6.9.0 ->
+            // 7.6.10.0"). The update for the target stays pending, with no post-install grace (PolicyEngine.MarkPartiallyInstalled).
+            var reached = result.InstalledVersion!;
+            // The backfill (InstallHistory.ParseServiceLog) reads the version from this line up to the first space or colon.
+            _logger.LogInformation("Installed {App} {Version}{Took}: {Message}", snapshot.DisplayName, reached, tookText, result.Message ?? "ok");
+            var entry = await FinishAsync(key, snapshot, x => PolicyEngine.MarkPartiallyInstalled(x, result, doneAt), x => InstallHistory.Succeeded(x, result, doneAt), ct).ConfigureAwait(false);
+            RecordEvent(ReportedEventKind.InstallSucceeded, snapshot.AppId,
+                InstallSucceededEventText(snapshot.DisplayName, result, took, snapshot.AvailableVersion), entry.FromVersion, reached);
+            if (settings.NotificationsEnabled && settings.ShowInstalledNotifications && Get(key) is { } done)
+                await SendNotificationAsync(done, NotificationKind.Installed, ct, InstalledNotificationNote(done, result)).ConfigureAwait(false);
+            RaiseInstallCompleted(Get(key) ?? snapshot, true);
             return;
         }
         if (result.Success && result.NothingInstalled)
@@ -1086,6 +1124,9 @@ public sealed class UpdateCoordinator : IAsyncDisposable
                 InstallSucceededEventText(snapshot.DisplayName, result, took, snapshot.AvailableVersion), entry.FromVersion, installedVersion);
             if (settings.NotificationsEnabled && settings.ShowInstalledNotifications && Get(key) is { } done)
                 await SendNotificationAsync(done, NotificationKind.Installed, ct, InstalledNotificationNote(done, result)).ConfigureAwait(false);
+            // The take-over provisioned an MSIX package for all users: the signed-in users get it now, not at their next sign-in.
+            if (snapshot.Context == InstallContext.System && result.ProvisionedPackageFamilyName is { } family)
+                await RequestPackageRegistrationAsync(snapshot, family, installedVersion, ct).ConfigureAwait(false);
         }
         else
         {
@@ -1104,6 +1145,33 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         }
 
         RaiseInstallCompleted(Get(key) ?? snapshot, result.Success);
+    }
+
+    /// <summary>
+    /// Asks the tray agent of every signed-in user to register <paramref name="family"/> for its user
+    /// (<see cref="RegisterPackageMessage"/>), after the take-over provisioned that MSIX package for all users as LocalSystem:
+    /// Windows registers a provisioned package for existing users only at their next sign-in. Only the family this take-over
+    /// just provisioned; a user without a running tray agent gets it at the next sign-in anyway. Best effort, logged.
+    /// </summary>
+    private async Task RequestPackageRegistrationAsync(PendingUpdate u, string family, string? version, CancellationToken ct)
+    {
+        if (!AppxPackageProbe.IsValidPackageFamilyName(family))
+        {
+            _logger.LogWarning("{App}: not asking the tray agents to register '{Family}': not a valid package family name", u.DisplayName, family);
+            return;
+        }
+        var trays = _pipe.Clients.Where(c => c.IsTray).ToList();
+        if (trays.Count == 0)
+        {
+            _logger.LogInformation("{App}: the MSIX package {Family} was provisioned for all users; no tray agent is connected, so users get it at their next sign-in", u.DisplayName, family);
+            return;
+        }
+        foreach (var client in trays)
+        {
+            var sent = await _pipe.SendAsync(client, new RegisterPackageMessage { PackageFamilyName = family, AppId = u.AppId, DisplayName = u.DisplayName, Version = version }, ct).ConfigureAwait(false);
+            if (sent) _logger.LogInformation("{App}: asked {Client} to register the provisioned MSIX package {Family} {Version} for its user", u.DisplayName, client, family, version ?? string.Empty);
+            else _logger.LogWarning("{App}: could not ask {Client} to register the MSIX package {Family}; its user gets it at the next sign-in", u.DisplayName, client, family);
+        }
     }
 
     /// <summary>
@@ -1672,6 +1740,9 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         // The provider's message only repeats this, and the version it read back is the old one, still registered.
         if (result.AppRestartPending)
             return $"{displayName}{(string.IsNullOrWhiteSpace(targetVersion) ? "" : " " + targetVersion)} installed{took}; finishes when {displayName} is next started";
+        // A partial upgrade: the version reached, and that the target is still to come.
+        if (result.PartialUpgrade && !string.IsNullOrWhiteSpace(result.InstalledVersion))
+            return $"{displayName} {result.InstalledVersion} installed{took}{(string.IsNullOrWhiteSpace(targetVersion) ? "" : $"; {targetVersion} still pending")}: {result.Message?.Trim()}".TrimEnd(' ', ':');
         var text = $"{displayName} installed{took}{(result.RebootRequired ? " (reboot required)" : "")}";
         var detail = result.Message?.Trim();
         return string.IsNullOrEmpty(detail) || detail.StartsWith("Installed successfully", StringComparison.OrdinalIgnoreCase)
@@ -1686,6 +1757,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
     public static string? InstalledNotificationNote(PendingUpdate u, InstallResult result) =>
         result.RebootRequired ? "A restart is required to finish the update."
         : result.AppRestartPending ? $"Restart {(string.IsNullOrWhiteSpace(u.DisplayName) ? u.AppId : u.DisplayName)} to finish the update."
+        : result.PartialUpgrade && !string.IsNullOrWhiteSpace(u.AvailableVersion) ? $"{u.AvailableVersion} is not available with this install's installer type yet; it stays pending."
         : null;
 
     private StateMessage BuildState(PipeClientConnection conn)

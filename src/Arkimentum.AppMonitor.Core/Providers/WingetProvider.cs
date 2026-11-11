@@ -705,10 +705,32 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
                 return null;
             }).ConfigureAwait(false);
 
+        // winget refused for the installer type and no take-over ran: every further attempt would be refused alike, so it
+        // is reported as a hold (InstallResult.TechnologyMismatch), not as a failure.
+        if (IsTechnologyMismatchHold(result, fallbackRan))
+        {
+            result = result with { TechnologyMismatch = true, Message = TechnologyMismatchMessage(update, candidates[0]) };
+            _logger.LogWarning("{AppId}: {Message} (exit 0x{Code:X8})", app.AppId, result.Message, result.ExitCode);
+            return result;
+        }
         if (!result.Success && !fallbackRan)
             _logger.LogWarning("{AppId}: {Message}", app.AppId, result.Message);
         return result;
     }
+
+    /// <summary>
+    /// Whether the final result of an install is winget's "the install technology is different" refusal (0x8A15008E) with
+    /// no fallback run for it (<c>WingetReplaceOnMismatch</c> off, and in a user's session no "install --force" either),
+    /// i.e. nothing was installed and nothing could be (see <see cref="InstallResult.TechnologyMismatch"/>). Pure, so the
+    /// rule is testable.
+    /// </summary>
+    internal static bool IsTechnologyMismatchHold(InstallResult result, bool fallbackRan) =>
+        !result.Success && !fallbackRan && !result.InstallerBusy && result.ExitCode == WingetOutputParser.ExitUpdateInstallTechnologyMismatch;
+
+    /// <summary>The reason a technology-mismatch hold gives (the tray's card and the device report show it).</summary>
+    internal static string TechnologyMismatchMessage(PendingUpdate update, string wingetId) =>
+        $"winget offers {update.AvailableVersion} of '{wingetId}' only with a different installer type than the installed copy (exit 0x{WingetOutputParser.ExitUpdateInstallTechnologyMismatch:X8}), " +
+        "so it cannot be upgraded in place. Turning on “Replace mismatched installs” (WingetReplaceOnMismatch) for this app switches it to the new installer type.";
 
     /// <summary>
     /// A plain <c>winget upgrade</c> that winget refused (see <see cref="IsRefusal"/>) while the product is still
@@ -902,6 +924,10 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             // A running MSIX application: the new package is staged and registered when the application next starts.
             if (await IsAppRestartPendingAsync(app, context, winget, wingetId, sourceName, run, ct).ConfigureAwait(false))
                 return UpgradeOutcome.Final(AppRestartPendingResult(app, update, newVersion, run.ExitCode));
+            // winget moved the product, only not as far as the target: it installs the latest version that has an installer of
+            // the installed copy's type (PowerShell 7.6.9 -> 7.6.10 MSI, while 7.7.0 ships only as MSIX).
+            if (InstallResult.IsPartialUpgrade(update.InstalledVersion, newVersion, update.AvailableVersion))
+                return UpgradeOutcome.Final(PartialUpgradeResult(app, update, wingetId, newVersion!, run.ExitCode));
             var message = $"winget reported success (exit 0x{run.ExitCode:X8}) but '{wingetId}' is still at {newVersion}, expected {update.AvailableVersion}.";
             _logger.LogError("{AppId}: {Message}", app.AppId, message);
             return UpgradeOutcome.Final(InstallResult.Fail(message, run.ExitCode));
@@ -996,6 +1022,18 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             : !string.IsNullOrWhiteSpace(app.DisplayName) ? app.DisplayName : app.AppId;
         return InstallResult.Ok($"Installed; Windows finishes the update the next time {name} starts.", exitCode)
             with { InstalledVersion = registeredVersion ?? update.InstalledVersion, AppRestartPending = true };
+    }
+
+    /// <summary>
+    /// The success reported for a partial upgrade (see <see cref="InstallResult.PartialUpgrade"/>): the version winget reached
+    /// as <see cref="InstallResult.InstalledVersion"/>, and a message that says why the target was not.
+    /// </summary>
+    internal InstallResult PartialUpgradeResult(AppPolicy app, PendingUpdate update, string wingetId, string reached, int exitCode)
+    {
+        var message = $"Installed {reached}; winget has no installer of this install's type for {update.AvailableVersion}, so it installed the latest version that has one.";
+        _logger.LogWarning("{AppId}: winget upgraded '{WingetId}' from {From} to {Reached} (exit 0x{Code:X8}), not to {Target}: it has no installer of the installed copy's type for that version. Recorded as installed; the update stays pending.",
+            app.AppId, wingetId, update.InstalledVersion, reached, exitCode, update.AvailableVersion);
+        return InstallResult.Ok(message, exitCode) with { InstalledVersion = reached, PartialUpgrade = true };
     }
 
     /// <summary>
@@ -1193,6 +1231,8 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         {
             if (await IsAppRestartPendingAsync(app, context, winget, wingetId, sourceName, run, ct).ConfigureAwait(false))
                 return AppRestartPendingResult(app, update, newVersion, run.ExitCode);
+            if (InstallResult.IsPartialUpgrade(update.InstalledVersion, newVersion, update.AvailableVersion))
+                return PartialUpgradeResult(app, update, wingetId, newVersion!, run.ExitCode);
             var message = $"{prefix} 'winget install --force' reported success (exit 0x{run.ExitCode:X8}) but the installed version is still {newVersion}, expected {update.AvailableVersion}.";
             _logger.LogError("{AppId}: {Message}", app.AppId, message);
             return InstallResult.Fail(message, run.ExitCode);
@@ -1608,6 +1648,26 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             }
         }
 
+        // ---- 0. as LocalSystem: which installer would the machine-scope install select? None at all: nothing is removed.
+        // An MSIX installer (PowerShell 7.7, whose manifest has nothing else and declares no scope): the install step asks for
+        // it explicitly, so winget cannot pick anything else, and the package is staged and provisioned for all users.
+        string? systemInstallerType = null;
+        if (context.IsSystem)
+        {
+            var show = await RunShowAsync(winget, wingetId, sourceName, context, ScopeArgument(context), ct).ConfigureAwait(false);
+            var plan = PlanSystemTakeOver(show.Started && !show.TimedOut, show.ExitCode, show.CombinedOutput);
+            if (!plan.Proceed)
+            {
+                var message = $"{prefix} winget has no installer for '{wingetId}' in the machine scope, so the current install was left in place.";
+                _logger.LogWarning("{AppId}: {Message}", app.AppId, message);
+                return InstallResult.Fail(message, WingetOutputParser.ExitNoApplicableInstaller);
+            }
+            systemInstallerType = plan.InstallerType;
+            if (systemInstallerType is not null)
+                _logger.LogInformation("{AppId}: winget's machine-scope installer for '{WingetId}' is an MSIX package; the take-over installs it with --installer-type {Type}, which stages and provisions it for all users.",
+                    app.AppId, wingetId, systemInstallerType);
+        }
+
         // ---- 1. remove the current install.
         _logger.LogInformation("{AppId}: winget refused to upgrade '{WingetId}' (install technology mismatch, 0x{Code:X8}) and WingetReplaceOnMismatch is set; removing the current install in the {Context} context.",
             app.AppId, wingetId, refusalExitCode, context.Context);
@@ -1721,7 +1781,7 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         progress?.Report($"Installing {name} {update.AvailableVersion} via winget...");
 
         var installStep = await RunInstallStepAsync(app, update, context, winget, wingetId, sourceName, force: false, systemScope: true, progress, ct,
-            installedAsMsix).ConfigureAwait(false);
+            installedAsMsix, systemInstallerType).ConfigureAwait(false);
         var install = installStep.Run;
         if (install.Started && !install.TimedOut && installStep.NoPerUserInstaller)
         {
@@ -1748,6 +1808,23 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         var newVersion = await ReadVersionAfterAsync(app, context, winget, wingetId, sourceName, ct).ConfigureAwait(false);
         var stillOutdated = IsStillOutdated(newVersion, update.AvailableVersion);
 
+        // An MSIX package provisioned as LocalSystem: SYSTEM's winget listing may not show it (it is registered for nobody
+        // yet), so the package registrations on the device decide then. The family is what the signed-in users' tray agents
+        // register right away (InstallResult.ProvisionedPackageFamilyName).
+        string? provisionedFamily = null;
+        if (context.IsSystem && systemInstallerType is not null && result.Success)
+        {
+            var msix = await ReadProvisionedMsixAsync(app, winget, wingetId, sourceName, update.AvailableVersion, ct).ConfigureAwait(false);
+            provisionedFamily = msix.Family;
+            if ((newVersion is null || stillOutdated) && msix.Version is not null)
+            {
+                _logger.LogInformation("{AppId}: winget's machine-scope listing shows {Listed} for '{WingetId}', but the MSIX package {Family} {Version} is on the device; the take-over took.",
+                    app.AppId, newVersion ?? "nothing", wingetId, msix.Family, msix.Version);
+                newVersion = msix.Version;
+                stillOutdated = false;
+            }
+        }
+
         // Stricter than the other paths: the old install is gone, so "winget says success but no version can be read"
         // is not good enough to record a success - the next scan settles what is really on the device. A refusal because
         // Windows Installer was busy is deliberately reported as a plain failure here, not as InstallerBusy: the
@@ -1764,7 +1841,96 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
 
         _logger.LogInformation("{AppId}: replaced '{WingetId}' via winget uninstall + install (exit 0x{Hex}){Reboot}; installed version now {Version}.", app.AppId, wingetId,
             install.ExitCode.ToString("X8"), result.RebootRequired ? ", reboot required" : string.Empty, newVersion ?? update.AvailableVersion);
-        return result with { InstalledVersion = newVersion ?? update.AvailableVersion };
+        return result with { InstalledVersion = newVersion ?? update.AvailableVersion, ProvisionedPackageFamilyName = provisionedFamily };
+    }
+
+    /// <summary>
+    /// What the take-over as LocalSystem does, from <c>winget show --scope machine</c> for the package. Pure, so the rule is
+    /// testable. No answer (not started, timed out) or any other failure: go ahead as before, with no installer type.
+    /// "No applicable installer": stop before anything is uninstalled - the install step would find nothing either. An
+    /// MSIX installer: go ahead with <c>--installer-type msix</c>.
+    /// </summary>
+    internal static (bool Proceed, string? InstallerType) PlanSystemTakeOver(bool answered, int exitCode, string? showOutput)
+    {
+        if (!answered) return (true, null);
+        if (IsNoApplicableInstaller(exitCode, showOutput)) return (false, null);
+        return exitCode == 0 && IsMsixInstallerType(ParseInstallerType(showOutput)) ? (true, "msix") : (true, null);
+    }
+
+    /// <summary>
+    /// Replaces the Appx probe of <see cref="ReadProvisionedMsixAsync"/>: the key (a package family, or a package name when
+    /// the bool is true) to the probe's result. Tests answer it; null (the default) runs the probe, except in a test that
+    /// scripts winget, which never starts PowerShell.
+    /// </summary>
+    internal Func<string, bool, CancellationToken, Task<AppxProbeResult>>? AppxProbeRunner { get; init; }
+
+    private Task<AppxProbeResult> RunAppxProbeAsync(string key, bool byName, CancellationToken ct) =>
+        AppxProbeRunner is { } runner ? runner(key, byName, ct)
+        : LookupRunner is not null || InstallRunner is not null ? Task.FromResult(AppxProbeResult.Failed("no Appx probe in this test"))
+        : byName ? AppxPackageProbe.RunForNameAsync(_logger, key, ct) : AppxPackageProbe.RunAsync(_logger, key, ct);
+
+    /// <summary>
+    /// After the take-over provisioned an MSIX package as LocalSystem: the package family and, when a package of it at
+    /// <paramref name="target"/> or newer is on the device (provisioned, or registered for any user), its version. The family
+    /// comes from SYSTEM's <c>winget list --details</c> when that lists the package (one family), else the probe looks the
+    /// package up by name, taking the winget id as the package name (Microsoft.PowerShell, Microsoft.WindowsTerminal);
+    /// <c>winget show</c> names no family. Never throws, except for cancellation.
+    /// </summary>
+    private async Task<(string? Version, string? Family)> ReadProvisionedMsixAsync(AppPolicy app, string winget, string wingetId, string sourceName,
+        string? target, CancellationToken ct)
+    {
+        try
+        {
+            string? family = null;
+            var details = await ListDetailsAsync(winget, wingetId, sourceName, ExecutionContextInfo.System, ct).ConfigureAwait(false);
+            if (details.Error is null && EvaluateHandOver(details.Rows, wingetId) is (true, { } listed, _) && AppxPackageProbe.IsValidPackageFamilyName(listed.Trim()))
+                family = listed.Trim();
+
+            AppxProbeResult probe;
+            if (family is not null) probe = await RunAppxProbeAsync(family, byName: false, ct).ConfigureAwait(false);
+            else if (AppxPackageProbe.IsValidPackageName(wingetId)) probe = await RunAppxProbeAsync(wingetId, byName: true, ct).ConfigureAwait(false);
+            else
+            {
+                _logger.LogInformation("{AppId}: no package family is known for '{WingetId}' after its MSIX install, and the id is no package name to look it up by.", app.AppId, wingetId);
+                return (null, null);
+            }
+            _logger.LogInformation("{AppId}: MSIX packages of {Subject} after the take-over: {Packages}", app.AppId, family ?? $"the name {wingetId}", probe.Summarize());
+            var judged = JudgeProvisionedMsix(probe, target, family);
+            return (judged.Version, judged.Family ?? family);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "{AppId}: could not read the MSIX packages of '{WingetId}' after the take-over.", app.AppId, wingetId);
+            return (null, null);
+        }
+    }
+
+    /// <summary>
+    /// The take-over's verdict on the package registrations after it provisioned an MSIX package (see
+    /// <see cref="ReadProvisionedMsixAsync"/>). Pure, so the rule is testable. Only packages of <paramref name="family"/>
+    /// count when it is known; otherwise every package the probe found, as long as all that qualify belong to one family.
+    /// A package qualifies when its version is known and at least <paramref name="target"/>, provisioned or registered for
+    /// any user. Version: the highest qualifying one, or null when none qualifies (or the probe failed, or the families are
+    /// ambiguous). Family: the family of that package, else <paramref name="family"/>, else the only family the probe found.
+    /// </summary>
+    internal static (string? Version, string? Family) JudgeProvisionedMsix(AppxProbeResult probe, string? target, string? family)
+    {
+        if (probe.Failure is not null) return (null, family);
+        var all = probe.Packages.Select(p => (p.Version, Family: p.PackageFamilyName))
+            .Concat(probe.Provisioned.Select(p => (p.Version, Family: p.PackageFamilyName)))
+            .Where(p => family is null || p.Family is null || string.Equals(p.Family, family, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var families = all.Select(p => p.Family).Where(f => f is not null).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var knownFamily = family ?? (families.Count == 1 ? families[0] : null);
+        if (string.IsNullOrWhiteSpace(target) || VersionComparer.IsUnknown(target)) return (null, knownFamily);
+
+        var qualifying = all.Where(p => !VersionComparer.IsUnknown(p.Version) && VersionComparer.Compare(p.Version, target) >= 0).ToList();
+        if (qualifying.Count == 0) return (null, knownFamily);
+        var qualifyingFamilies = qualifying.Select(p => p.Family).Where(f => f is not null).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (qualifyingFamilies.Count > 1) return (null, family);
+        var best = qualifying.OrderByDescending(p => p.Version, VersionComparer.Instance).First();
+        return (best.Version, best.Family ?? knownFamily);
     }
 
     /// <summary>
@@ -1984,6 +2150,15 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
                 ? (systemScope ? ScopeArgument(context) : string.Empty) + (systemInstallerType is null ? string.Empty : $" --installer-type {systemInstallerType}")
                 : UserContextInstallFilter(attempt);
             var extraArgs = update.WingetExtraArgs ?? app.WingetExtraArgs;
+            // An MSIX package takes no installer switches: --custom/--override (MSI properties such as USE_MU=0 for
+            // PowerShell's MSI) belong to the installer type being replaced, so they are left off the provisioning install.
+            if (context.IsSystem && IsMsixInstallerType(systemInstallerType))
+            {
+                extraArgs = StripInstallerSwitches(extraArgs, out var removed);
+                if (removed is not null)
+                    _logger.LogInformation("{AppId}: leaving the installer switches '{Removed}' of the configured arguments off the MSIX install of '{WingetId}'; an MSIX package takes none.",
+                        app.AppId, removed, wingetId);
+            }
             var skipDependencies = await SkipDependenciesArgumentAsync(app, winget, wingetId, sourceName, filter, extraArgs, context, ct).ConfigureAwait(false);
             var stepName = (force ? "reinstall" : "install")
                            + (!context.IsSystem && attempt > 0 ? "-msix" : context.IsSystem && systemInstallerType is not null ? "-provision"
@@ -2012,6 +2187,52 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             }
             return new InstallStepResult(run, noInstaller, firstAttempt > 0 && nonMsixSkipped is null, nonMsixSkipped);
         }
+    }
+
+    /// <summary>
+    /// <paramref name="arguments"/> without winget's installer-switch arguments - <c>--custom &lt;value&gt;</c>,
+    /// <c>--override &lt;value&gt;</c> and their <c>--name=value</c> forms, a double-quoted value counting as one - and the
+    /// removed part in <paramref name="removed"/> (null when nothing was removed). Everything else is kept as it was, in
+    /// order. Null when nothing is left. Pure, so the rule is testable.
+    /// </summary>
+    internal static string? StripInstallerSwitches(string? arguments, out string? removed)
+    {
+        removed = null;
+        if (string.IsNullOrWhiteSpace(arguments)) return arguments;
+        var tokens = new List<string>();
+        var current = new StringBuilder();
+        var quoted = false;
+        foreach (var c in arguments)
+        {
+            if (c == '"') quoted = !quoted;
+            if (!quoted && char.IsWhiteSpace(c))
+            {
+                if (current.Length > 0) { tokens.Add(current.ToString()); current.Clear(); }
+                continue;
+            }
+            current.Append(c);
+        }
+        if (current.Length > 0) tokens.Add(current.ToString());
+
+        static bool IsSwitch(string t) => t.Equals("--custom", StringComparison.OrdinalIgnoreCase) || t.Equals("--override", StringComparison.OrdinalIgnoreCase);
+        static bool IsSwitchWithValue(string t) => t.StartsWith("--custom=", StringComparison.OrdinalIgnoreCase) || t.StartsWith("--override=", StringComparison.OrdinalIgnoreCase);
+
+        var kept = new List<string>();
+        var dropped = new List<string>();
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            if (IsSwitch(tokens[i]))
+            {
+                dropped.Add(tokens[i]);
+                if (i + 1 < tokens.Count) dropped.Add(tokens[++i]);
+                continue;
+            }
+            if (IsSwitchWithValue(tokens[i])) { dropped.Add(tokens[i]); continue; }
+            kept.Add(tokens[i]);
+        }
+        if (dropped.Count == 0) return arguments;
+        removed = string.Join(' ', dropped);
+        return kept.Count == 0 ? null : string.Join(' ', kept);
     }
 
     /// <summary>

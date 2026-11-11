@@ -550,17 +550,35 @@ In agents after 1.1.46:
 
 ## winget says the install technology is different
 
-Symptom: the update fails and winget's output contains
+Symptom: the tray's card says *winget offers 7.7.0.0 only with a different installer type than the
+installed copy; it cannot be upgraded in place* (agents up to 1.1.55: the update failed, with a toast),
+and winget's output contains
 
 > A newer version was found, but the install technology is different from the current version
 > installed. Please uninstall the package and install the newer version.
 
 (exit code `0x8A15008E`). Oh My Posh (`JanDeDobbeleer.OhMyPosh`) is the typical case: the installed
-build came from the old Inno Setup exe while the current manifest ships an MSIX package.
+build came from the old Inno Setup exe while the current manifest ships an MSIX package. PowerShell 7.7.0
+(November 2026) is another: it ships only as MSIX, while devices have the MSI (`PowerShell 7-x64`).
 
 Cause: the product on the device was installed with a different technology than the one the manifest
 now uses (exe to MSIX, MSI to exe, ...). winget will not upgrade across that line, and no argument
 changes it - `winget install --force` would only put the new package next to the old one.
+
+Without the take-over below, the agent does not count this as a failure: nothing was installed and
+every further attempt would be refused alike, so the update is **held** for that version
+(`PendingUpdate.TechnologyMismatchVersion` in `state.json`) - no failure count, history entry, cloud
+event or toast, and no automatic install, close prompt or forced close. The hold has no time limit; it
+ends when a newer version is offered, when `WingetReplaceOnMismatch` is switched on for the application
+(the next policy tick runs the take-over, without waiting for a scan), or when the user picks *Update*
+(which may simply be refused and held again). Reminders that the update exists continue as usual.
+
+Before the refusal there may be a **partial upgrade**: winget installs the latest version that still has
+an installer of the installed copy's type, so `winget upgrade` of PowerShell 7.6.9 (MSI) installed 7.6.10
+(the last MSI) and exited 0. The agent records that as installed - history, cloud event and toast say
+*7.6.9.0 -> 7.6.10.0* and *7.7.0.0 still pending* - and keeps the update for 7.7.0.0 pending, with no
+post-install grace and no failure counted (agents up to 1.1.55 reported *still at 7.6.10.0, expected
+7.7.0.0* as a failure). The next attempt then meets the refusal and the hold.
 
 Fix: set `WingetReplaceOnMismatch = 1` (DWORD) on that application, in the registry or in the
 application editor ("Replace mismatched installs"). The agent then does what winget's message asks:
@@ -585,6 +603,25 @@ and asks winget again, and continues with the install when the package is gone f
 deleted key is logged at Warning with its path, display name, version, product code and the Windows
 Installer state that justified it; when nothing qualifies, the failure says *no stale Windows Installer
 registration found for it*.
+
+As LocalSystem the take-over first asks `winget show --id <id> --exact --scope machine` which installer the
+install would select. *No applicable installer*: nothing is uninstalled, the current install is left in
+place. An **MSIX** installer (PowerShell 7.7: the manifest has nothing else and declares no scope): the
+install runs `winget install ... --scope machine --installer-type msix`, which stages the package and
+provisions it for all users (as SYSTEM, registration is deferred to each user); `--custom`/`--override`
+from `WingetExtraArgs` are left off that install (an MSIX package takes no installer switches - drop
+MSI-only arguments such as `--custom USE_MU=0` from the application anyway). SYSTEM's winget listing may
+not show a package registered for nobody, so when it does not show the new version the agent reads the
+package registrations (`Get-AppxPackage -AllUsers`, `Get-AppxProvisionedPackage -Online`, Windows
+PowerShell 5.1) for the family SYSTEM's `winget list --details` names, or - when it names none - for
+packages whose name is the winget id (`Microsoft.PowerShell`); a provisioned or registered package at the
+target version or newer counts as installed. Windows registers a provisioned package for existing users
+only at their next sign-in, so the service then asks the tray agent of every signed-in user to register
+that family right away (`RegisterPackageMessage`; the tray does what `Add-AppxPackage
+-RegisterByFamilyName -MainPackage <family>` does, unelevated, and skips it when the user has it
+already). A failure there is only a warning in the tray's log; the next sign-in registers it anyway.
+For PowerShell this means `C:\Program Files\PowerShell\7` goes away with the MSI: the MSIX `pwsh` lives
+in each user's package registration, so scheduled tasks and scripts that run `pwsh` as SYSTEM lose it.
 
 Caveat: it is off by default because the uninstall comes first. Between the two steps the application
 is not installed, and if the install then fails the device is left without it until the next scan

@@ -6,3 +6,6 @@ artifacts/
 .vs/
 TestResults/
 *.log
+
+# Leftover agent worktrees (Claude Code)
+.claude/worktrees/

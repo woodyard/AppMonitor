@@ -1910,15 +1910,20 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     /// The take-over's verdict on the package registrations after it provisioned an MSIX package (see
     /// <see cref="ReadProvisionedMsixAsync"/>). Pure, so the rule is testable. Only packages of <paramref name="family"/>
     /// count when it is known; otherwise every package the probe found, as long as all that qualify belong to one family.
-    /// A package qualifies when its version is known and at least <paramref name="target"/>, provisioned or registered for
-    /// any user. Version: the highest qualifying one, or null when none qualifies (or the probe failed, or the families are
-    /// ambiguous). Family: the family of that package, else <paramref name="family"/>, else the only family the probe found.
+    /// A package qualifies when its version is known and at least <paramref name="target"/>, registered or staged for any
+    /// user. Provisioned entries count only when the probe lists no package at all, and never a provisioned bundle: its
+    /// version is the bundle's (PowerShell 7.7: 2026.1110.418.0 for package 7.7.0.0), see
+    /// <see cref="AppxProbeResult.HighestVersion"/>. Version: the highest qualifying one, or null when none qualifies (or
+    /// the probe failed, or the families are ambiguous). Family: the family of that package, else <paramref name="family"/>,
+    /// else the only family the probe found.
     /// </summary>
     internal static (string? Version, string? Family) JudgeProvisionedMsix(AppxProbeResult probe, string? target, string? family)
     {
         if (probe.Failure is not null) return (null, family);
-        var all = probe.Packages.Select(p => (p.Version, Family: p.PackageFamilyName))
-            .Concat(probe.Provisioned.Select(p => (p.Version, Family: p.PackageFamilyName)))
+        var packages = probe.Packages.Select(p => (p.Version, Family: p.PackageFamilyName));
+        var provisioned = probe.Provisioned.Where(p => !AppxProbeResult.IsBundleFullName(p.PackageName))
+            .Select(p => (p.Version, Family: p.PackageFamilyName));
+        var all = (probe.Packages.Count > 0 ? packages : provisioned)
             .Where(p => family is null || p.Family is null || string.Equals(p.Family, family, StringComparison.OrdinalIgnoreCase))
             .ToList();
         var families = all.Select(p => p.Family).Where(f => f is not null).Distinct(StringComparer.OrdinalIgnoreCase).ToList();

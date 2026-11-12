@@ -35,10 +35,32 @@ public sealed record AppxProbeResult(
 {
     public static AppxProbeResult Failed(string failure) => new([], [], [], failure);
 
-    /// <summary>The highest package version of the family on the machine, for any user or provisioned; null when none is known.</summary>
-    public string? HighestVersion =>
-        Packages.Select(p => p.Version).Concat(Provisioned.Select(p => p.Version))
-            .Where(v => !string.IsNullOrWhiteSpace(v))
+    /// <summary>
+    /// The highest package version of the family on the machine (registered or staged for any user); null when none is
+    /// known. A provisioned entry's version counts only when no package is listed at all and the entry is not a bundle
+    /// (<see cref="IsBundleFullName"/>): a provisioned bundle reports the bundle's own version, which is not the
+    /// application's. PowerShell 7.7's msixbundle is provisioned as 2026.1110.418.0 while its package is 7.7.0.0 (the
+    /// take-over on CPC-hsk-HSNE00X, 2026-11-12, recorded "installed 2026.1110.418.0").
+    /// </summary>
+    public string? HighestVersion => Highest(PackageVersions) ?? Highest(ProvisionedPackageVersions);
+
+    /// <summary>The versions of the packages listed for any user (registered or staged).</summary>
+    public IEnumerable<string> PackageVersions => Packages.Select(p => p.Version);
+
+    /// <summary>The versions of provisioned entries that are packages, not bundles (see <see cref="HighestVersion"/>).</summary>
+    public IEnumerable<string> ProvisionedPackageVersions =>
+        Provisioned.Where(p => !IsBundleFullName(p.PackageName)).Select(p => p.Version);
+
+    /// <summary>
+    /// Whether a package full name is a bundle's: bundles carry the resource id "~"
+    /// (<c>Microsoft.PowerShell_2026.1110.418.0_neutral_~_8wekyb3d8bbwe</c>), packages none
+    /// (<c>Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe</c>). An unknown name is not taken for a bundle.
+    /// </summary>
+    public static bool IsBundleFullName(string? fullName) =>
+        !string.IsNullOrWhiteSpace(fullName) && fullName.Contains("_~_", StringComparison.Ordinal);
+
+    private static string? Highest(IEnumerable<string> versions) =>
+        versions.Where(v => !string.IsNullOrWhiteSpace(v) && !VersionComparer.IsUnknown(v))
             .OrderByDescending(v => v, VersionComparer.Instance)
             .FirstOrDefault();
 

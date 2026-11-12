@@ -303,7 +303,9 @@ public class SystemInstallHandOverTests
 
         var package = Assert.Single(probe.Packages);
         Assert.Equal(new AppxPackageUser("S-1-5-21-9", "Installed"), Assert.Single(package.Users));
-        Assert.Equal("2.0.0.0", probe.HighestVersion);
+        Assert.Equal("2.0.0.0", Assert.Single(probe.Provisioned).Version);
+        // A listed package decides; a provisioned entry's version only counts when no package is listed.
+        Assert.Equal("1.0.0.0", probe.HighestVersion);
         Assert.Equal("Get-AppxProvisionedPackage: The requested operation requires elevation.", Assert.Single(probe.Errors));
     }
 

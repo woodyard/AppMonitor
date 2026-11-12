@@ -498,6 +498,36 @@ public class InstallerTechnologySwitchTests
     }
 
     [Fact]
+    public void A_provisioned_bundle_never_gives_the_installed_version()
+    {
+        // CPC-hsk-HSNE00X, 2026-11-12 19:17Z: the take-over provisioned PowerShell's msixbundle; the probe found the
+        // package 7.7.0.0 registered for the user and the bundle provisioned as 2026.1110.418.0, and the old rule recorded
+        // "installed 2026.1110.418.0".
+        const string bundle = "Microsoft.PowerShell_2026.1110.418.0_neutral_~_8wekyb3d8bbwe";
+        var probe = new AppxProbeResult(
+            [new AppxPackageRegistration("Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe", "7.7.0.0", "X64",
+                [new AppxPackageUser("S-1-12-1-1760109370-1192172739-1438914203-1853124917", "Installed")], Family)],
+            [new AppxProvisionedPackage("Microsoft.PowerShell", "2026.1110.418.0", bundle)],
+            []);
+
+        Assert.True(AppxProbeResult.IsBundleFullName(bundle));
+        Assert.False(AppxProbeResult.IsBundleFullName("Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe"));
+        Assert.False(AppxProbeResult.IsBundleFullName(null));
+        Assert.Equal(("7.7.0.0", Family), WingetProvider.JudgeProvisionedMsix(probe, "7.7.0.0", null));
+        Assert.Equal("7.7.0.0", probe.HighestVersion);
+
+        // Only the bundle provisioned, no package listed: nothing proves the version.
+        var bundleOnly = new AppxProbeResult([], [new AppxProvisionedPackage("Microsoft.PowerShell", "2026.1110.418.0", bundle)], []);
+        Assert.Null(WingetProvider.JudgeProvisionedMsix(bundleOnly, "7.7.0.0", Family).Version);
+        Assert.Null(bundleOnly.HighestVersion);
+
+        // A provisioned package (not a bundle) still counts when no package is listed.
+        var packageOnly = new AppxProbeResult([], [new AppxProvisionedPackage("Microsoft.PowerShell", "7.7.0.0", "Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe")], []);
+        Assert.Equal("7.7.0.0", WingetProvider.JudgeProvisionedMsix(packageOnly, "7.7.0.0", Family).Version);
+        Assert.Equal("7.7.0.0", packageOnly.HighestVersion);
+    }
+
+    [Fact]
     public void Packages_of_two_publishers_with_one_name_prove_nothing()
     {
         var two = new AppxProbeResult(

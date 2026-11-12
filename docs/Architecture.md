@@ -355,7 +355,7 @@ Rules encoded in the model (`PendingUpdate`):
 | Past deadline | `Mandatory` and `now >= DeadlineUtc`: deferral is refused and the install is forced. |
 | Blocking processes | The `ProcessNames` of the application that are currently running. For user-context updates only processes in that user's session count. |
 | Forced close | When the deadline has passed and `ForceCloseAtDeadline = 1`, the user is warned and `ForceCloseAtUtc = now + CloseGracePeriodMinutes`. From then on, when the update's install turn comes, the tray agent asks the windows to close (`WM_CLOSE`), waits the graceful period, and kills what is left; the service then terminates every survivor in every session. With `ForceCloseAtDeadline = 0` the update simply waits. |
-| Close apps and update | The user pressing the button on the close-apps prompt sets `ForceCloseRequestedUtc`, which lets the service terminate blocking processes for the next hour - see "Closing blocking applications" below. |
+| Close apps and update | The user pressing the button on the close-apps prompt (or on the update's card in the tray window, which does the same) sets `ForceCloseRequestedUtc`, which lets the service terminate blocking processes for the next hour - see "Closing blocking applications" below. |
 | Auto install | `AutoInstall = 1` installs without asking as soon as no blocking process is running - no notification other than the optional "installed" toast (`ShowInstalledNotifications`, off by default). |
 | Notification style | `NotificationMode` (global, per-app override). `Quiet` (default) announces an update once - `PendingUpdate.Announced` records it - and afterwards only notifies about a deadline approaching, applications to close, or a failed install; there is no "installing" toast. `Reminders` is the pre-1.2 behaviour: one reminder per `NotificationIntervalMinutes` for as long as the update is pending. |
 | Dismiss | A non-mandatory update the user dismissed is re-announced after `NotificationIntervalMinutes` in `Reminders` mode; in `Quiet` mode it stays dismissed until a new version appears or a deadline approaches. |
@@ -449,7 +449,7 @@ two halves of the agent can close different things:
 | Tray agent (per user, medium integrity) | Windowed processes of that user, in that user's own session: `WM_CLOSE` first, then `Process.Kill` |
 | Service (LocalSystem) | Everything: console processes with no window, elevated processes, scheduled tasks, other users' sessions, session 0 |
 
-The flow when the user presses **Close apps and update**:
+The flow when the user presses **Close apps and update** (on the prompt, or on the update's card):
 
 1. The tray sends `WM_CLOSE` to every blocking process in its own session and waits 30 seconds, so an
    application with unsaved work still gets its say.
@@ -504,8 +504,11 @@ notifications are switched on in the agent's settings: it is a question, not a n
 
 The tray waits **30 seconds** (`CloseAppsPrompt.AnswerTimeout`, measured by the tray; the toast's own
 expiry is only a backstop) and then removes the toast and answers **Not now**. Every way out that is not a
-button is the same **Not now**: the timeout, the toast's **X**, a click on the toast body (which opens the
-main window) and a toast Windows refuses to show (notifications for the agent switched off in Windows).
+button is the same **Not now**: the timeout, the toast's **X** and a toast Windows refuses to show
+(notifications for the agent switched off in Windows). A click on the toast body opens the main window and
+takes the prompt down without an answer: the update keeps waiting, still `WaitingForClose` and still
+queued, and its card offers **Close apps and update** (before 1.1.57 it counted as "Not now", which
+dismissed an optional update, so the card offered **Update** and the same prompt came back at the turn).
 "Not now" sends `dismiss` for an optional update and nothing for a mandatory one, exactly as the dialog's
 button did, so the service learns the user declined instead of leaving the update parked in
 `WaitingForClose`, and the next prompt comes at the notification interval as before. The tray log says
@@ -520,9 +523,17 @@ and when the service starts the forced close the tray shows "Your apps are being
 
 A prompt whose update moves on while it is on screen (installing, installed, gone, or deferred from the
 main window) is taken down without an answer, and so is every prompt when the agent stops. While an
-update is waiting, its card in the main window offers **Close apps and update**, which shows the prompt
-again locally through `ICloseAppsLauncher.ShowFor` - no round trip to the service, because the tray
-already holds the update and its blocking detail.
+update is waiting, its card in the main window offers **Close apps and update**, which is the prompt's
+own answer carried out at once through `ICloseAppsLauncher.CloseAndUpdate` (`CloseAppsPromptEnd.Card`):
+an open prompt is taken down as answered (timer stopped, toast removed), and with none open - it timed
+out into "Not now", or the service has not sent one - the apps are closed and the update installed all
+the same (`CloseAppsPrompt.CarriesOutWithoutPrompt`). It never asks a second time; the card's status
+carries the prompt's "save your work first" instead, with the same "elevated" / "another session (user)"
+markers and the line that the service closes those (`CloseAppsPrompt.CardWaitingText`), and reads
+"Closing apps…" while it works and until the service's state shows the install request (at most 15 s).
+A forced-close notice a timed-out prompt left in the notification centre is removed then. Up to
+1.1.56 the button only showed the prompt again, which then had to be answered as well. The
+"Close apps and update" button of an older `CloseApplications` update toast is handled the same way.
 
 ## IPC
 

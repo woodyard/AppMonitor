@@ -36,6 +36,21 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
     private readonly AppIconProvider _icons;
     private readonly Dispatcher _dispatcher;
     private readonly Dictionary<string, OpenPrompt> _prompts = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// After "Close apps and update" the card keeps saying "Closing apps…" until the service's state shows the install
+    /// request, at most this long: an install request the service never acts on must not hide the button for good.
+    /// </summary>
+    private static readonly TimeSpan ServiceAnswerWait = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Updates whose "Close apps and update" is being carried out right now: closing, then the install request, then
+    /// until the service's state no longer shows the update waiting for its applications.
+    /// </summary>
+    private readonly HashSet<string> _closing = new(StringComparer.Ordinal);
+
+    /// <summary>Updates whose install request went out, each with the timer that gives up waiting for the service's state.</summary>
+    private readonly Dictionary<string, DispatcherTimer> _awaitingService = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
 
     /// <summary>One prompt on screen, waiting for its answer.</summary>
@@ -83,6 +98,8 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
         _dispatcher.Invoke(() =>
         {
             foreach (var key in _prompts.Keys.ToList()) Withdraw(key, "the agent is stopping");
+            foreach (var timer in _awaitingService.Values) timer.Stop();
+            _awaitingService.Clear();
         });
         _cts.Dispose();
         return Task.CompletedTask;
@@ -93,35 +110,47 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
         switch (message)
         {
             case PromptCloseMessage prompt:
-                Show(prompt.Update, userAsked: false);
+                Show(prompt.Update);
                 break;
             case CloseProcessesMessage close:
                 _ = CloseProcessesAsync(close);
                 break;
             case StateMessage:
                 PruneFinishedPrompts();
+                SettleAwaitedInstalls();
                 break;
         }
     }
 
     /// <summary>
-    /// Shows the prompt for an update the tray already holds. Called from the update card's "Close apps and update"
-    /// button and from an older toast's "Close apps" button, which is how a user whose prompt went away gets it back
-    /// without waiting for the service to ask again. The service's own <see cref="PromptCloseMessage"/> goes through
-    /// <see cref="Show"/> directly.
+    /// "Close apps and update" chosen outside the prompt's toast: the update card's button. It is the toast's own
+    /// answer, carried out at once - an open prompt is taken down as answered (its timer stopped, its toast removed),
+    /// and with no prompt open the apps are closed and the update installed all the same. The user is never asked a
+    /// second time for what the button already says.
     /// </summary>
-    public void ShowFor(PendingUpdate update) => Show(update, userAsked: true);
+    public bool CloseAndUpdate(string updateKey) =>
+        Resolve(updateKey, CloseAppsPromptEnd.Card, CloseAppsChoice.CloseAndUpdate);
 
     /// <summary>
-    /// Shows the prompt, or leaves the one already on screen alone when the service merely repeats it and it would say
-    /// the same thing. A user asking for it pops it up again (and restarts its half minute); so does a prompt whose
-    /// text changed - a forced close newly scheduled, a process that started in another session.
+    /// Shows the service's prompt, or leaves the one already on screen alone when the service merely repeats it and it
+    /// would say the same thing. A prompt whose text changed - a forced close newly scheduled, a process that started in
+    /// another session - pops up again (and restarts its half minute).
     /// </summary>
-    private void Show(PendingUpdate? update, bool userAsked)
+    private void Show(PendingUpdate? update)
     {
         if (update is null) { _log.LogWarning("Ignoring a request to show the close-apps prompt for a null update"); return; }
         var key = update.Key;
         var now = DateTimeOffset.UtcNow;
+
+        // The user already chose "Close apps and update" (on the card, or on a toast just now) and the apps are being
+        // closed: a prompt sent meanwhile - the service's tick saw them still running - would ask again for what is
+        // under way, and an answer to it ("Not now" after half a minute) would contradict the choice. The install
+        // request that follows the close answers the service. (No prompt is open then: the choice took it down.)
+        if (_closing.Contains(key))
+        {
+            _log.LogInformation("Not showing the close-apps prompt for {App}: its applications are being closed at the user's request", update.DisplayName);
+            return;
+        }
 
         CloseAppsPromptContent content;
         try
@@ -140,12 +169,12 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
         if (_prompts.TryGetValue(key, out var open))
         {
             open.Update = update;
-            if (!userAsked && open.Content.Signature == content.Signature)
+            if (open.Content.Signature == content.Signature)
             {
                 _log.LogDebug("The close-apps prompt for {App} is already on screen and unchanged", update.DisplayName);
                 return;
             }
-            Withdraw(key, userAsked ? "the user asked for it again" : "what it says changed");
+            Withdraw(key, "what it says changed");
         }
 
         var timer = new DispatcherTimer(DispatcherPriority.Normal, _dispatcher) { Interval = CloseAppsPrompt.AnswerTimeout };
@@ -282,54 +311,59 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
 
     /// <summary>
     /// A click on one of the prompt's toasts, routed here by <see cref="NotificationService"/>. <paramref name="minutes"/>
-    /// is the deferral the button carries, or the one picked in the selection box; 0 when neither is there.
+    /// is the deferral the button carries, or the one picked in the selection box; 0 when neither is there. Returns
+    /// false when the click had nothing to act on (no prompt waiting and nothing left to carry out).
     /// </summary>
-    public void OnToastAction(string action, string key, int minutes)
+    public bool OnToastAction(string action, string key, int minutes)
     {
         switch (action)
         {
             case ToastAction.PromptCloseAndUpdate:
-                Resolve(key, CloseAppsPromptEnd.Button, CloseAppsChoice.CloseAndUpdate);
-                break;
+                return Resolve(key, CloseAppsPromptEnd.Button, CloseAppsChoice.CloseAndUpdate);
             case ToastAction.PromptDefer:
-                Resolve(key, CloseAppsPromptEnd.Button, CloseAppsChoice.Defer, minutes);
-                break;
+                return Resolve(key, CloseAppsPromptEnd.Button, CloseAppsChoice.Defer, minutes);
             case ToastAction.PromptNotNow:
-                Resolve(key, CloseAppsPromptEnd.Button, CloseAppsChoice.NotNow);
-                break;
+                return Resolve(key, CloseAppsPromptEnd.Button, CloseAppsChoice.NotNow);
             case ToastAction.PromptOpen:
+                // Opening the window to look is no answer, and taking it as "Not now" dismissed an optional update (and
+                // the "Update all" that queued it): the card then offered "Update", which brought this same prompt back
+                // at the install turn. The prompt goes without an answer instead; the update keeps waiting for its
+                // applications and the card in the window just opened offers "Close apps and update".
                 _windows.ShowMain();
-                Resolve(key, CloseAppsPromptEnd.OpenedWindow);
-                break;
+                Withdraw(key, "the user opened the main window from it, where the update's card offers Close apps and update");
+                return true;
             default:
                 _log.LogWarning("Unknown close-apps prompt action {Action} for {Key}", action, key);
-                break;
+                return false;
         }
     }
 
     /// <summary>
     /// Ends the prompt for <paramref name="key"/> with exactly one answer. The toast is removed, the timer stopped, and
-    /// the answer carried out - every way that is not a button being "Not now" (<see cref="CloseAppsPrompt.ChoiceFor"/>).
+    /// the answer carried out - every way that is not a button (the toast's or the card's) being "Not now"
+    /// (<see cref="CloseAppsPrompt.ChoiceFor"/>). With no prompt waiting, an explicit choice is still carried out
+    /// (<see cref="CloseAppsPrompt.CarriesOutWithoutPrompt"/>). Returns false when there was nothing to act on.
     /// </summary>
-    private void Resolve(string key, CloseAppsPromptEnd end, CloseAppsChoice? clicked = null, int minutes = 0)
+    private bool Resolve(string key, CloseAppsPromptEnd end, CloseAppsChoice? clicked = null, int minutes = 0)
     {
         var now = DateTimeOffset.UtcNow;
         if (!_prompts.Remove(key, out var prompt))
         {
-            // Nothing is waiting: the prompt already timed out, or this is a toast that outlived an agent restart, or
-            // the notice left behind for a forced close. An explicit "close" or "defer" still means what it says; any
-            // other way out has nothing left to answer.
-            if (end == CloseAppsPromptEnd.Button && clicked is CloseAppsChoice.CloseAndUpdate or CloseAppsChoice.Defer
-                && _store.Find(key) is { } late && !CloseAppsPrompt.IsWithdrawn(late, now))
+            var late = _store.Find(key);
+            if (CloseAppsPrompt.CarriesOutWithoutPrompt(end, clicked, late, now))
             {
-                _log.LogInformation("Close-apps choice {Choice} for {App} arrived with no prompt waiting; carrying it out", clicked, late.DisplayName);
-                Carry(late, clicked.Value, end, minutes, late.DeferralOptionsMinutes);
+                _log.LogInformation("Close-apps choice {Choice} for {App} ({Where}) arrived with no prompt waiting; carrying it out",
+                    clicked, late!.DisplayName, Where(end));
+                // A prompt that went unanswered may have left its forced-close notice ("your apps will be closed at …")
+                // in the notification centre, and nothing else takes it down before that time. Removed by tag, which is
+                // safe here: no prompt is open, and an update still waiting for its applications has no "Installing"
+                // toast that could share the tag.
+                if (late.State == UpdateState.WaitingForClose) RemoveLeftoverToast(key);
+                Carry(late, clicked!.Value, end, minutes, late.DeferralOptionsMinutes);
+                return true;
             }
-            else
-            {
-                _log.LogInformation("Ignoring {End} for {Key}: no close-apps prompt is waiting for it", end, key);
-            }
-            return;
+            _log.LogInformation("Ignoring {End} for {Key}: no close-apps prompt is waiting for it", end, key);
+            return false;
         }
 
         prompt.Timer.Stop();
@@ -339,14 +373,18 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
         Carry(update, choice, end, minutes, prompt.Content.DeferralMinutes);
 
         if (CloseAppsPrompt.LeavesForcedCloseNotice(update, end, now)) ShowForcedCloseNotice(update);
+        return true;
     }
+
+    /// <summary>Where an answer was given, for a log line.</summary>
+    private static string Where(CloseAppsPromptEnd end) => end == CloseAppsPromptEnd.Card ? "on its update card" : "on the prompt";
 
     private void Carry(PendingUpdate update, CloseAppsChoice choice, CloseAppsPromptEnd end, int minutes, IReadOnlyList<int> offered)
     {
         switch (choice)
         {
             case CloseAppsChoice.CloseAndUpdate:
-                _ = CloseAndUpdateAsync(update);
+                _ = CloseAndUpdateAsync(update, end);
                 break;
             case CloseAppsChoice.Defer:
                 // The selection box always has a value, but a toast from an older agent may carry neither it nor minutes.
@@ -383,9 +421,6 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
                 break;
             case CloseAppsPromptEnd.ToastClosed:
                 _log.LogInformation("User closed the close-apps prompt for {App}; taking it as Not now", update.DisplayName);
-                break;
-            case CloseAppsPromptEnd.OpenedWindow:
-                _log.LogInformation("User opened the main window from the close-apps prompt for {App}; taking it as Not now", update.DisplayName);
                 break;
             default:
                 _log.LogWarning("The close-apps prompt for {App} could not be shown; taking it as Not now", update.DisplayName);
@@ -478,6 +513,13 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
         catch (Exception ex) { _log.LogDebug(ex, "Removing the close-apps prompt for {Key} failed (it is probably gone already)", prompt.Update.Key); }
     }
 
+    /// <summary>Removes whatever toast for this update is in the notification centre: only called with no prompt open.</summary>
+    private void RemoveLeftoverToast(string key)
+    {
+        try { ToastNotificationManagerCompat.History.Remove(NotificationService.TagFor(key), NotificationService.ToastGroup); }
+        catch (Exception ex) { _log.LogDebug(ex, "Could not remove a leftover toast for {Key}", key); }
+    }
+
     /// <summary>Takes down prompts whose update has moved on (installing, installed, gone, or deferred meanwhile).</summary>
     private void PruneFinishedPrompts()
     {
@@ -547,12 +589,75 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
 
     // ---------------------------------------------------------------- "Close apps and update"
 
-    private async Task CloseAndUpdateAsync(PendingUpdate update)
+    /// <summary>
+    /// Carries out "Close apps and update", from the prompt's toast or from the update card - the same steps either way:
+    /// a graceful close, then terminating what ignored it, then the install request that lets the service close the
+    /// rest. While it runs, and until the service's state shows the request, the card says "Closing apps…" instead of
+    /// offering the button again.
+    /// </summary>
+    private async Task CloseAndUpdateAsync(PendingUpdate update, CloseAppsPromptEnd end)
     {
+        var key = update.Key;
         var names = BlockingProcessSummary.NamesFor(update).ToList();
-        _log.LogInformation("User chose Close apps and update for {App}: {Processes}",
-            update.DisplayName, string.Join(", ", names));
+        if (!_closing.Add(key))
+        {
+            _log.LogInformation("User chose Close apps and update for {App} ({Where}) again; its applications are already being closed",
+                update.DisplayName, Where(end));
+            return;
+        }
+        _log.LogInformation("User chose Close apps and update for {App} ({Where}): {Processes}",
+            update.DisplayName, Where(end), string.Join(", ", names));
+        _store.SetLocalStatus(key, Strings.CloseAppsClosing);
+        var sent = false;
+        try
+        {
+            sent = await CloseThenInstallAsync(update, names).ConfigureAwait(true);
+        }
+        finally
+        {
+            // The install request is only written to the pipe; until the service's state answers it the update still
+            // reads WaitingForClose, so the card would offer the button again for a round trip (a second click = a second
+            // run) and a prompt the service sent before it read the request would ask again. Both stay held until then.
+            if (sent && _store.Find(key)?.State == UpdateState.WaitingForClose) AwaitService(key);
+            else EndClosing(key);
+        }
+    }
 
+    /// <summary>Holds "Closing apps…" until the service's state shows the install request, or <see cref="ServiceAnswerWait"/> passes.</summary>
+    private void AwaitService(string key)
+    {
+        if (_awaitingService.Remove(key, out var previous)) previous.Stop();
+        var timer = new DispatcherTimer(DispatcherPriority.Normal, _dispatcher) { Interval = ServiceAnswerWait };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (!_awaitingService.TryGetValue(key, out var current) || !ReferenceEquals(current, timer)) return;
+            _log.LogWarning("The service still shows {Key} waiting for its applications {Seconds:F0} s after the install request; offering Close apps and update again",
+                key, ServiceAnswerWait.TotalSeconds);
+            EndClosing(key);
+        };
+        _awaitingService[key] = timer;
+        timer.Start();
+    }
+
+    /// <summary>Ends the hold once the service's state no longer shows the update waiting for its applications (or it is gone).</summary>
+    private void SettleAwaitedInstalls()
+    {
+        foreach (var key in _awaitingService.Keys.ToList())
+            if (_store.Find(key)?.State != UpdateState.WaitingForClose) EndClosing(key);
+    }
+
+    private void EndClosing(string key)
+    {
+        if (_awaitingService.Remove(key, out var timer)) timer.Stop();
+        _closing.Remove(key);
+        // Only this agent's own status: a user-context install may have set its own for the key meanwhile.
+        if (_store.GetLocalStatus(key) == Strings.CloseAppsClosing) _store.SetLocalStatus(key, null);
+    }
+
+    /// <summary>Returns true once the install request is on its way to the service.</summary>
+    private async Task<bool> CloseThenInstallAsync(PendingUpdate update, List<string> names)
+    {
         IReadOnlyList<string> stillRunning;
         try
         {
@@ -572,7 +677,7 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
                     _cts.Token).ConfigureAwait(true);
             }
         }
-        catch (OperationCanceledException) { return; }
+        catch (OperationCanceledException) { return false; }
         catch (Exception ex)
         {
             _log.LogError(ex, "Closing applications for {Key} failed", update.Key);
@@ -585,6 +690,6 @@ public sealed class CloseAppsCoordinator : IHostedService, ICloseAppsLauncher
             _log.LogWarning("{Count} application(s) are out of this agent's reach for {Key}; asking the service to close them: {StillRunning}",
                 stillRunning.Count, update.Key, string.Join(", ", stillRunning));
 
-        await _ipc.InstallNowAsync(update.Key, closeBlockingProcesses: true).ConfigureAwait(true);
+        return await _ipc.InstallNowAsync(update.Key, closeBlockingProcesses: true).ConfigureAwait(true);
     }
 }

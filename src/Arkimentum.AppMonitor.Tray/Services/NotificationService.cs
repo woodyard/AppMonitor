@@ -610,11 +610,12 @@ public sealed class NotificationService : IHostedService
                     break;
 
                 case ToastAction.CloseApps when key is not null:
-                    // An older toast's "Close apps" button: it opened the dialog, and now shows the prompt instead.
-                    _log.LogInformation("User chose Close apps from a toast for {Key}", key);
-                    var update = _store.Find(key);
-                    if (update is not null) _closeApps.ShowFor(update);
-                    else _windows.ShowMain();
+                    // The "Close apps and update" button of a CloseApplications toast (an older service sent
+                    // those; Windows may still hold one). It opened the dialog, then showed the prompt; its label says
+                    // what it does and its text already asked, so it is now the prompt's own answer, carried out at once.
+                    // Nothing left to act on (the update moved on): the main window shows where it stands.
+                    _log.LogInformation("User chose Close apps and update from an update toast for {Key}", key);
+                    if (!_closeApps.OnToastAction(ToastAction.PromptCloseAndUpdate, key, 0)) _windows.ShowMain();
                     break;
 
                 default:

@@ -63,7 +63,6 @@ public class CloseAppsPromptTests
     [Theory]
     [InlineData(CloseAppsPromptEnd.Timeout)]
     [InlineData(CloseAppsPromptEnd.ToastClosed)]
-    [InlineData(CloseAppsPromptEnd.OpenedWindow)]
     [InlineData(CloseAppsPromptEnd.NotShown)]
     public void Every_end_without_a_button_is_not_now(CloseAppsPromptEnd end)
     {
@@ -78,6 +77,54 @@ public class CloseAppsPromptTests
     [InlineData(CloseAppsChoice.NotNow)]
     public void A_button_is_what_it_says(CloseAppsChoice clicked) =>
         Assert.Equal(clicked, CloseAppsPrompt.ChoiceFor(CloseAppsPromptEnd.Button, clicked));
+
+    // ---------------------------------------------------------------- the card's "Close apps and update"
+
+    [Fact]
+    public void The_cards_button_is_the_prompts_own_answer()
+    {
+        // 2026-11-11: the card's "Close apps and update" only showed the toast again, which then had to be answered too.
+        // It is an answer like the toast's button, so an open prompt ends with it instead of being asked again.
+        Assert.True(CloseAppsPrompt.IsAnswer(CloseAppsPromptEnd.Card));
+        Assert.True(CloseAppsPrompt.IsAnswer(CloseAppsPromptEnd.Button));
+        Assert.Equal(CloseAppsChoice.CloseAndUpdate, CloseAppsPrompt.ChoiceFor(CloseAppsPromptEnd.Card, CloseAppsChoice.CloseAndUpdate));
+        // Answered, not unanswered: no forced-close notice is left behind for it.
+        Assert.False(CloseAppsPrompt.LeavesForcedCloseNotice(ForcedClosePending(), CloseAppsPromptEnd.Card, Now));
+    }
+
+    [Theory]
+    [InlineData(CloseAppsPromptEnd.Timeout)]
+    [InlineData(CloseAppsPromptEnd.ToastClosed)]
+    [InlineData(CloseAppsPromptEnd.NotShown)]
+    public void Only_buttons_are_answers(CloseAppsPromptEnd end) => Assert.False(CloseAppsPrompt.IsAnswer(end));
+
+    [Theory]
+    [InlineData(CloseAppsPromptEnd.Card)]
+    [InlineData(CloseAppsPromptEnd.Button)]
+    public void Close_and_update_with_no_prompt_open_is_carried_out_without_asking(CloseAppsPromptEnd end)
+    {
+        // The prompt timed out into "Not now" earlier (the update still waits for its apps), or the service never sent
+        // one: the button still closes and updates.
+        Assert.True(CloseAppsPrompt.CarriesOutWithoutPrompt(end, CloseAppsChoice.CloseAndUpdate, Update(), Now));
+        // A mandatory update past its deadline with its forced close on the way, likewise.
+        Assert.True(CloseAppsPrompt.CarriesOutWithoutPrompt(end, CloseAppsChoice.CloseAndUpdate, ForcedClosePending(), Now));
+        Assert.True(CloseAppsPrompt.CarriesOutWithoutPrompt(end, CloseAppsChoice.Defer, Update(), Now));
+    }
+
+    [Fact]
+    public void Nothing_is_carried_out_once_the_update_moved_on_or_without_a_choice()
+    {
+        var card = CloseAppsPromptEnd.Card;
+        Assert.False(CloseAppsPrompt.CarriesOutWithoutPrompt(card, CloseAppsChoice.CloseAndUpdate, null, Now));
+        Assert.False(CloseAppsPrompt.CarriesOutWithoutPrompt(card, CloseAppsChoice.CloseAndUpdate, Update(x => x.State = UpdateState.Installing), Now));
+        Assert.False(CloseAppsPrompt.CarriesOutWithoutPrompt(card, CloseAppsChoice.CloseAndUpdate, Update(x => x.State = UpdateState.Installed), Now));
+        Assert.False(CloseAppsPrompt.CarriesOutWithoutPrompt(card, CloseAppsChoice.CloseAndUpdate,
+            Update(x => { x.State = UpdateState.Deferred; x.DeferredUntilUtc = Now.AddHours(1); }), Now));
+        // "Not now" with nothing open has nothing left to answer, and the ways out that are no answer never act.
+        Assert.False(CloseAppsPrompt.CarriesOutWithoutPrompt(card, CloseAppsChoice.NotNow, Update(), Now));
+        Assert.False(CloseAppsPrompt.CarriesOutWithoutPrompt(card, null, Update(), Now));
+        Assert.False(CloseAppsPrompt.CarriesOutWithoutPrompt(CloseAppsPromptEnd.Timeout, CloseAppsChoice.CloseAndUpdate, Update(), Now));
+    }
 
     [Fact]
     public void Not_now_dismisses_an_optional_update()
@@ -158,9 +205,8 @@ public class CloseAppsPromptTests
         var u = ForcedClosePending();
 
         Assert.True(CloseAppsPrompt.LeavesForcedCloseNotice(u, CloseAppsPromptEnd.Timeout, Now));
-        // The user who closed the toast or opened the window has read it; nothing to leave once the close is due.
+        // The user who closed the toast has read it; nothing to leave once the close is due.
         Assert.False(CloseAppsPrompt.LeavesForcedCloseNotice(u, CloseAppsPromptEnd.ToastClosed, Now));
-        Assert.False(CloseAppsPrompt.LeavesForcedCloseNotice(u, CloseAppsPromptEnd.OpenedWindow, Now));
         Assert.False(CloseAppsPrompt.LeavesForcedCloseNotice(u, CloseAppsPromptEnd.Timeout, Now.AddMinutes(10)));
         Assert.False(CloseAppsPrompt.LeavesForcedCloseNotice(Update(), CloseAppsPromptEnd.Timeout, Now));
     }
@@ -214,6 +260,42 @@ public class CloseAppsPromptTests
         Assert.Contains(Strings.CloseAppsProcessWithMarkers("pwsh", Strings.CloseAppsElevated), content.Body);
         Assert.Contains(Strings.CloseAppsProcessWithMarkers("code", Strings.CloseAppsOtherSessionAs(@"CONTOSO\bob")), content.Body);
         Assert.Equal(Strings.CloseAppsServiceCloses, content.Detail);
+    }
+
+    [Fact]
+    public void The_card_marks_what_only_the_service_can_close_since_its_button_asks_nothing()
+    {
+        // The card's "Close apps and update" acts without the prompt, so the card itself must say that pwsh runs
+        // elevated and code in bob's session - the service closes those - before the user presses it.
+        var u = Update(x =>
+        {
+            x.ProcessNames = ["pwsh", "code"];
+            x.BlockingProcesses = ["pwsh", "code"];
+            x.BlockingDetails =
+            [
+                new BlockingProcessInfo { ProcessName = "pwsh", ProcessId = 10, SessionId = MySession, Elevated = true },
+                new BlockingProcessInfo { ProcessName = "code", ProcessId = 11, SessionId = 5, UserName = @"CONTOSO\bob" },
+            ];
+        });
+        var marked = $"{Strings.CloseAppsProcessWithMarkers("pwsh", Strings.CloseAppsElevated)}, " +
+                     Strings.CloseAppsProcessWithMarkers("code", Strings.CloseAppsOtherSessionAs(@"CONTOSO\bob"));
+
+        Assert.Equal($"{Strings.StateWaitingForCloseWithHint(marked)} {Strings.CloseAppsServiceCloses}",
+            CloseAppsPrompt.CardWaitingText(u, MySession, offersCloseApps: true));
+        // Without the button (this agent is installing it itself) neither the hint nor the service line applies.
+        Assert.Equal(Strings.StateWaitingForClose(marked), CloseAppsPrompt.CardWaitingText(u, MySession, offersCloseApps: false));
+    }
+
+    [Fact]
+    public void The_card_lists_my_own_processes_plainly()
+    {
+        var u = Update(x => x.BlockingDetails =
+            [new BlockingProcessInfo { ProcessName = "pwsh", ProcessId = 10, SessionId = MySession, Elevated = false }]);
+
+        Assert.Equal(Strings.StateWaitingForCloseWithHint("pwsh"), CloseAppsPrompt.CardWaitingText(u, MySession, offersCloseApps: true));
+        // An older service sends no detail: bare names, never a claim that the service is needed.
+        Assert.Equal(Strings.StateWaitingForCloseWithHint("pwsh"),
+            CloseAppsPrompt.CardWaitingText(Update(x => x.BlockingDetails = []), MySession, offersCloseApps: true));
     }
 
     [Fact]

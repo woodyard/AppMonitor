@@ -19,7 +19,10 @@ public static class ToastAction
     /// <summary>Send Defer for the update in the "key" argument, by "minutes".</summary>
     public const string Defer = "defer";
 
-    /// <summary>Show the close-apps prompt for the update in the "key" argument.</summary>
+    /// <summary>
+    /// "Close apps and update" on a CloseApplications toast for the update in the "key" argument: handled as the
+    /// close-apps prompt's own <see cref="PromptCloseAndUpdate"/>.
+    /// </summary>
     public const string CloseApps = "closeapps";
 
     // ---- the close-apps prompt's own answers; handled by CloseAppsCoordinator, which owns the prompt
@@ -33,6 +36,9 @@ public static class ToastAction
     /// <summary>"Not now" on the close-apps prompt.</summary>
     public const string PromptNotNow = "prompt-notnow";
 
-    /// <summary>The body of the close-apps prompt: opens the main window, and counts as "Not now".</summary>
+    /// <summary>
+    /// The body of the close-apps prompt: opens the main window and takes the prompt down without an answer; the
+    /// update's card there offers "Close apps and update".
+    /// </summary>
     public const string PromptOpen = "prompt-open";
 }

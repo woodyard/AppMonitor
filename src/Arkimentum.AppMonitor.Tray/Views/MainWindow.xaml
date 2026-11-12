@@ -278,7 +278,7 @@
                                     <!-- actions -->
                                     <WrapPanel Margin="0,16,0,0"
                                                Visibility="{Binding ShowAnyAction, Converter={StaticResource BoolToVisibility}}">
-                                        <!-- Brings the close-apps prompt back: its toast goes away after half a minute. -->
+                                        <!-- The close-apps prompt's own answer, carried out at once (no second question): closes the blocking apps, then installs. -->
                                         <Button MinWidth="168"
                                                 Margin="0,0,8,0"
                                                 Padding="14,6"

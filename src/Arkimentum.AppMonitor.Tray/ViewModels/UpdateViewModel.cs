@@ -29,13 +29,12 @@ public interface IUpdateActions
     void Dismiss(PendingUpdate update);
 
     /// <summary>
-    /// Shows the "Close apps to update" prompt (a toast) again for an update that is waiting for the user. The prompt
-    /// is built locally, so this never needs the service: the tray already holds the update with its blocking detail.
-    /// Without it a user whose prompt went away (answered "Not now", closed, or unanswered for half a minute) was stuck
-    /// with a card saying "Waiting for you to close: pwsh" and no way back until the service prompted again, which is
-    /// one notification interval away.
+    /// "Close apps and update" on the card of an update that is waiting for the user: closes the blocking applications
+    /// and asks the service to install, exactly as the close-apps prompt's own button does - whether the prompt is still
+    /// on screen (it is taken down as answered) or went away (answered "Not now", closed, or unanswered for half a
+    /// minute). The label says what it does, so it never shows the prompt to ask a second time.
     /// </summary>
-    void ShowCloseApps(PendingUpdate update);
+    void CloseAppsAndUpdate(PendingUpdate update);
 }
 
 /// <summary>One update card.</summary>
@@ -70,9 +69,9 @@ public sealed class UpdateViewModel : ObservableObject
 
         _installCommand = new RelayCommand(() => _actions.Install(_update), () => IsInstallEnabled);
         _dismissCommand = new RelayCommand(() => _actions.Dismiss(_update), () => _isConnected);
-        // Purely local: the prompt is shown from the update the tray already holds, so it works even when the
-        // service is momentarily unreachable.
-        _closeAppsCommand = new RelayCommand(() => _actions.ShowCloseApps(_update));
+        // Needs the service: after closing the applications the agent sends the install request, and closing someone's
+        // apps for an install nobody hears about would be for nothing (the service re-prompts when the agent reconnects).
+        _closeAppsCommand = new RelayCommand(() => _actions.CloseAppsAndUpdate(_update), () => _isConnected);
         DeferralOptions = [];
         RebuildDeferralOptions();
         RefreshProgress();
@@ -87,7 +86,10 @@ public sealed class UpdateViewModel : ObservableObject
 
     public ICommand DismissCommand => _dismissCommand;
 
-    /// <summary>Shows the close-apps prompt again for this update; offered only while it is waiting for the user.</summary>
+    /// <summary>
+    /// "Close apps and update": closes the blocking applications and asks the service to install, without asking the
+    /// user again; offered only while the update is waiting for the user.
+    /// </summary>
     public ICommand CloseAppsCommand => _closeAppsCommand;
 
     public ObservableCollection<DeferOptionViewModel> DeferralOptions { get; }
@@ -146,11 +148,10 @@ public sealed class UpdateViewModel : ObservableObject
                 UpdateState.Deferred => Strings.StateDeferred(
                     _update.DeferredUntilUtc is { } until ? TimeFormat.Absolute(until) : Strings.DetailsNone),
                 UpdateState.Scheduled => _update.PrioritizedUtc is not null ? Strings.StateScheduledFirst : Strings.StateScheduled,
-                // The card is the only place left explaining this once the prompt's toast is gone, so it also says how
-                // to get the prompt back - it goes away by itself after half a minute.
-                UpdateState.WaitingForClose => ShowCloseApps
-                    ? Strings.StateWaitingForCloseWithHint(BlockingProcessText)
-                    : Strings.StateWaitingForClose(BlockingProcessText),
+                // The card is the only place left explaining this once the prompt's toast is gone (it goes away by
+                // itself after half a minute), so it also says what its button does - at once, with no second question -
+                // and, as the prompt did, which applications only the service can close.
+                UpdateState.WaitingForClose => CloseAppsPrompt.CardWaitingText(_update, AppInfo.SessionId, ShowCloseApps),
                 UpdateState.Installing => Strings.StateInstalling,
                 UpdateState.Installed => Strings.StateInstalled(
                     _update.InstalledAtUtc is { } at ? TimeFormat.Absolute(at) : string.Empty).TrimEnd(),
@@ -202,11 +203,6 @@ public sealed class UpdateViewModel : ObservableObject
         _update.Mandatory && _update.DeadlineUtc is { } deadline ? Strings.RequiredBy(TimeFormat.Absolute(deadline)) : string.Empty;
 
     public bool HasDeadline => DeadlineText.Length > 0;
-
-    private string BlockingProcessText =>
-        _update.BlockingProcesses.Count > 0
-            ? string.Join(", ", _update.BlockingProcesses)
-            : string.Join(", ", _update.ProcessNames);
 
     // ---------------------------------------------------------------- buttons
 
@@ -293,6 +289,7 @@ public sealed class UpdateViewModel : ObservableObject
     {
         _installCommand.RaiseCanExecuteChanged();
         _dismissCommand.RaiseCanExecuteChanged();
+        _closeAppsCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(
             nameof(DisplayName), nameof(Monogram), nameof(VersionText), nameof(SourceBadge), nameof(ContextBadge),
             nameof(StatusText), nameof(Severity), nameof(DeadlineText), nameof(HasDeadline),

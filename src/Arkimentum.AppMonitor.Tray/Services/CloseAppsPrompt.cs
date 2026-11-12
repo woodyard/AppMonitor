@@ -16,15 +16,23 @@ public enum CloseAppsChoice
     NotNow,
 }
 
-/// <summary>How a close-apps prompt ended. Only <see cref="Button"/> is the user choosing; everything else is "Not now".</summary>
+/// <summary>
+/// How a close-apps prompt ended. Only <see cref="Button"/> and <see cref="Card"/> are the user choosing
+/// (<see cref="CloseAppsPrompt.IsAnswer"/>); everything else is "Not now".
+/// </summary>
 public enum CloseAppsPromptEnd
 {
     /// <summary>One of the toast's buttons.</summary>
     Button,
+    /// <summary>
+    /// The update card's "Close apps and update" in the main window: the same answer as the toast's button, given
+    /// outside the toast - with the prompt on screen (it is taken down as answered) or with none open at all.
+    /// </summary>
+    Card,
     /// <summary>The user closed the toast with its X, or swiped it away.</summary>
     ToastClosed,
-    /// <summary>The user clicked the toast itself, which opens the main window instead of answering.</summary>
-    OpenedWindow,
+    // A click on the toast itself opens the main window and is no end of these: the coordinator takes the prompt down
+    // without an answer, and the update's card offers the choice.
     /// <summary>Nothing happened within <see cref="CloseAppsPrompt.AnswerTimeout"/>.</summary>
     Timeout,
     /// <summary>Windows would not show the toast (notifications for the agent are off, or showing it threw).</summary>
@@ -75,12 +83,28 @@ public static class CloseAppsPrompt
     /// <summary>A toast's selection box holds at most five items, so a longer list of deferral options is cut there.</summary>
     public const int MaxDeferralChoices = 5;
 
+    /// <summary>True for the ends that are the user choosing something: a button on the toast, or the card's button.</summary>
+    public static bool IsAnswer(CloseAppsPromptEnd end) => end is CloseAppsPromptEnd.Button or CloseAppsPromptEnd.Card;
+
     /// <summary>
-    /// Every way out of the prompt other than a button means "Not now", exactly as the dialog's X did: the service has
-    /// to hear an answer, or the update sits in WaitingForClose until the next notification interval.
+    /// Every way out of the prompt other than a button (on the toast or on the card) means "Not now", exactly as the
+    /// dialog's X did: the service has to hear an answer, or the update sits in WaitingForClose until the next
+    /// notification interval.
     /// </summary>
     public static CloseAppsChoice ChoiceFor(CloseAppsPromptEnd end, CloseAppsChoice? clicked) =>
-        end == CloseAppsPromptEnd.Button && clicked is { } choice ? choice : CloseAppsChoice.NotNow;
+        IsAnswer(end) && clicked is { } choice ? choice : CloseAppsChoice.NotNow;
+
+    /// <summary>
+    /// An answer that arrives with no prompt waiting for it: the prompt timed out (or was answered "Not now") earlier,
+    /// the service has not sent one, the toast outlived an agent restart, or it is the notice left for a forced close.
+    /// An explicit "Close apps and update" or deferral still means what it says - the card's button closes and updates
+    /// without asking first - as long as the update is still there to act on (<see cref="IsWithdrawn"/>); "Not now"
+    /// and the ways out that are no answer have nothing left to answer.
+    /// </summary>
+    public static bool CarriesOutWithoutPrompt(CloseAppsPromptEnd end, CloseAppsChoice? clicked, PendingUpdate? latest, DateTimeOffset now) =>
+        IsAnswer(end)
+        && clicked is CloseAppsChoice.CloseAndUpdate or CloseAppsChoice.Defer
+        && !IsWithdrawn(latest, now);
 
     /// <summary>
     /// What "Not now" tells the service: a dismissal for an optional update; nothing for a mandatory one, which cannot
@@ -92,8 +116,8 @@ public static class CloseAppsPrompt
 
     /// <summary>
     /// After an unanswered prompt the toast goes away, but a forced close is still on its way: the user is left a
-    /// silent notice in the notification centre saying when, until it happens. A user who closed the toast or opened
-    /// the window has read it, and one whose toasts Windows refuses cannot be shown a notice either.
+    /// silent notice in the notification centre saying when, until it happens. A user who closed the toast has read it,
+    /// and one whose toasts Windows refuses cannot be shown a notice either.
     /// </summary>
     public static bool LeavesForcedCloseNotice(PendingUpdate update, CloseAppsPromptEnd end, DateTimeOffset now) =>
         end == CloseAppsPromptEnd.Timeout && update.ForceCloseAtUtc is { } at && at > now;
@@ -118,21 +142,7 @@ public static class CloseAppsPrompt
         var name = string.IsNullOrWhiteSpace(update.DisplayName) ? update.AppId : update.DisplayName;
         var title = Strings.CloseAppsTitle(name);
 
-        // The same markers the dialog had: a process that runs elevated or in another session is one this agent cannot
-        // close itself, and without saying so the user only sees an application that refuses to close.
-        var needsService = false;
-        var items = new List<string>();
-        foreach (var process in BlockingProcessSummary.NamesFor(update))
-        {
-            var summary = BlockingProcessSummary.For(process, update.BlockingDetails, sessionId);
-            needsService |= summary.NeedsService;
-            var markers = new List<string>();
-            if (summary.IsElevated) markers.Add(Strings.CloseAppsElevated);
-            if (summary.IsInAnotherSession)
-                markers.Add(summary.OtherSessionUser is null ? Strings.CloseAppsOtherSession : Strings.CloseAppsOtherSessionAs(summary.OtherSessionUser));
-            var label = Friendly(friendly, process);
-            items.Add(markers.Count == 0 ? label : Strings.CloseAppsProcessWithMarkers(label, string.Join(", ", markers)));
-        }
+        var items = MarkedProcesses(update, sessionId, friendly, out var needsService);
         var body = Strings.CloseAppsToastBody(items.Count == 0 ? name : string.Join(", ", items));
 
         // The forced close goes first: a toast cuts long text short, and that is the line the user must not miss.
@@ -151,6 +161,45 @@ public static class CloseAppsPrompt
         var signature = string.Join("\u001f", title, body, detail ?? string.Empty, showNotNow, string.Join(",", deferrals),
             update.ForceCloseAtUtc?.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
         return new CloseAppsPromptContent(title, body, detail, showNotNow, deferrals, update.ForceCloseAtUtc, signature);
+    }
+
+    /// <summary>
+    /// The blocking applications as the prompt lists them, each with the dialog's old markers: a process that runs
+    /// elevated or in another session is one this agent cannot close itself, and without saying so the user only sees
+    /// an application that refuses to close. <paramref name="needsService"/> is true when any of them is such a process
+    /// (the service closes those when the user chooses "Close apps and update").
+    /// </summary>
+    public static IReadOnlyList<string> MarkedProcesses(PendingUpdate update, int sessionId, Func<string, string> friendly, out bool needsService)
+    {
+        needsService = false;
+        var items = new List<string>();
+        foreach (var process in BlockingProcessSummary.NamesFor(update))
+        {
+            var summary = BlockingProcessSummary.For(process, update.BlockingDetails, sessionId);
+            needsService |= summary.NeedsService;
+            var markers = new List<string>();
+            if (summary.IsElevated) markers.Add(Strings.CloseAppsElevated);
+            if (summary.IsInAnotherSession)
+                markers.Add(summary.OtherSessionUser is null ? Strings.CloseAppsOtherSession : Strings.CloseAppsOtherSessionAs(summary.OtherSessionUser));
+            var label = Friendly(friendly, process);
+            items.Add(markers.Count == 0 ? label : Strings.CloseAppsProcessWithMarkers(label, string.Join(", ", markers)));
+        }
+        return items;
+    }
+
+    /// <summary>
+    /// The update card's status while the service waits for the user to close the blocking applications. The card's
+    /// "Close apps and update" acts at once, with no prompt shown first, so when it is offered
+    /// (<paramref name="offersCloseApps"/>) the card says what the prompt would have said: which applications are out of
+    /// this agent's reach (elevated, another user's session) and that the service closes those too. Bare process names:
+    /// the card is redrawn every half minute, and the friendly names cost a walk over the processes each time.
+    /// </summary>
+    public static string CardWaitingText(PendingUpdate update, int sessionId, bool offersCloseApps)
+    {
+        var processes = string.Join(", ", MarkedProcesses(update, sessionId, static p => p, out var needsService));
+        if (!offersCloseApps) return Strings.StateWaitingForClose(processes);
+        var text = Strings.StateWaitingForCloseWithHint(processes);
+        return needsService ? $"{text} {Strings.CloseAppsServiceCloses}" : text;
     }
 
     /// <summary>The friendly name never stops a prompt from showing; the bare process name is always good enough.</summary>

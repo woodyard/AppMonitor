@@ -132,12 +132,13 @@ public static class Strings
 
     /// <summary>
     /// The same status with the way out: the close-apps prompt is a toast that goes away after half a minute, and the
-    /// card is then the only thing left saying what is wrong. Appended whenever the card offers the prompt again.
+    /// card is then the only thing left saying what is wrong. Appended whenever the card offers its "Close apps and
+    /// update", which acts at once - no second question - so the card carries the prompt's warning itself.
     /// </summary>
-    public const string StateWaitingForCloseReopenHint = "Choose “Close apps and update” to be asked again.";
+    public const string StateWaitingForCloseActionHint = "“Close apps and update” closes them and installs; save your work first.";
 
     public static string StateWaitingForCloseWithHint(string processes) =>
-        $"{StateWaitingForClose(processes)} {StateWaitingForCloseReopenHint}";
+        $"{StateWaitingForClose(processes)}. {StateWaitingForCloseActionHint}";
     public static string StateInstalled(string when) => $"Installed {when}";
     public static string StateFailed(string? error) =>
         string.IsNullOrWhiteSpace(error) ? "Failed" : $"Failed: {error}";
@@ -217,8 +218,10 @@ public static class Strings
 
     // ---------------------------------------------------------------- close-apps prompt (a toast)
     public const string CloseAppsSaveHint = "Save your work first — unsaved changes may be lost.";
-    /// <summary>The prompt's main button, and the update card's button that brings the prompt back.</summary>
+    /// <summary>The update card's button: the prompt's own answer, carried out without asking again.</summary>
     public const string CloseAppsAndUpdate = "Close apps and update";
+    /// <summary>The card's status while "Close apps and update" closes the applications, before the install is queued.</summary>
+    public const string CloseAppsClosing = "Closing apps…";
     public const string CloseAppsNotNow = "Not now";
     /// <summary>The prompt's line once a forced close is due, and the toast shown while the service closes the apps.</summary>
     public const string CloseAppsCountdownElapsed = "Your apps are being closed now.";

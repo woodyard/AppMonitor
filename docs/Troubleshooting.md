@@ -778,11 +778,14 @@ had been dismissed without an answer: the service never heard one, the update st
 Now:
 
 - The prompt is a toast that waits 30 seconds. Every way it ends without a button - no answer, its
-  **X**, a click on the toast body - is treated as **Not now**, so the service knows the user declined.
+  **X** - is treated as **Not now**, so the service knows the user declined. A click on the toast body
+  opens the main window and only takes the prompt down; the card there offers **Close apps and update**.
   For a mandatory update "Not now" sends nothing (it cannot be dismissed); the update waits, still
   `WaitingForClose`, until the service asks again at the notification interval.
 - The card itself carries a **Close apps and update** button while an update is waiting, and its status
-  says so. Pressing it shows the prompt again locally - no waiting for the service to prompt again.
+  says so. Pressing it does what the prompt's button does, at once and without asking again - whether
+  the prompt is still on screen (it is taken down) or went away - and needs no new prompt from the service.
+  The log says where the answer came from: `User chose Close apps and update for X (on its update card)`.
 
 To see how each prompt ended, check the tray log (`%LOCALAPPDATA%\Arkimentum\AppMonitor\Logs\`):
 
@@ -796,7 +799,8 @@ Select-String -Path "$env:LOCALAPPDATA\Arkimentum\AppMonitor\Logs\Arkimentum.App
 | `Showing the close-apps prompt for X (blocking: …)` | The toast went up; the 30 seconds start. |
 | `User chose Close apps and update` / `User deferred X by N minutes` / `User chose Not now` | A button. |
 | `No answer to the close-apps prompt for X within 30 s; taking it as Not now` | The timeout. |
-| `User closed the close-apps prompt` / `User opened the main window from the close-apps prompt` | The toast's X / its body; both "Not now". |
+| `User closed the close-apps prompt` | The toast's X; "Not now". |
+| `Took down the close-apps prompt for X: the user opened the main window from it, …` | The toast's body: no answer; the update keeps waiting and its card offers Close apps and update. |
 | `Cannot show the close-apps prompt for X: Windows reports the agent's notifications as DisabledForUser` | Notifications for Arkimentum AppMonitor are switched off in Windows (Settings > System > Notifications, or by policy). The user is never asked and every prompt ends as "Not now"; switch them back on. |
 | `Took down the close-apps prompt for X: the update moved on` | Installed, installing or deferred meanwhile; nothing was answered. |
 

@@ -428,6 +428,7 @@ public sealed class UpdateCoordinator : IAsyncDisposable
             await _policyLock.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                CorrectMsixBundleVersions(outcomes);
                 summary = PolicyEngine.Merge(_state.Updates, outcomes, checkedKeys, now);
                 var pruned = PolicyEngine.PruneUnconfigured(_state.Updates, apps);
                 if (pruned > 0)
@@ -584,6 +585,31 @@ public sealed class UpdateCoordinator : IAsyncDisposable
         _state.AppPresence = next;
         _logger.LogDebug("Application presence: {Installed} of {Known} checked entries are installed on this device",
             next.Values.Count(p => p.Installed), next.Count);
+    }
+
+    /// <summary>
+    /// Corrects what was recorded with a provisioned MSIX bundle's version before the scan could tell bundle from package
+    /// (the 1.1.56 take-over of PowerShell 7.7 recorded 2026.1110.418.0 in its tracked update and its history entry): for
+    /// every application the service's own check found as a bundle (<see cref="UpdateCheckResult.MsixBundleVersion"/>)
+    /// with a known package version, that exact bundle version is replaced by the package's in the application's tracked
+    /// updates and history entries. Idempotent: once replaced, the bundle version is no longer found. Called under
+    /// <see cref="_policyLock"/>; the caller saves the state.
+    /// </summary>
+    private void CorrectMsixBundleVersions(IReadOnlyList<ScanOutcome> outcomes)
+    {
+        foreach (var o in outcomes)
+        {
+            if (o.Context != InstallContext.System || o.Result.Error is not null
+                || o.Result.MsixBundleVersion is not { } bundle || o.Result.InstalledVersion is not { } package || string.IsNullOrWhiteSpace(package)) continue;
+            foreach (var key in PolicyEngine.CorrectMsixBundleVersions(_state.Updates, o.Policy.AppId, bundle, package))
+                _logger.LogInformation("{Key}: installed version corrected from {Bundle} (the provisioned MSIX bundle's) to {Package} (its package's)", key, bundle, package);
+            if (InstallHistory.CorrectMsixBundleVersions(_state.InstallHistory, o.Policy.AppId, bundle, package) is { } history)
+            {
+                _state.InstallHistory = history.History;
+                _logger.LogInformation("{App}: {Count} install history entr{Plural} corrected from {Bundle} (the provisioned MSIX bundle's version) to {Package} (its package's)",
+                    o.Policy.AppId, history.Corrected, history.Corrected == 1 ? "y" : "ies", bundle, package);
+            }
+        }
     }
 
     private static void AddUserApp(Dictionary<string, List<AppPolicy>> map, string sid, AppPolicy app)

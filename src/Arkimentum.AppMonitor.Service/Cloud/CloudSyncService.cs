@@ -1,5 +1,6 @@
 using Arkimentum.AppMonitor.Cloud;
 using Arkimentum.AppMonitor.Configuration;
+using Arkimentum.AppMonitor.Install;
 using Arkimentum.AppMonitor.Inventory;
 using Arkimentum.AppMonitor.Models;
 using Arkimentum.AppMonitor.Providers;
@@ -583,7 +584,9 @@ public sealed class CloudSyncService : BackgroundService
         var discovery = new InstalledAppDiscovery(_loggerFactory.CreateLogger<InstalledAppDiscovery>(), _scanner);
         IReadOnlyList<AppPolicy> catalog = settings.UseCatalog ? _catalog.GetCatalog(settings.CatalogPath) : Array.Empty<AppPolicy>();
         var userPackages = settings.WingetEnabled ? await CollectUserPackagesAsync(ct).ConfigureAwait(false) : null;
-        _discovered = await discovery.DiscoverAsync(settings.Apps, catalog, settings.WingetPath, settings.WingetEnabled, null, ct, userPackages).ConfigureAwait(false);
+        // As LocalSystem, winget lists a provisioned MSIX bundle with the bundle's version; the inventory shows the package's.
+        _discovered = await discovery.DiscoverAsync(settings.Apps, catalog, settings.WingetPath, settings.WingetEnabled, null, ct, userPackages,
+            msixBundles: token => MsixBundleIndex.LoadAsync(_logger, token)).ConfigureAwait(false);
         _discoveryStamp = stamp;
         return _discovered;
     }

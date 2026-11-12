@@ -29,6 +29,15 @@ public sealed record UpdateCheckResult
     /// </summary>
     public bool WingetUncorrelated { get; init; }
 
+    /// <summary>
+    /// Set by the service's (machine-scope) winget check when the install it found is a provisioned MSIX bundle: the
+    /// bundle's own version, which winget's listing printed (PowerShell 7.7: 2026.1110.418.0). <see cref="InstalledVersion"/>
+    /// is then the version of the family's highest package (7.7.0.0; null when none is known), and there is no update in
+    /// that context - MSIX packages are updated in each user's. The service uses it to correct records that were written
+    /// with the bundle's version. Null otherwise, and always from the tray. Added after 1.1.56.
+    /// </summary>
+    public string? MsixBundleVersion { get; init; }
+
     public static UpdateCheckResult NotInstalled(string appId, UpdateSource source) =>
         new() { AppId = appId, Source = source, IsInstalled = false };
 

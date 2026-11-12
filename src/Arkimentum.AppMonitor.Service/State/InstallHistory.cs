@@ -103,6 +103,37 @@ public static class InstallHistory
         return changed ? result : null;
     }
 
+    /// <summary>
+    /// Replaces a provisioned MSIX bundle's version by its package's in the entries of <paramref name="appId"/> (see
+    /// <see cref="Policy.PolicyEngine.CorrectMsixBundleVersions"/>): a <see cref="InstallHistoryEntry.ToVersion"/> or
+    /// <see cref="InstallHistoryEntry.FromVersion"/> that is exactly <paramref name="bundleVersion"/> (ordinal). Returns the
+    /// list to swap in and how many entries changed, or null when nothing did (so a second call returns null); like
+    /// <see cref="Append"/>, the input and its entries are never edited.
+    /// </summary>
+    public static (List<InstallHistoryEntry> History, int Corrected)? CorrectMsixBundleVersions(IReadOnlyList<InstallHistoryEntry>? history,
+        string appId, string bundleVersion, string packageVersion)
+    {
+        if (history is null || history.Count == 0 || string.IsNullOrWhiteSpace(bundleVersion) || string.IsNullOrWhiteSpace(packageVersion)
+            || string.Equals(bundleVersion, packageVersion, StringComparison.Ordinal)) return null;
+        string? Fix(string? version) => string.Equals(version, bundleVersion, StringComparison.Ordinal) ? packageVersion : version;
+
+        var corrected = 0;
+        var result = history.Select(e =>
+        {
+            if (!string.Equals(e.AppId, appId, StringComparison.OrdinalIgnoreCase)
+                || (!string.Equals(e.ToVersion, bundleVersion, StringComparison.Ordinal) && !string.Equals(e.FromVersion, bundleVersion, StringComparison.Ordinal)))
+                return e;
+            corrected++;
+            return new InstallHistoryEntry
+            {
+                AppId = e.AppId, DisplayName = e.DisplayName, FromVersion = Fix(e.FromVersion), ToVersion = Fix(e.ToVersion),
+                Succeeded = e.Succeeded, CompletedUtc = e.CompletedUtc, Context = e.Context, UserSid = e.UserSid,
+                Message = e.Message, IconPath = e.IconPath, StartedUtc = e.StartedUtc, AppRestartPending = e.AppRestartPending,
+            };
+        }).ToList();
+        return corrected > 0 ? (result, corrected) : null;
+    }
+
     private static string IconKey(string appId, InstallContext context, string? userSid) =>
         context == InstallContext.User ? $"{appId}|User|{userSid}" : $"{appId}|System";
 

@@ -548,6 +548,36 @@ In agents after 1.1.46:
   failure, so the tray's quick successive scans no longer use up the retries; *Install now* retries
   at once.
 
+### The service reports an MSIX application at a strange version (agents up to 1.1.56)
+
+Symptom: the service log says *PowerShell 7: 2026.1110.418.0 is up to date (winget, System)*, and the
+device report, the inventory or the tray's *Recent* tab show PowerShell at 2026.1110.418.0 while the
+user's own listing shows 7.7.0.0 (Windows Terminal alike: 3001.25.3131.0 for 1.25.3131.0).
+
+Cause: as LocalSystem, `winget list --scope machine` lists a **provisioned msixbundle** by the bundle's
+identity name and the bundle's own version (`Microsoft.PowerShell  Microsoft.PowerShell
+2026.1110.418.0`, local identifier `MSIX\Microsoft.PowerShell_2026.1110.418.0_neutral_~_8wekyb3d8bbwe`).
+The bundle version is not the application's, and SYSTEM's `winget upgrade` compares the manifest's
+versions against it, so the machine scope can never see 7.7.1.
+
+In agents after 1.1.56 the service reads such rows as what they stand for. When a row of an application it
+checks is named like an MSIX package (`Microsoft.PowerShell`), it enumerates the machine's packages and
+bundles once per scan (`Get-AppxPackage -AllUsers -PackageTypeFilter Main,Bundle` in Windows PowerShell
+5.1, plus the provisioned bundles under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications`).
+A row whose Name is a bundle's package name and whose version is that bundle's then reads the version of
+the family's highest package (registered or staged for any user), or *unknown* when there is none, never
+the bundle's; it carries no update in the machine scope (MSIX packages are updated in each user's
+context, so give such applications context *auto* or *user*), and SYSTEM's upgrade offers for the bundle
+are ignored. Information: *'Microsoft.PowerShell' is a provisioned MSIX bundle in winget's System-scope
+listing, which shows the bundle's version 2026.1110.418.0; its package is at 7.7.0.0. MSIX packages are
+updated in each user's context, so this scope offers no update.* The cloud inventory's machine-scope rows
+get the package version the same way. Records written earlier with the bundle's version (the 1.1.56
+take-over's tracked update and history entry) are corrected at the next scan, once each: *powershell|System|-:
+installed version corrected from 2026.1110.418.0 (the provisioned MSIX bundle's) to 7.7.0.0 (its
+package's)*. A cloud event already sent keeps its version. If the enumeration fails, a Warning says
+*Enumerating the MSIX packages for the machine-scope listing failed (...)*, and bundle rows read
+*unknown*.
+
 ## winget says the install technology is different
 
 Symptom: the tray's card says *winget offers 7.7.0.0 only with a different installer type than the

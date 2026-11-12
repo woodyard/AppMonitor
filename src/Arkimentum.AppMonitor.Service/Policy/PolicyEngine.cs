@@ -326,6 +326,29 @@ public static class PolicyEngine
         return removed;
     }
 
+    /// <summary>
+    /// Corrects the tracked updates of <paramref name="appId"/> that were written with a provisioned MSIX bundle's version
+    /// as the installed one: the service's own check read SYSTEM's winget listing, which shows the bundle's version, and
+    /// the take-over of 1.1.56 recorded it too (PowerShell 7.7 on CPC-hsk-HSNE00X: installed 2026.1110.418.0 for package
+    /// 7.7.0.0). Only an installed version that is exactly <paramref name="bundleVersion"/> (ordinal) is replaced, by
+    /// <paramref name="packageVersion"/>, so a second call changes nothing. An install in flight is left alone. Returns
+    /// the keys of the corrected entries; the caller saves the state.
+    /// </summary>
+    public static IReadOnlyList<string> CorrectMsixBundleVersions(IDictionary<string, PendingUpdate> state, string appId, string bundleVersion, string packageVersion)
+    {
+        if (string.IsNullOrWhiteSpace(bundleVersion) || string.IsNullOrWhiteSpace(packageVersion)
+            || string.Equals(bundleVersion, packageVersion, StringComparison.Ordinal)) return [];
+        var corrected = new List<string>();
+        foreach (var (key, u) in state)
+        {
+            if (u.State == UpdateState.Installing || !string.Equals(u.AppId, appId, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(u.InstalledVersion, bundleVersion, StringComparison.Ordinal)) continue;
+            u.InstalledVersion = packageVersion;
+            corrected.Add(key);
+        }
+        return corrected;
+    }
+
     private static PendingUpdate CreatePending(ScanOutcome o, DateTimeOffset now)
     {
         var p = new PendingUpdate

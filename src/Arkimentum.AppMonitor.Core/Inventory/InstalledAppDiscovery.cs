@@ -62,9 +62,16 @@ public sealed class InstalledAppDiscovery
     /// Null or empty keeps the pre-1.1.9 behaviour, which is what the admin console's Discover dialog and the command
     /// line use: they already run as the interactive user.
     /// </param>
+    /// <param name="msixBundles">
+    /// Optional: enumerates the machine's MSIX bundles and packages (<see cref="MsixBundleIndex.LoadAsync"/>). The service
+    /// passes it: as LocalSystem, winget lists a provisioned msixbundle in the machine scope with the bundle's version
+    /// (PowerShell 7.7 as 2026.1110.418.0), which is then replaced by the package's (see <see cref="MsixBundleIndex.Resolve"/>).
+    /// Run only when a machine-scope row looks like a bundle's. Null (the admin console, the command line) keeps the rows.
+    /// </param>
     public async Task<IReadOnlyList<DiscoveredApp>> DiscoverAsync(IReadOnlyList<AppPolicy> configured, IReadOnlyList<AppPolicy> catalog,
         string? wingetPath, bool includeWinget, IProgress<string>? progress, CancellationToken ct,
-        IReadOnlyDictionary<string, IReadOnlyList<WingetRow>>? userPackagesBySid = null)
+        IReadOnlyDictionary<string, IReadOnlyList<WingetRow>>? userPackagesBySid = null,
+        Func<CancellationToken, Task<MsixBundleIndex>>? msixBundles = null)
     {
         progress?.Report("Reading installed applications from the registry…");
         var inventory = _scanner.Scan(includeMachine: true, includeUsers: true);
@@ -92,6 +99,15 @@ public sealed class InstalledAppDiscovery
                         continue;
                     }
                     var rows = WingetOutputParser.ParseListOutput(run.StandardOutput);
+                    if (context == InstallContext.System && msixBundles is not null && rows.Any(MsixBundleIndex.IsCandidate))
+                    {
+                        var index = await msixBundles(ct).ConfigureAwait(false);
+                        rows = index.Resolve(rows);
+                        var resolved = rows.Count(r => r.MsixBundleVersion is not null);
+                        if (resolved > 0)
+                            _logger.LogInformation("Discovery: {Count} machine-scope row(s) are provisioned MSIX bundles, listed with the package's version{Failure}",
+                                resolved, index.Failure is null ? string.Empty : $" where known (package enumeration: {index.Failure})");
+                    }
                     _logger.LogInformation("Discovery: winget reports {Count} {Scope}-scope package(s)", rows.Count, scope);
                     wingetRows.AddRange(rows.Where(r => !string.IsNullOrWhiteSpace(r.Id)).Select(r => (r, context)));
                 }
@@ -192,7 +208,7 @@ public sealed class InstalledAppDiscovery
                 // Rows without a source are ARP entries winget could not map to a package; the registry pass already has them.
                 if (result.Any(r => NamesMatch(r.DisplayName, row.Name))) continue;
             }
-            result.Add(Build(row.Name, row.Version, null, row, context, "winget", configured, catalog));
+            result.Add(Build(row.Name, string.IsNullOrWhiteSpace(row.Version) ? null : row.Version, null, row, context, "winget", configured, catalog));
         }
 
         return result

@@ -657,6 +657,11 @@ Notes:
   session for want of administrator rights (0x80073D28; `Anthropic.Claude`, whose package brings a
   Windows service); the service then provisions it with `--scope machine --installer-type msix`. See
   Troubleshooting, *An MSIX package whose manifest only has an elevated installer*.
+- MSIX packages belong to the user context. In SYSTEM's machine-scope listing a provisioned msixbundle
+  appears with the bundle's own version (PowerShell 7.7: 2026.1110.418.0 for the package 7.7.0.0); the
+  service resolves such a row to the family's highest package version from one `Get-AppxPackage
+  -AllUsers` enumeration per scan and never offers an update for it in the machine scope (see
+  Troubleshooting, *The service reports an MSIX application at a strange version*).
 
 ## Files and paths
 

@@ -16,6 +16,13 @@ public sealed record WingetRow(string Name, string Id, string Version, string Av
     /// <summary>True when winget printed a truncated (ellipsised) cell for this row.</summary>
     public bool IsTruncated =>
         Name.EndsWith('…') || Id.EndsWith('…') || Version.EndsWith('…') || Available.EndsWith('…');
+
+    /// <summary>
+    /// Set when SYSTEM's listing showed this row as a provisioned MSIX bundle: the bundle's own version, which winget
+    /// printed, while <see cref="Version"/> now holds the version of the family's package (empty when unknown). See
+    /// <see cref="Install.MsixBundleIndex.Resolve"/>. Null for every row winget's output stands for as it is.
+    /// </summary>
+    public string? MsixBundleVersion { get; init; }
 }
 
 /// <summary>

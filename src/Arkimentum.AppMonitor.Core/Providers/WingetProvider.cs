@@ -132,6 +132,12 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         // shared by every application of the scan (see PrepareScanAsync). Each configured id is looked up in it in
         // memory; winget is only asked about a single id when the listing cannot answer (see LookupIdAsync).
         var listing = await GetFullListAsync(winget, context, ct).ConfigureAwait(false);
+        var candidates = SplitIds(app.WingetId);
+
+        // As LocalSystem, a provisioned MSIX bundle is listed with the bundle's version (see MsixBundleIndex): such rows
+        // are read as the family's package, without an update, once the scan knows the machine's bundles.
+        if (await MsixBundlesForAsync(listing.Rows, app, candidates, context, ct).ConfigureAwait(false) is { } bundleIndex)
+            listing = ResolvedListing(listing, bundleIndex, context);
 
         // A WingetId may list alternatives ("Mozilla.Firefox;Mozilla.Firefox.MSIX"): the same product is often published
         // as a classic installer and as a Store/MSIX package with different ids. Every alternative that is installed
@@ -142,7 +148,6 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         // (157.0.0.0 under Mozilla.Firefox.MSIX) was flagged by every scan and found "already up to date" by every
         // install. Alternatives are optional hints: when none of them is installed the id is resolved from winget's
         // listing by the app's identity rule (below).
-        var candidates = SplitIds(app.WingetId);
         var installs = new List<(string Id, WingetRow Row)>();
         ListLookup? lookup = null;
         string? matchedId = null;
@@ -220,6 +225,9 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         // winget upgrade refuses (Perplexity.Comet, Microsoft.BingWallpaper) are still detected and go to the scoped
         // install fallback.
         var upgradeRows = await GetUpgradeListingAsync(winget, app.WingetSourceName, context, ct).ConfigureAwait(false);
+        // SYSTEM's offers for a provisioned bundle compare against the bundle's version and cannot be installed there.
+        if (await MsixBundlesForAsync(upgradeRows, app, candidates, context, ct).ConfigureAwait(false) is { } upgradeBundles)
+            upgradeRows = upgradeBundles.WithoutBundles(upgradeRows);
         // With several configured ids installed, the upgrade row of the id whose install counts comes first.
         IReadOnlyList<string> upgradeIds = installs.Count > 1
             ? [matchedId!, .. candidates.Where(c => !string.Equals(c, matchedId, StringComparison.OrdinalIgnoreCase))]
@@ -263,6 +271,10 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         }
         var installedVersion = string.IsNullOrWhiteSpace(row.Version) ? null : row.Version;
         var available = string.IsNullOrWhiteSpace(row.Available) ? null : row.Available;
+        if (row.MsixBundleVersion is not null)
+            _logger.LogInformation("{AppId}: '{WingetId}' is a provisioned MSIX bundle in winget's {Context}-scope listing, which shows the bundle's version {BundleVersion}; {Package}. MSIX packages are updated in each user's context, so this scope offers no update.",
+                app.AppId, matchedId, context.Context, row.MsixBundleVersion,
+                installedVersion is null ? "no package of its family is registered or staged for any user, so the version is unknown" : $"its package is at {installedVersion}");
 
         bool updateAvailable;
         if (available is null)
@@ -307,6 +319,7 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             UpdateAvailable = updateAvailable,
             WingetId = matchedId,
             ResolvedContext = context.Context,
+            MsixBundleVersion = row.MsixBundleVersion,
         };
     }
 
@@ -2597,7 +2610,10 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     /// </summary>
     private async Task<ListLookup> LookupByIdAsync(string winget, AppPolicy app, string id, FullListing listing, ExecutionContextInfo context, CancellationToken ct)
     {
-        var attempt = await ListAsync(winget, app with { WingetId = id }, context, _options.CheckTimeout, ct).ConfigureAwait(false);
+        Func<IReadOnlyList<WingetRow>, Task<IReadOnlyList<WingetRow>>>? resolveBundles = context.IsSystem
+            ? async rows => await MsixBundlesForAsync(rows, app, [id], context, ct).ConfigureAwait(false) is { } index ? index.Resolve(rows) : rows
+            : null;
+        var attempt = await ListAsync(winget, app with { WingetId = id }, context, _options.CheckTimeout, ct, adjustRows: resolveBundles).ConfigureAwait(false);
         if (!attempt.NotInstalled) return attempt;
 
         var fromFullList = FindInFullList(listing.Rows, id);
@@ -2784,6 +2800,74 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     }
 
     /// <summary>
+    /// Replaces the enumeration of the machine's MSIX bundles and packages (<see cref="MsixBundleIndex.LoadAsync"/>). Tests
+    /// answer it; null (the default) enumerates, except in a test that scripts winget, which never starts PowerShell and
+    /// gets <see cref="MsixBundleIndex.Empty"/>.
+    /// </summary>
+    internal Func<CancellationToken, Task<MsixBundleIndex>>? MsixBundleIndexRunner { get; init; }
+
+    private Task<MsixBundleIndex>? _bundleIndex;
+    private readonly object _bundleIndexLock = new();
+    private readonly ConcurrentDictionary<InstallContext, (FullListing Raw, FullListing Resolved)> _resolvedListings = new();
+
+    /// <summary>
+    /// The machine's MSIX bundles (see <see cref="MsixBundleIndex"/>) when <paramref name="rows"/> of the service's
+    /// (machine-scope) listing may hold one for <paramref name="app"/>; null otherwise, and always in a user's session,
+    /// whose listing shows the packages. Enumerated at most once per provider instance (= once per scan), and only when
+    /// a row of a checked application - one of its configured ids, or a name its identity rule accepts - looks like a
+    /// bundle's (<see cref="MsixBundleIndex.IsCandidate"/>); once enumerated, every later application of the scan reads
+    /// through it. A failed enumeration is logged once and still serves the bundles it knows.
+    /// </summary>
+    private async Task<MsixBundleIndex?> MsixBundlesForAsync(IReadOnlyList<WingetRow> rows, AppPolicy app, IReadOnlyList<string> candidates,
+        ExecutionContextInfo context, CancellationToken ct)
+    {
+        if (!context.IsSystem) return null;
+        Task<MsixBundleIndex>? load;
+        lock (_bundleIndexLock)
+        {
+            load = _bundleIndex;
+            // An enumeration cancelled with the application that started it (its check timed out) is started again.
+            if (load is { IsCanceled: true } && !ct.IsCancellationRequested) load = _bundleIndex = null;
+            if (load is null)
+            {
+                if (!rows.Any(r => MsixBundleIndex.IsCandidate(r) && IsRowOf(r, app, candidates))) return null;
+                load = _bundleIndex = LoadBundleIndexAsync(ct);
+            }
+        }
+        return await load.ConfigureAwait(false);
+    }
+
+    private async Task<MsixBundleIndex> LoadBundleIndexAsync(CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        var index = MsixBundleIndexRunner is { } runner ? await runner(ct).ConfigureAwait(false)
+            : LookupRunner is not null || InstallRunner is not null ? MsixBundleIndex.Empty
+            : await MsixBundleIndex.LoadAsync(_logger, ct).ConfigureAwait(false);
+        if (index.Failure is not null)
+            _logger.LogWarning("Enumerating the MSIX packages for the machine-scope listing failed ({Reason}); {Count} provisioned bundle(s) known, read with an unknown version.",
+                index.Failure, index.Bundles.Count);
+        else
+            _logger.LogDebug("MSIX packages for the machine-scope listing: {Count} bundle(s) in {Seconds:F1}s.", index.Bundles.Count, sw.Elapsed.TotalSeconds);
+        return index;
+    }
+
+    /// <summary>The full listing with its bundle rows resolved (<see cref="MsixBundleIndex.Resolve"/>), computed once per listing.</summary>
+    private FullListing ResolvedListing(FullListing listing, MsixBundleIndex index, ExecutionContextInfo context)
+    {
+        if (_resolvedListings.TryGetValue(context.Context, out var cached) && ReferenceEquals(cached.Raw, listing)) return cached.Resolved;
+        var rows = index.Resolve(listing.Rows);
+        var resolved = ReferenceEquals(rows, listing.Rows) ? listing : listing with { Rows = rows };
+        _resolvedListings[context.Context] = (listing, resolved);
+        return resolved;
+    }
+
+    /// <summary>Whether a listing row may be <paramref name="app"/>'s: one of its configured ids (also as winget's shortened id cell), or a name its identity rule accepts.</summary>
+    private static bool IsRowOf(WingetRow row, AppPolicy app, IReadOnlyList<string> candidates) =>
+        candidates.Any(id => string.Equals(row.Id, id, StringComparison.OrdinalIgnoreCase)
+                             || (row.Id.EndsWith(WingetOutputParser.Ellipsis) && id.StartsWith(row.Id.TrimEnd(WingetOutputParser.Ellipsis), StringComparison.OrdinalIgnoreCase)))
+        || InstalledAppScanner.NameMatches(app, row.Name);
+
+    /// <summary>
     /// Runs one of the scan's read-only winget lookups (<c>list</c>, <c>upgrade</c>) and counts it for the scan summary.
     /// Goes through <see cref="LookupRunner"/> when a test set one.
     /// </summary>
@@ -2889,7 +2973,9 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
     /// <c>winget list --id X --exact</c> in this context's scope, or in every scope with <paramref name="unscoped"/> (the
     /// dependency check: a dependency can be machine-wide while the application is per user).
     /// </summary>
-    private async Task<ListLookup> ListAsync(string winget, AppPolicy app, ExecutionContextInfo context, TimeSpan timeout, CancellationToken ct, bool unscoped = false)
+    /// <param name="adjustRows">Rewrites the parsed rows before the id's rows are combined (the scan's bundle resolution, see <see cref="MsixBundleIndex.Resolve"/>).</param>
+    private async Task<ListLookup> ListAsync(string winget, AppPolicy app, ExecutionContextInfo context, TimeSpan timeout, CancellationToken ct, bool unscoped = false,
+        Func<IReadOnlyList<WingetRow>, Task<IReadOnlyList<WingetRow>>>? adjustRows = null)
     {
         var args = new StringBuilder()
             .Append("list --id ").Append(Quote(app.WingetId!))
@@ -2909,6 +2995,7 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
             return new ListLookup(null, true, null);
 
         var rows = WingetOutputParser.ParseListOutput(run.CombinedOutput);
+        if (adjustRows is not null) rows = await adjustRows(rows).ConfigureAwait(false);
         var matches = WingetOutputParser.FindAllById(rows, app.WingetId);
         // One row per installed version: the scan and every check after an install see the same, highest one.
         var row = WingetOutputParser.CombineInstalls(matches);

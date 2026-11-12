@@ -95,7 +95,7 @@
     "appId": "powershell",
     "displayName": "PowerShell 7",
     "source": "winget",
-    "context": "system",
+    "context": "auto",
     "wingetId": "Microsoft.PowerShell",
     "versionUrl": "https://api.github.com/repos/PowerShell/PowerShell/releases/latest",
     "versionRegex": "\"tag_name\":\\s*\"v?([^\"]+)\"",

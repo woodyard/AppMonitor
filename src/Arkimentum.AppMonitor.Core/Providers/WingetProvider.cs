@@ -1816,7 +1816,17 @@ public sealed partial class WingetProvider : IUpdateProvider, IScanSnapshotProvi
         {
             var msix = await ReadProvisionedMsixAsync(app, winget, wingetId, sourceName, update.AvailableVersion, ct).ConfigureAwait(false);
             provisionedFamily = msix.Family;
-            if ((newVersion is null || stillOutdated) && msix.Version is not null)
+            // The package registrations win over SYSTEM's listing even when that shows a version: as SYSTEM winget lists a
+            // provisioned bundle with the bundle's own version (PowerShell 7.7: "MSIX\Microsoft.PowerShell_2026.1110.418.0_
+            // neutral_~_8wekyb3d8bbwe", 2026.1110.418.0 for package 7.7.0.0, CPC-hsk-HSNE00X 2026-11-12).
+            if (msix.Version is not null && newVersion is not null && !stillOutdated
+                && !string.Equals(newVersion, msix.Version, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("{AppId}: winget's machine-scope listing shows {Listed} for '{WingetId}' (a provisioned bundle's own version); the MSIX package {Family} is {Version}, which is recorded.",
+                    app.AppId, newVersion, wingetId, msix.Family, msix.Version);
+                newVersion = msix.Version;
+            }
+            else if ((newVersion is null || stillOutdated) && msix.Version is not null)
             {
                 _logger.LogInformation("{AppId}: winget's machine-scope listing shows {Listed} for '{WingetId}', but the MSIX package {Family} {Version} is on the device; the take-over took.",
                     app.AppId, newVersion ?? "nothing", wingetId, msix.Family, msix.Version);
